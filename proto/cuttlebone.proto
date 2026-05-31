@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package cuttlebone.v1;
+
+option go_package = "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1;cuttlebonev1";
+
+// ToolPlugin is the core RPC service that every Cuttlebone plugin must implement.
+// This is the interface between the codecuttlectl orchestrator (host) and each
+// tool plugin (subprocess). Communication occurs over gRPC via HashiCorp go-plugin.
+service ToolPlugin {
+  // Describe returns the tool's metadata, JSON schema, and LLM context hints.
+  // Called once during plugin discovery/initialization.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+
+  // Execute runs the tool with the given input parameters.
+  // Called each time the LLM invokes this tool.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+// DescribeRequest is sent by the orchestrator to discover tool capabilities.
+message DescribeRequest {}
+
+// DescribeResponse provides the tool's full metadata to the orchestrator.
+message DescribeResponse {
+  // name is the tool's unique identifier used in LLM tool_use blocks.
+  string name = 1;
+
+  // description is a human/LLM-readable explanation of what the tool does.
+  string description = 2;
+
+  // input_schema is the JSON Schema (as a JSON string) describing the tool's
+  // expected input parameters. This is passed directly to the LLM's tool config.
+  string input_schema = 3;
+
+  // llm_context_hint provides additional instructions for the LLM about how
+  // and when to use this tool. This is injected into the system prompt alongside
+  // the tool definitions to resolve the "missing context problem" described in
+  // the architecture docs. Unlike comments in .proto files, this field survives
+  // serialization and is available at runtime.
+  string llm_context_hint = 4;
+
+  // version is the semantic version of this tool plugin.
+  string version = 5;
+
+  // capabilities declares optional features this plugin supports.
+  ToolCapabilities capabilities = 6;
+}
+
+// ToolCapabilities declares optional features a plugin supports.
+message ToolCapabilities {
+  // supports_streaming indicates the plugin can stream partial results.
+  bool supports_streaming = 1;
+
+  // supports_cancellation indicates the plugin respects context cancellation.
+  bool supports_cancellation = 2;
+
+  // requires_confirmation indicates the tool performs destructive operations
+  // and the orchestrator should confirm with the user before executing.
+  bool requires_confirmation = 3;
+
+  // max_timeout_seconds is the maximum time this tool should be allowed to run.
+  // 0 means use the orchestrator's default timeout.
+  int32 max_timeout_seconds = 4;
+}
+
+// ExecuteRequest contains the input for a tool invocation.
+message ExecuteRequest {
+  // input is the JSON-encoded parameters matching the tool's input_schema.
+  // The orchestrator deserializes the LLM's tool_use input and passes it here.
+  string input = 1;
+
+  // working_directory is the current working directory context from the session.
+  string working_directory = 2;
+
+  // request_id is a unique identifier for this invocation (for tracing/telemetry).
+  string request_id = 3;
+}
+
+// ExecuteResponse contains the result of a tool invocation.
+message ExecuteResponse {
+  // output is the text content returned to the LLM as the tool result.
+  string output = 1;
+
+  // error_message is set when the tool execution fails. If non-empty, the
+  // orchestrator will report this as a tool error to the LLM.
+  string error_message = 2;
+
+  // is_error indicates whether this response represents a failure.
+  bool is_error = 3;
+
+  // metadata contains optional structured data about the execution
+  // (e.g., bytes written, exit code, timing information).
+  map<string, string> metadata = 4;
+}
