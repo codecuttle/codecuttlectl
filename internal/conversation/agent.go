@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
@@ -206,6 +208,173 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 	}
 
 	return "", fmt.Errorf("exceeded maximum steps (%d) without completing", a.maxSteps)
+}
+
+// StreamCallback is called for each event during a streaming turn.
+type StreamCallback func(event StreamEvent)
+
+// StreamEvent represents an event emitted during a streaming turn.
+type StreamEvent struct {
+	Type      string // "text", "tool_start", "tool_done", "error", "done"
+	Text      string // For "text" events: the delta
+	ToolName  string // For "tool_start" events
+	ToolUseID string // For "tool_start" events
+	Error     error  // For "error" events
+}
+
+// StreamTurn sends a user message and streams the model's response in real-time.
+// The callback receives text deltas as they arrive. Tool calls are executed
+// between streaming rounds. Returns the final accumulated text response.
+func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCallback) (string, error) {
+	a.turn++
+	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
+
+	for step := 0; step < a.maxSteps; step++ {
+		ch := a.client.ConverseStream(ctx, a.systemPrompt, a.history, a.allToolDefs())
+
+		var textBuf strings.Builder
+		var toolCalls []pendingToolCall
+		var currentToolInput strings.Builder
+		var currentToolID, currentToolName string
+
+		for event := range ch {
+			switch e := event.(type) {
+			case bedrock.TextDeltaEvent:
+				textBuf.WriteString(e.Text)
+				if cb != nil {
+					cb(StreamEvent{Type: "text", Text: e.Text})
+				}
+
+			case bedrock.ToolUseStartEvent:
+				currentToolID = e.ToolUseID
+				currentToolName = e.Name
+				currentToolInput.Reset()
+				if cb != nil {
+					cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
+				}
+
+			case bedrock.ToolInputDeltaEvent:
+				currentToolInput.WriteString(e.Delta)
+
+			case bedrock.ToolUseStopEvent:
+				if currentToolName != "" {
+					input := bedrock.CollectToolInput([]string{currentToolInput.String()})
+					toolCalls = append(toolCalls, pendingToolCall{
+						id:    currentToolID,
+						name:  currentToolName,
+						input: input,
+					})
+					currentToolName = ""
+					currentToolID = ""
+					currentToolInput.Reset()
+				}
+
+			case bedrock.UsageEvent:
+				// Track token usage (could record in stats)
+
+			case bedrock.StreamErrorEvent:
+				if cb != nil {
+					cb(StreamEvent{Type: "error", Error: e.Err})
+				}
+				return textBuf.String(), e.Err
+
+			case bedrock.MessageStopEvent:
+				// Stream complete for this round
+			}
+		}
+
+		// Build assistant message for history
+		var blocks []types.ContentBlock
+		if textBuf.Len() > 0 {
+			blocks = append(blocks, &types.ContentBlockMemberText{Value: textBuf.String()})
+		}
+		for _, tc := range toolCalls {
+			blocks = append(blocks, &types.ContentBlockMemberToolUse{
+				Value: types.ToolUseBlock{
+					ToolUseId: &tc.id,
+					Name:      &tc.name,
+					Input:     document.NewLazyDocument(jsonToMapAgent(tc.input)),
+				},
+			})
+		}
+		if len(blocks) > 0 {
+			a.history = append(a.history, bedrock.BuildAssistantMessage(blocks))
+		}
+
+		// If no tool calls, we're done
+		if len(toolCalls) == 0 {
+			a.flushSession()
+			if cb != nil {
+				cb(StreamEvent{Type: "done"})
+			}
+			return textBuf.String(), nil
+		}
+
+		// Execute tool calls
+		var toolResults []bedrock.ToolResult
+		for _, tc := range toolCalls {
+			start := time.Now()
+			result, status := a.executeTool(ctx, tc.name, tc.input)
+			duration := time.Since(start)
+
+			if a.verbose {
+				truncated := result
+				if len(truncated) > 500 {
+					truncated = truncated[:500] + "..."
+				}
+				log.Printf("[tool] %s (%dms): %s", tc.name, duration.Milliseconds(), truncated)
+			}
+
+			isErr := status == types.ToolResultStatusError
+			a.inkwell = append(a.inkwell, session.InkEntry{
+				Timestamp:  time.Now().UTC(),
+				Turn:       a.turn,
+				ToolName:   tc.name,
+				ToolUseID:  tc.id,
+				Input:      tc.input,
+				Output:     result,
+				DurationMs: duration.Milliseconds(),
+				IsError:    isErr,
+				ErrorType:  classifyError(isErr, tc.name, result),
+			})
+
+			toolResults = append(toolResults, bedrock.ToolResult{
+				ToolUseID: tc.id,
+				Content:   result,
+				Status:    status,
+			})
+
+			if cb != nil {
+				cb(StreamEvent{Type: "tool_done", ToolName: tc.name, ToolUseID: tc.id})
+			}
+		}
+
+		a.history = append(a.history, bedrock.BuildToolResultMessage(toolResults))
+		a.dirty = true
+		a.flushSession()
+
+		// Clear text buffer for next round
+		textBuf.Reset()
+	}
+
+	return "", fmt.Errorf("exceeded maximum steps (%d) without completing", a.maxSteps)
+}
+
+type pendingToolCall struct {
+	id    string
+	name  string
+	input json.RawMessage
+}
+
+func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
+	var m map[string]interface{}
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &m)
+	}
+	if m == nil {
+		m = map[string]interface{}{}
+	}
+	return m
 }
 
 // executeTool dispatches a tool call to the appropriate handler.

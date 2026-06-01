@@ -281,11 +281,23 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *plugin
 			break
 		}
 
-		response, err := agent.Turn(ctx, input)
+		response, err := agent.StreamTurn(ctx, input, func(ev conversation.StreamEvent) {
+			switch ev.Type {
+			case "text":
+				fmt.Print(ev.Text)
+			case "tool_start":
+				fmt.Fprintf(os.Stderr, "\n  [tool] %s\n", ev.ToolName)
+			case "tool_done":
+				fmt.Fprintf(os.Stderr, "  [done] %s\n", ev.ToolName)
+			case "done":
+				fmt.Println()
+			}
+		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 			continue
 		}
+		_ = response // already printed via streaming
 
 		// Generate title after first turn
 		if firstTurn && agent.SessionID() != "" {
@@ -302,8 +314,6 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *plugin
 			}()
 		}
 
-		fmt.Println()
-		fmt.Println(response)
 		fmt.Println()
 	}
 
