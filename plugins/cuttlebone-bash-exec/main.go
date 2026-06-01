@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,9 +48,30 @@ func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 }
 
 type bashExecInput struct {
-	Command string `json:"command"`
-	WorkDir string `json:"workdir,omitempty"`
-	Timeout int    `json:"timeout,omitempty"`
+	Command string  `json:"command"`
+	WorkDir string  `json:"workdir,omitempty"`
+	Timeout flexInt `json:"timeout,omitempty"`
+}
+
+// flexInt handles both integer and string-encoded integer values from LLM JSON.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	var i int
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexInt(i)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		i, err := strconv.Atoi(s)
+		if err == nil {
+			*f = flexInt(i)
+			return nil
+		}
+	}
+	*f = 0
+	return nil
 }
 
 func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
@@ -67,8 +89,9 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 			ErrorMessage: "command is required",
 		}, nil
 	}
-	if params.Timeout == 0 {
-		params.Timeout = 120
+	timeout := int(params.Timeout)
+	if timeout == 0 {
+		timeout = 120
 	}
 
 	// Use working directory from params, fall back to request context
@@ -77,7 +100,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 		workDir = req.WorkingDirectory
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(params.Timeout)*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", params.Command)
@@ -96,7 +119,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 
 	if timeoutCtx.Err() == context.DeadlineExceeded {
 		return &pb.ExecuteResponse{
-			Output:   fmt.Sprintf("Command timed out after %d seconds\n\n%s", params.Timeout, result),
+			Output:   fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result),
 			IsError:  true,
 			Metadata: map[string]string{"timeout": "true"},
 		}, nil

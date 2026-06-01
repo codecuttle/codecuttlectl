@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"encoding/json"
+
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
@@ -76,7 +78,8 @@ type TodoUpdatedMsg struct {
 
 // ContinueStreamMsg signals the agent should continue after tool results.
 type ContinueStreamMsg struct {
-	Messages []bedrock.ToolResult
+	Messages   []bedrock.ToolResult
+	TodoInputs []json.RawMessage // Raw todo_manage inputs to apply in Update
 }
 
 // UserSubmitMsg carries a user's submitted message.

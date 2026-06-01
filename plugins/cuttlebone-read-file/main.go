@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
@@ -46,9 +47,32 @@ func (t *readFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 }
 
 type readFileInput struct {
-	Path   string `json:"path"`
-	Offset int    `json:"offset,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
+	Path   string      `json:"path"`
+	Offset flexInt     `json:"offset,omitempty"`
+	Limit  flexInt     `json:"limit,omitempty"`
+}
+
+// flexInt handles both integer and string-encoded integer values from LLM JSON.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	// Try integer first
+	var i int
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexInt(i)
+		return nil
+	}
+	// Try string-encoded integer
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		i, err := strconv.Atoi(s)
+		if err == nil {
+			*f = flexInt(i)
+			return nil
+		}
+	}
+	*f = 0
+	return nil
 }
 
 func (t *readFileTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
@@ -66,9 +90,11 @@ func (t *readFileTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 			ErrorMessage: "path is required",
 		}, nil
 	}
-	if params.Limit == 0 {
-		params.Limit = 2000
+	limit := int(params.Limit)
+	if limit == 0 {
+		limit = 2000
 	}
+	offset := int(params.Offset)
 
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
@@ -79,14 +105,14 @@ func (t *readFileTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 
 	lines := strings.Split(string(data), "\n")
-	start := params.Offset
+	start := offset
 	if start >= len(lines) {
 		return &pb.ExecuteResponse{
 			Output:   fmt.Sprintf("(file has %d lines, offset %d is beyond end)", len(lines), start),
 			Metadata: map[string]string{"total_lines": fmt.Sprintf("%d", len(lines))},
 		}, nil
 	}
-	end := start + params.Limit
+	end := start + limit
 	if end > len(lines) {
 		end = len(lines)
 	}

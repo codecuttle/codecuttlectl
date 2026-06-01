@@ -284,25 +284,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.readNextStreamEvent()
 
 	case StreamDoneMsg:
-		// Finalize streamed text
-		if m.streamBuf.Len() > 0 {
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: sanitizeModelText(m.streamBuf.String()),
-			})
-			m.history = append(m.history, bedrock.BuildAssistantMessage(
-				[]types.ContentBlock{
-					&types.ContentBlockMemberText{Value: m.streamBuf.String()},
-				},
-			))
-			m.streamBuf.Reset()
-		}
-
-		// If we have pending tool calls, execute them
+		// If we have pending tool calls, build a single assistant message
+		// containing any text AND the tool_use blocks, then execute tools.
 		if len(m.pendingToolCalls) > 0 {
-			// Build assistant message with tool use blocks for history
 			var blocks []types.ContentBlock
-			// Include any text that came before the tool calls
+			// Include any text that was streamed before/between tool calls
 			if m.streamBuf.Len() > 0 {
 				blocks = append(blocks, &types.ContentBlockMemberText{Value: m.streamBuf.String()})
 				m.streamBuf.Reset()
@@ -320,16 +306,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.executePendingTools()
 		}
 
+		// No tool calls — finalize streamed text as the assistant response
+		if m.streamBuf.Len() > 0 {
+			content := m.streamBuf.String()
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: sanitizeModelText(content),
+			})
+			m.history = append(m.history, bedrock.BuildAssistantMessage(
+				[]types.ContentBlock{
+					&types.ContentBlockMemberText{Value: content},
+				},
+			))
+			m.streamBuf.Reset()
+		}
+
 		m.streaming = false
+		m.streamCh = nil
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
-		// Keep reading for usage/metadata event that follows MessageStop
-		return m, m.readNextStreamEvent()
+		return m, nil
 
 	case StreamUsageMsg:
 		m.totalInputTokens += msg.InputTokens
 		m.totalOutputTokens += msg.OutputTokens
-		m.streamCh = nil // Done reading after usage
+		m.streaming = false
+		m.streamCh = nil
+		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
 	case StreamErrorMsg:
@@ -356,6 +359,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ContinueStreamMsg:
+		// Process any todo updates safely in the Update handler (single-threaded)
+		todoIdx := 0
+		for i := range msg.Messages {
+			if msg.Messages[i].Content == "" && todoIdx < len(msg.TodoInputs) {
+				// This is a todo_manage placeholder — apply it now
+				var payload struct {
+					Todos []todo.Item `json:"todos"`
+				}
+				input := msg.TodoInputs[todoIdx]
+				todoIdx++
+				if err := json.Unmarshal(input, &payload); err != nil {
+					msg.Messages[i].Content = fmt.Sprintf("Error parsing todo input: %v", err)
+				} else if err := m.todos.Replace(payload.Todos); err != nil {
+					msg.Messages[i].Content = fmt.Sprintf("Error updating todos: %v", err)
+				} else {
+					msg.Messages[i].Content = fmt.Sprintf("Todo list updated: %s", m.todos.Summary())
+				}
+			}
+		}
+
+		// Display tool results in the chat
+		for _, r := range msg.Messages {
+			isErr := r.Status == types.ToolResultStatusError
+			m.messages = append(m.messages, chatMessage{
+				role:    "tool_result",
+				content: truncateToolResult(r.Content, 500),
+				isError: isErr,
+			})
+		}
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
 		// Add tool results to history and start new stream
 		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
 		return m, m.launchStream()
@@ -445,30 +479,7 @@ func (m *Model) launchStream() tea.Cmd {
 	m.streamCh = ch
 
 	// Return a cmd that reads the first event from the stream
-	return tea.Batch(m.spinner.Tick, func() tea.Msg {
-		event, ok := <-ch
-		if !ok {
-			return StreamDoneMsg{StopReason: "end_turn"}
-		}
-		switch e := event.(type) {
-		case bedrock.TextDeltaEvent:
-			return StreamTextMsg{Text: e.Text}
-		case bedrock.ToolUseStartEvent:
-			return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
-		case bedrock.ToolInputDeltaEvent:
-			return StreamToolInputMsg{Delta: e.Delta}
-		case bedrock.ToolUseStopEvent:
-			return StreamToolStopMsg{}
-		case bedrock.MessageStopEvent:
-			return StreamDoneMsg{StopReason: e.StopReason}
-		case bedrock.UsageEvent:
-			return StreamUsageMsg{InputTokens: e.InputTokens, OutputTokens: e.OutputTokens}
-		case bedrock.StreamErrorEvent:
-			return StreamErrorMsg{Err: e.Err}
-		default:
-			return StreamDoneMsg{StopReason: "unknown"}
-		}
-	})
+	return tea.Batch(m.spinner.Tick, m.readNextStreamEvent())
 }
 
 // readNextStreamEvent returns a Cmd that reads the next event from the active stream.
@@ -569,26 +580,33 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 func (m *Model) executePendingTools() tea.Cmd {
 	tools := m.pendingToolCalls
 	m.pendingToolCalls = nil
+	pluginMgr := m.pluginMgr
+	workDir := m.workDir
 
 	return func() tea.Msg {
 		var results []bedrock.ToolResult
+		var todoInputs []json.RawMessage
 		ctx := context.Background()
 
 		for _, tool := range tools {
 			if tool.name == "todo_manage" {
-				result := m.handleTodoTool(tool.input)
+				// Defer todo mutation to the Update handler (thread-safe).
+				// Put a placeholder result; the Update handler will replace it.
+				todoInputs = append(todoInputs, tool.input)
 				results = append(results, bedrock.ToolResult{
 					ToolUseID: tool.id,
-					Content:   result,
+					Content:   "", // placeholder, filled in by Update
 					Status:    types.ToolResultStatusSuccess,
 				})
 				continue
 			}
 
-			output, err := m.pluginMgr.Execute(ctx, tool.name, tool.input, m.workDir)
+			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
 			status := types.ToolResultStatusSuccess
 			if err != nil {
-				output = fmt.Sprintf("Error: %s", err.Error())
+				if output == "" {
+					output = fmt.Sprintf("Error: %s", err.Error())
+				}
 				status = types.ToolResultStatusError
 			}
 
@@ -599,21 +617,8 @@ func (m *Model) executePendingTools() tea.Cmd {
 			})
 		}
 
-		return ContinueStreamMsg{Messages: results}
+		return ContinueStreamMsg{Messages: results, TodoInputs: todoInputs}
 	}
-}
-
-func (m *Model) handleTodoTool(input json.RawMessage) string {
-	var payload struct {
-		Todos []todo.Item `json:"todos"`
-	}
-	if err := json.Unmarshal(input, &payload); err != nil {
-		return fmt.Sprintf("Error parsing todo input: %v", err)
-	}
-	if err := m.todos.Replace(payload.Todos); err != nil {
-		return fmt.Sprintf("Error updating todos: %v", err)
-	}
-	return fmt.Sprintf("Todo list updated: %s", m.todos.Summary())
 }
 
 // --- Rendering ---

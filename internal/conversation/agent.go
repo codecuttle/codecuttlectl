@@ -148,7 +148,11 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 	// Plugin tools
 	output, err := a.pluginMgr.Execute(ctx, name, input, a.workDir)
 	if err != nil {
-		return fmt.Sprintf("Error: %s", err.Error()), types.ToolResultStatusError
+		// output already contains the error details from the plugin
+		if output == "" {
+			output = fmt.Sprintf("Error: %s", err.Error())
+		}
+		return output, types.ToolResultStatusError
 	}
 	return output, types.ToolResultStatusSuccess
 }

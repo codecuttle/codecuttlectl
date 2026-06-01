@@ -231,7 +231,13 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 	}
 
 	if resp.IsError {
-		return "", fmt.Errorf("tool %s error: %s", name, resp.ErrorMessage)
+		// Return the error message as content (not a Go error) so the model can see
+		// and reason about tool-level errors (file not found, permission denied, etc.)
+		errMsg := resp.ErrorMessage
+		if resp.Output != "" {
+			errMsg = resp.Output + "\n" + errMsg
+		}
+		return errMsg, fmt.Errorf("tool error: %s", resp.ErrorMessage)
 	}
 
 	return resp.Output, nil
