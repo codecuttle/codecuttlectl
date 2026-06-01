@@ -4,6 +4,7 @@ package pluginkit
 
 import (
 	"context"
+	"embed"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -56,4 +57,51 @@ func (s *server) Describe(ctx context.Context, req *pb.DescribeRequest) (*pb.Des
 
 func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	return s.impl.Execute(ctx, req)
+}
+
+// EmbedSkill creates a Skill proto from an embedded file. This is the recommended
+// way for plugin authors to ship skills alongside their tools.
+//
+// Usage:
+//
+//	//go:embed skills/*
+//	var skillFS embed.FS
+//
+//	skills: []*pb.Skill{
+//	    pluginkit.EmbedSkill(skillFS, "skills/debugging.md", "my_debugging", "on_error:*", 50),
+//	}
+func EmbedSkill(fs embed.FS, path, name, trigger string, priority int) *pb.Skill {
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		// If the file can't be read, return an empty skill that won't fire
+		return &pb.Skill{
+			Name:    name,
+			Trigger: "on_request",
+			Content: "(skill content unavailable: " + err.Error() + ")",
+		}
+	}
+
+	content := string(data)
+	estimatedTokens := int32(len(content) / 4)
+
+	return &pb.Skill{
+		Name:            name,
+		Trigger:         trigger,
+		ContentType:     "markdown",
+		Content:         content,
+		Priority:        int32(priority),
+		EstimatedTokens: estimatedTokens,
+	}
+}
+
+// NewSkill creates a Skill proto from a string. For inline skill content.
+func NewSkill(name, trigger, contentType, content string, priority int) *pb.Skill {
+	return &pb.Skill{
+		Name:            name,
+		Trigger:         trigger,
+		ContentType:     contentType,
+		Content:         content,
+		Priority:        int32(priority),
+		EstimatedTokens: int32(len(content) / 4),
+	}
 }

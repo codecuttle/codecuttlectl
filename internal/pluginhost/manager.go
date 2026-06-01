@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
+	"github.com/codecuttle/codecuttlectl/internal/skills"
 )
 
 // Handshake is the shared handshake config between host and plugins.
@@ -125,6 +126,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	plugins map[string]*ManagedPlugin
 	logger  hclog.Logger
+	skills  *skills.Registry
 }
 
 // NewManager creates a new plugin manager.
@@ -140,6 +142,7 @@ func NewManager(verbose bool) *Manager {
 			Level:  level,
 			Output: os.Stderr,
 		}),
+		skills: skills.NewRegistry(skills.DefaultBudget),
 	}
 }
 
@@ -246,6 +249,12 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 	m.mu.Lock()
 	m.plugins[desc.Name] = managed
 	m.mu.Unlock()
+
+	// Register skills from this plugin
+	if len(desc.Skills) > 0 {
+		m.skills.Register(desc.Name, desc.Version, desc.Skills)
+		m.logger.Info("registered skills", "plugin", desc.Name, "count", len(desc.Skills))
+	}
 
 	m.logger.Info("loaded plugin", "name", desc.Name, "version", desc.Version, "path", path, "timeout", maxTimeout)
 	return nil
@@ -472,4 +481,9 @@ func (m *Manager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.plugins)
+}
+
+// Skills returns the skill registry.
+func (m *Manager) Skills() *skills.Registry {
+	return m.skills
 }

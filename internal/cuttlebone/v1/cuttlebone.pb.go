@@ -77,7 +77,12 @@ type DescribeResponse struct {
 	// version is the semantic version of this tool plugin.
 	Version string `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
 	// capabilities declares optional features this plugin supports.
-	Capabilities  *ToolCapabilities `protobuf:"bytes,6,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	Capabilities *ToolCapabilities `protobuf:"bytes,6,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// skills contains versioned knowledge, workflows, and behavioral guidance
+	// that the plugin embeds. These are conditionally injected into the system
+	// prompt based on trigger expressions evaluated against session state.
+	// Companion plugins may ship only skills (no tool) for pure knowledge injection.
+	Skills        []*Skill `protobuf:"bytes,7,rep,name=skills,proto3" json:"skills,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -154,6 +159,129 @@ func (x *DescribeResponse) GetCapabilities() *ToolCapabilities {
 	return nil
 }
 
+func (x *DescribeResponse) GetSkills() []*Skill {
+	if x != nil {
+		return x.Skills
+	}
+	return nil
+}
+
+// Skill represents a unit of knowledge, workflow, or behavioral guidance
+// that a plugin ships alongside its tool. Skills are conditionally injected
+// into the LLM's context window based on trigger expressions.
+type Skill struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is a unique identifier for this skill within the plugin.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// trigger is an expression that determines when this skill is injected.
+	// Syntax supports OR-combined conditions separated by '|':
+	//
+	//	"always"                 - inject on every Converse call (subject to budget)
+	//	"on_request"             - only when agent explicitly asks via get_skill
+	//	"on_error:compile"       - when Inkwell detects a compile error
+	//	"on_error:syntax"        - when Inkwell detects a syntax error
+	//	"on_error:*"             - on any error
+	//	"on_tool:bash_exec"      - when a specific tool was used recently
+	//	"on_file:*.go"           - when a matching file was referenced
+	//	"on_file:Dockerfile"     - when a specific file was referenced
+	//	"on_language:python"     - when a language was detected in recent output
+	//	"on_turn:first"          - first turn of the session only
+	//	"on_loop"                - when the reconciler detects a looping failure
+	//
+	// Example: "on_error:compile|on_language:go"
+	Trigger string `protobuf:"bytes,2,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	// content_type classifies the skill content:
+	//
+	//	"markdown"   - general documentation/guidance
+	//	"workflow"   - step-by-step procedure
+	//	"knowledge"  - domain-specific reference material
+	ContentType string `protobuf:"bytes,3,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	// content is the actual embedded text (typically Markdown).
+	Content string `protobuf:"bytes,4,opt,name=content,proto3" json:"content,omitempty"`
+	// priority determines injection order when multiple skills fire.
+	// Higher values = more important. Range: 0-100.
+	// Used as tiebreaker after relevance/recency scoring.
+	Priority int32 `protobuf:"varint,5,opt,name=priority,proto3" json:"priority,omitempty"`
+	// estimated_tokens is the author's estimate of how many tokens this
+	// content will consume in the context window. Used for budget management.
+	// If 0, the orchestrator estimates as len(content)/4.
+	EstimatedTokens int32 `protobuf:"varint,6,opt,name=estimated_tokens,json=estimatedTokens,proto3" json:"estimated_tokens,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Skill) Reset() {
+	*x = Skill{}
+	mi := &file_cuttlebone_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Skill) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Skill) ProtoMessage() {}
+
+func (x *Skill) ProtoReflect() protoreflect.Message {
+	mi := &file_cuttlebone_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Skill.ProtoReflect.Descriptor instead.
+func (*Skill) Descriptor() ([]byte, []int) {
+	return file_cuttlebone_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Skill) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Skill) GetTrigger() string {
+	if x != nil {
+		return x.Trigger
+	}
+	return ""
+}
+
+func (x *Skill) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+func (x *Skill) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *Skill) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *Skill) GetEstimatedTokens() int32 {
+	if x != nil {
+		return x.EstimatedTokens
+	}
+	return 0
+}
+
 // ToolCapabilities declares optional features a plugin supports.
 type ToolCapabilities struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -173,7 +301,7 @@ type ToolCapabilities struct {
 
 func (x *ToolCapabilities) Reset() {
 	*x = ToolCapabilities{}
-	mi := &file_cuttlebone_proto_msgTypes[2]
+	mi := &file_cuttlebone_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -185,7 +313,7 @@ func (x *ToolCapabilities) String() string {
 func (*ToolCapabilities) ProtoMessage() {}
 
 func (x *ToolCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_cuttlebone_proto_msgTypes[2]
+	mi := &file_cuttlebone_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -198,7 +326,7 @@ func (x *ToolCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCapabilities.ProtoReflect.Descriptor instead.
 func (*ToolCapabilities) Descriptor() ([]byte, []int) {
-	return file_cuttlebone_proto_rawDescGZIP(), []int{2}
+	return file_cuttlebone_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ToolCapabilities) GetSupportsStreaming() bool {
@@ -245,7 +373,7 @@ type ExecuteRequest struct {
 
 func (x *ExecuteRequest) Reset() {
 	*x = ExecuteRequest{}
-	mi := &file_cuttlebone_proto_msgTypes[3]
+	mi := &file_cuttlebone_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +385,7 @@ func (x *ExecuteRequest) String() string {
 func (*ExecuteRequest) ProtoMessage() {}
 
 func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cuttlebone_proto_msgTypes[3]
+	mi := &file_cuttlebone_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,7 +398,7 @@ func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_cuttlebone_proto_rawDescGZIP(), []int{3}
+	return file_cuttlebone_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ExecuteRequest) GetInput() string {
@@ -313,7 +441,7 @@ type ExecuteResponse struct {
 
 func (x *ExecuteResponse) Reset() {
 	*x = ExecuteResponse{}
-	mi := &file_cuttlebone_proto_msgTypes[4]
+	mi := &file_cuttlebone_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -325,7 +453,7 @@ func (x *ExecuteResponse) String() string {
 func (*ExecuteResponse) ProtoMessage() {}
 
 func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cuttlebone_proto_msgTypes[4]
+	mi := &file_cuttlebone_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -338,7 +466,7 @@ func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_cuttlebone_proto_rawDescGZIP(), []int{4}
+	return file_cuttlebone_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ExecuteResponse) GetOutput() string {
@@ -374,14 +502,22 @@ var File_cuttlebone_proto protoreflect.FileDescriptor
 const file_cuttlebone_proto_rawDesc = "" +
 	"\n" +
 	"\x10cuttlebone.proto\x12\rcuttlebone.v1\"\x11\n" +
-	"\x0fDescribeRequest\"\xf4\x01\n" +
+	"\x0fDescribeRequest\"\xa2\x02\n" +
 	"\x10DescribeResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12!\n" +
 	"\finput_schema\x18\x03 \x01(\tR\vinputSchema\x12(\n" +
 	"\x10llm_context_hint\x18\x04 \x01(\tR\x0ellmContextHint\x12\x18\n" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x12C\n" +
-	"\fcapabilities\x18\x06 \x01(\v2\x1f.cuttlebone.v1.ToolCapabilitiesR\fcapabilities\"\xdb\x01\n" +
+	"\fcapabilities\x18\x06 \x01(\v2\x1f.cuttlebone.v1.ToolCapabilitiesR\fcapabilities\x12,\n" +
+	"\x06skills\x18\a \x03(\v2\x14.cuttlebone.v1.SkillR\x06skills\"\xb9\x01\n" +
+	"\x05Skill\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\atrigger\x18\x02 \x01(\tR\atrigger\x12!\n" +
+	"\fcontent_type\x18\x03 \x01(\tR\vcontentType\x12\x18\n" +
+	"\acontent\x18\x04 \x01(\tR\acontent\x12\x1a\n" +
+	"\bpriority\x18\x05 \x01(\x05R\bpriority\x12)\n" +
+	"\x10estimated_tokens\x18\x06 \x01(\x05R\x0festimatedTokens\"\xdb\x01\n" +
 	"\x10ToolCapabilities\x12-\n" +
 	"\x12supports_streaming\x18\x01 \x01(\bR\x11supportsStreaming\x123\n" +
 	"\x15supports_cancellation\x18\x02 \x01(\bR\x14supportsCancellation\x123\n" +
@@ -417,27 +553,29 @@ func file_cuttlebone_proto_rawDescGZIP() []byte {
 	return file_cuttlebone_proto_rawDescData
 }
 
-var file_cuttlebone_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_cuttlebone_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_cuttlebone_proto_goTypes = []any{
 	(*DescribeRequest)(nil),  // 0: cuttlebone.v1.DescribeRequest
 	(*DescribeResponse)(nil), // 1: cuttlebone.v1.DescribeResponse
-	(*ToolCapabilities)(nil), // 2: cuttlebone.v1.ToolCapabilities
-	(*ExecuteRequest)(nil),   // 3: cuttlebone.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),  // 4: cuttlebone.v1.ExecuteResponse
-	nil,                      // 5: cuttlebone.v1.ExecuteResponse.MetadataEntry
+	(*Skill)(nil),            // 2: cuttlebone.v1.Skill
+	(*ToolCapabilities)(nil), // 3: cuttlebone.v1.ToolCapabilities
+	(*ExecuteRequest)(nil),   // 4: cuttlebone.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),  // 5: cuttlebone.v1.ExecuteResponse
+	nil,                      // 6: cuttlebone.v1.ExecuteResponse.MetadataEntry
 }
 var file_cuttlebone_proto_depIdxs = []int32{
-	2, // 0: cuttlebone.v1.DescribeResponse.capabilities:type_name -> cuttlebone.v1.ToolCapabilities
-	5, // 1: cuttlebone.v1.ExecuteResponse.metadata:type_name -> cuttlebone.v1.ExecuteResponse.MetadataEntry
-	0, // 2: cuttlebone.v1.ToolPlugin.Describe:input_type -> cuttlebone.v1.DescribeRequest
-	3, // 3: cuttlebone.v1.ToolPlugin.Execute:input_type -> cuttlebone.v1.ExecuteRequest
-	1, // 4: cuttlebone.v1.ToolPlugin.Describe:output_type -> cuttlebone.v1.DescribeResponse
-	4, // 5: cuttlebone.v1.ToolPlugin.Execute:output_type -> cuttlebone.v1.ExecuteResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	3, // 0: cuttlebone.v1.DescribeResponse.capabilities:type_name -> cuttlebone.v1.ToolCapabilities
+	2, // 1: cuttlebone.v1.DescribeResponse.skills:type_name -> cuttlebone.v1.Skill
+	6, // 2: cuttlebone.v1.ExecuteResponse.metadata:type_name -> cuttlebone.v1.ExecuteResponse.MetadataEntry
+	0, // 3: cuttlebone.v1.ToolPlugin.Describe:input_type -> cuttlebone.v1.DescribeRequest
+	4, // 4: cuttlebone.v1.ToolPlugin.Execute:input_type -> cuttlebone.v1.ExecuteRequest
+	1, // 5: cuttlebone.v1.ToolPlugin.Describe:output_type -> cuttlebone.v1.DescribeResponse
+	5, // 6: cuttlebone.v1.ToolPlugin.Execute:output_type -> cuttlebone.v1.ExecuteResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_cuttlebone_proto_init() }
@@ -451,7 +589,7 @@ func file_cuttlebone_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cuttlebone_proto_rawDesc), len(file_cuttlebone_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

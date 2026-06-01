@@ -16,6 +16,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/session"
+	"github.com/codecuttle/codecuttlectl/internal/skills"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
@@ -412,6 +413,12 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 		return result, types.ToolResultStatusSuccess
 	}
 
+	// Built-in: get_skill
+	if name == "get_skill" {
+		result := a.handleGetSkill(input)
+		return result, types.ToolResultStatusSuccess
+	}
+
 	// Plugin tools
 	output, err := a.pluginMgr.Execute(ctx, name, input, a.workDir)
 	if err != nil {
@@ -485,13 +492,128 @@ func (a *Agent) handleToolInfo(input json.RawMessage) string {
 	return fmt.Sprintf("Tool %q not found. Use tool_info without a name to list all available tools.", params.Name)
 }
 
-// effectiveSystemPrompt returns the system prompt with any reconciler injections appended.
-func (a *Agent) effectiveSystemPrompt() string {
-	advice := a.reconciler.Advise(a.inkwell)
-	if advice.InjectPrompt == "" {
-		return a.systemPrompt
+func (a *Agent) handleGetSkill(input json.RawMessage) string {
+	var params struct {
+		Name string `json:"name"`
 	}
-	return a.systemPrompt + advice.InjectPrompt
+	if err := json.Unmarshal(input, &params); err != nil {
+		return fmt.Sprintf("Error parsing input: %v", err)
+	}
+
+	registry := a.pluginMgr.Skills()
+
+	// If no name, list all skills
+	if params.Name == "" {
+		allSkills := registry.List()
+		if len(allSkills) == 0 {
+			return "No skills are currently registered. Skills are shipped by plugins as embedded knowledge, workflows, and guidance."
+		}
+
+		var sb strings.Builder
+		sb.WriteString("Available skills:\n\n")
+		for _, s := range allSkills {
+			sb.WriteString(fmt.Sprintf("- **%s** (from %s v%s) [%s]\n  Trigger: `%s` | Type: %s | ~%d tokens\n",
+				s.Skill.Name, s.PluginName, s.PluginVer,
+				s.Skill.ContentType, s.Skill.Trigger,
+				s.Skill.ContentType, s.TokenCost))
+		}
+		sb.WriteString("\nUse get_skill with a name to retrieve the full content.")
+		return sb.String()
+	}
+
+	// Look up specific skill
+	skill, ok := registry.GetByName(params.Name)
+	if !ok {
+		return fmt.Sprintf("Skill %q not found. Use get_skill without a name to list available skills.", params.Name)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## Skill: %s\n\n", skill.Skill.Name))
+	sb.WriteString(fmt.Sprintf("**Plugin:** %s v%s\n", skill.PluginName, skill.PluginVer))
+	sb.WriteString(fmt.Sprintf("**Type:** %s\n", skill.Skill.ContentType))
+	sb.WriteString(fmt.Sprintf("**Trigger:** `%s`\n\n", skill.Skill.Trigger))
+	sb.WriteString("---\n\n")
+	sb.WriteString(skill.Skill.Content)
+	return sb.String()
+}
+
+// effectiveSystemPrompt returns the system prompt with any reconciler and skill injections appended.
+func (a *Agent) effectiveSystemPrompt() string {
+	prompt := a.systemPrompt
+
+	// Reconciler injection (error correction)
+	advice := a.reconciler.Advise(a.inkwell)
+	if advice.InjectPrompt != "" {
+		prompt += advice.InjectPrompt
+	}
+
+	// Skill injection (knowledge/workflows based on context)
+	skillCtx := a.buildSkillContext()
+	matched := a.pluginMgr.Skills().Evaluate(skillCtx)
+	if len(matched) > 0 {
+		skillContent := a.pluginMgr.Skills().Render(matched)
+		if skillContent != "" {
+			prompt += skillContent
+		}
+	}
+
+	return prompt
+}
+
+// buildSkillContext assembles the current session state for skill trigger evaluation.
+func (a *Agent) buildSkillContext() skills.Context {
+	ctx := skills.Context{
+		IsFirstTurn: a.turn <= 1,
+		TurnNumber:  a.turn,
+	}
+
+	// Look at recent Inkwell entries (last 10)
+	lookback := 10
+	start := len(a.inkwell) - lookback
+	if start < 0 {
+		start = 0
+	}
+	recent := a.inkwell[start:]
+
+	toolSet := make(map[string]bool)
+	fileSet := make(map[string]bool)
+
+	for _, entry := range recent {
+		toolSet[entry.ToolName] = true
+
+		if entry.IsError {
+			ctx.RecentErrors = append(ctx.RecentErrors, entry.ErrorType)
+			// Detect language from error classification
+			ce := inkwell.Classify(entry.ToolName, entry.Output, true)
+			if ce.Language != "" {
+				ctx.DetectedLang = ce.Language
+			}
+			if ce.File != "" {
+				fileSet[ce.File] = true
+			}
+		}
+
+		// Extract file paths from tool inputs
+		var inputMap map[string]interface{}
+		if err := json.Unmarshal(entry.Input, &inputMap); err == nil {
+			if path, ok := inputMap["path"].(string); ok {
+				fileSet[path] = true
+			}
+		}
+	}
+
+	for tool := range toolSet {
+		ctx.RecentTools = append(ctx.RecentTools, tool)
+	}
+	for file := range fileSet {
+		ctx.RecentFiles = append(ctx.RecentFiles, file)
+	}
+
+	// Check if looping
+	diag := inkwell.Diagnose(a.inkwell, lookback)
+	ctx.IsLooping = diag.IsLooping
+
+	return ctx
 }
 
 // allToolDefs returns combined tool definitions from plugins + built-in tools.
@@ -499,6 +621,7 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	defs := a.pluginMgr.Definitions()
 	defs = append(defs, todoToolDefinition())
 	defs = append(defs, toolInfoDefinition())
+	defs = append(defs, getSkillDefinition())
 	return defs
 }
 
@@ -538,6 +661,22 @@ func toolInfoDefinition() bedrock.ToolDefinition {
 				"name": {
 					"type": "string",
 					"description": "Name of the tool to get details for. Leave empty to list all available tools."
+				}
+			}
+		}`),
+	}
+}
+
+func getSkillDefinition() bedrock.ToolDefinition {
+	return bedrock.ToolDefinition{
+		Name:        "get_skill",
+		Description: "Retrieve a skill, workflow, or knowledge document by name. Skills provide domain-specific guidance, step-by-step procedures, and best practices. Call with no name to list available skills.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"description": "Name of the skill to retrieve. Leave empty to list all available skills with their triggers."
 				}
 			}
 		}`),

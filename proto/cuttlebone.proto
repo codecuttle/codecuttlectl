@@ -44,6 +44,55 @@ message DescribeResponse {
 
   // capabilities declares optional features this plugin supports.
   ToolCapabilities capabilities = 6;
+
+  // skills contains versioned knowledge, workflows, and behavioral guidance
+  // that the plugin embeds. These are conditionally injected into the system
+  // prompt based on trigger expressions evaluated against session state.
+  // Companion plugins may ship only skills (no tool) for pure knowledge injection.
+  repeated Skill skills = 7;
+}
+
+// Skill represents a unit of knowledge, workflow, or behavioral guidance
+// that a plugin ships alongside its tool. Skills are conditionally injected
+// into the LLM's context window based on trigger expressions.
+message Skill {
+  // name is a unique identifier for this skill within the plugin.
+  string name = 1;
+
+  // trigger is an expression that determines when this skill is injected.
+  // Syntax supports OR-combined conditions separated by '|':
+  //   "always"                 - inject on every Converse call (subject to budget)
+  //   "on_request"             - only when agent explicitly asks via get_skill
+  //   "on_error:compile"       - when Inkwell detects a compile error
+  //   "on_error:syntax"        - when Inkwell detects a syntax error
+  //   "on_error:*"             - on any error
+  //   "on_tool:bash_exec"      - when a specific tool was used recently
+  //   "on_file:*.go"           - when a matching file was referenced
+  //   "on_file:Dockerfile"     - when a specific file was referenced
+  //   "on_language:python"     - when a language was detected in recent output
+  //   "on_turn:first"          - first turn of the session only
+  //   "on_loop"                - when the reconciler detects a looping failure
+  // Example: "on_error:compile|on_language:go"
+  string trigger = 2;
+
+  // content_type classifies the skill content:
+  //   "markdown"   - general documentation/guidance
+  //   "workflow"   - step-by-step procedure
+  //   "knowledge"  - domain-specific reference material
+  string content_type = 3;
+
+  // content is the actual embedded text (typically Markdown).
+  string content = 4;
+
+  // priority determines injection order when multiple skills fire.
+  // Higher values = more important. Range: 0-100.
+  // Used as tiebreaker after relevance/recency scoring.
+  int32 priority = 5;
+
+  // estimated_tokens is the author's estimate of how many tokens this
+  // content will consume in the context window. Used for budget management.
+  // If 0, the orchestrator estimates as len(content)/4.
+  int32 estimated_tokens = 6;
 }
 
 // ToolCapabilities declares optional features a plugin supports.

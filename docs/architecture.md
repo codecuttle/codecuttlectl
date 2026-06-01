@@ -5,24 +5,41 @@
 ```mermaid
 graph TD
     User[User / Terminal] --> TUI[Bubble Tea TUI]
+    User --> REPL[Plain REPL / One-shot]
     TUI --> Agent[Conversation Agent]
+    REPL --> Agent
     Agent --> Bedrock[AWS Bedrock ConverseStream]
     Agent --> PluginMgr[Plugin Manager]
     Agent --> TodoMgr[Todo Manager]
+    Agent --> Inkwell[Inkwell Reconciler]
+    Agent --> SkillReg[Skill Registry]
+    Agent --> Sessions[Session Store]
 
     PluginMgr --> |gRPC over Unix socket| P1[cuttlebone-read-file]
     PluginMgr --> |gRPC over Unix socket| P2[cuttlebone-write-file]
-    PluginMgr --> |gRPC over Unix socket| P3[cuttlebone-list-directory]
+    PluginMgr --> |gRPC over Unix socket| P3[cuttlebone-edit-file]
     PluginMgr --> |gRPC over Unix socket| P4[cuttlebone-bash-exec]
+    PluginMgr --> |gRPC over Unix socket| P5[cuttlebone-grep]
+    PluginMgr --> |gRPC over Unix socket| P6[cuttlebone-glob]
+    PluginMgr --> |gRPC over Unix socket| P7[cuttlebone-git]
+    PluginMgr --> |gRPC over Unix socket| P8[cuttlebone-go-skills]
 
     Bedrock --> |Stream Events| Agent
     Agent --> |Tool Results| Bedrock
+
+    Inkwell --> |Corrective Prompts| Agent
+    SkillReg --> |Conditional Knowledge| Agent
+    Sessions --> |Persist/Restore| Disk[(~/.local/share/codecuttlectl/)]
 
     subgraph "Cuttlebone Substrate"
         P1
         P2
         P3
         P4
+        P5
+        P6
+        P7
+        P8
     end
 ```
 
@@ -35,9 +52,12 @@ sequenceDiagram
     participant A as Agent
     participant B as Bedrock
     participant P as Plugin
+    participant I as Inkwell
+    participant S as Session Store
 
     U->>T: Type message + Enter
     T->>A: Submit message
+    A->>A: effectiveSystemPrompt() (base + reconciler + skills)
     A->>B: ConverseStream (system + history + tools)
 
     loop Streaming
@@ -50,10 +70,14 @@ sequenceDiagram
         B-->>A: ToolUseStart + ToolInputDelta + ToolUseStop
         A->>P: Execute(input) via gRPC
         P-->>A: ExecuteResponse(output)
+        A->>I: Record InkEntry (timing, error class)
+        A->>S: Flush session state
+        I-->>A: Advice (corrective prompt injection)
         A->>B: Continue with ToolResult
     end
 
     B-->>A: MessageStop
+    A->>S: Final flush
     A-->>T: StreamDoneMsg
     T-->>U: Final render, ready for input
 ```
@@ -65,53 +89,155 @@ graph LR
     subgraph Host Process
         Orchestrator[codecuttlectl]
         Manager[Plugin Manager]
+        SkillReg[Skill Registry]
         Orchestrator --> Manager
+        Manager --> SkillReg
     end
 
     subgraph Plugin Processes
         P1[cuttlebone-read-file<br/>PID: separate]
-        P2[cuttlebone-write-file<br/>PID: separate]
-        P3[cuttlebone-bash-exec<br/>PID: separate]
+        P2[cuttlebone-git<br/>PID: separate]
+        P3[cuttlebone-go-skills<br/>PID: separate<br/>Knowledge only]
     end
 
-    Manager -->|"1. Discover binaries"| Dir[plugins/]
+    Manager -->|"1. Discover binaries (cuttlebone-* prefix)"| Dir[plugins/]
     Manager -->|"2. Launch subprocess"| P1
-    Manager -->|"3. gRPC Handshake"| P1
-    Manager -->|"4. Describe() RPC"| P1
-    Manager -->|"5. Execute() RPC"| P1
+    Manager -->|"3. gRPC Handshake (10s timeout)"| P1
+    Manager -->|"4. Describe() → metadata + skills"| P1
+    Manager -->|"5. Execute() (per-plugin timeout)"| P1
+    Manager -->|"6. Crash → auto-restart (up to 3x)"| P1
 
     P1 -.->|Unix domain socket| Manager
     P2 -.->|Unix domain socket| Manager
-    P3 -.->|Unix domain socket| Manager
+    P3 -.->|Skills registered, no Execute| SkillReg
+```
+
+## Inkwell Reconciliation Loop
+
+```mermaid
+graph TD
+    ToolExec[Tool Execution] --> InkEntry[Record InkEntry]
+    InkEntry --> Classify[Classify Error<br/>Go/Python/TS/Rust parser]
+    Classify --> Diagnose[Diagnose Patterns<br/>loop detection, recency]
+    Diagnose --> Advise[Generate Advice]
+    
+    Advise -->|Single Error| Correct[Corrective Prompt<br/>targeted guidance]
+    Advise -->|Looping 3+| Escalate[Loop Warning<br/>force strategy change]
+    Advise -->|5+ failures| Abort[Abort Recommendation<br/>stop and explain]
+    
+    Correct --> Inject[Inject into System Prompt]
+    Escalate --> Inject
+    Abort --> Inject
+    Inject --> NextConverse[Next Converse Call]
+```
+
+## Skills System
+
+```mermaid
+graph TD
+    Plugins[Plugin Discovery] -->|Describe().Skills| Registry[Skill Registry]
+    Registry --> Evaluate{Evaluate Triggers}
+    
+    Context[Session Context<br/>errors, tools, files, language] --> Evaluate
+    
+    Evaluate -->|"always"| Active[Active Skills]
+    Evaluate -->|"on_error:compile"| Active
+    Evaluate -->|"on_file:*.go"| Active
+    Evaluate -->|"on_loop"| Active
+    
+    Active --> Budget[Apply Token Budget<br/>24000 default]
+    Budget --> Render[Render into System Prompt]
+    Render --> Agent[Agent's effectiveSystemPrompt]
+    
+    Agent2[Agent] -->|"get_skill(name)"| OnDemand[On-Demand Retrieval]
+    OnDemand --> Registry
+```
+
+### Trigger Expression Syntax
+
+```
+always                    — inject every call (subject to budget)
+on_request                — only via get_skill tool
+on_error:compile          — on specific error class
+on_error:*                — on any error
+on_tool:bash_exec         — when tool was used recently
+on_file:*.go              — when matching file referenced
+on_language:python        — when language detected
+on_turn:first             — first turn only
+on_loop                   — when looping detected
+
+Combined: on_error:compile|on_language:go   (OR logic)
+```
+
+## Session Persistence
+
+```mermaid
+graph LR
+    Agent[Agent Loop] -->|After each tool exec| Flush[Flush Session]
+    Flush --> Serialize[MarshalHistory<br/>types.Message → JSON]
+    Serialize --> AtomicWrite[Write .tmp → rename .json]
+    AtomicWrite --> Disk[(~/.local/share/codecuttlectl/sessions/)]
+    
+    Resume[--session ID] --> Load[Load .json]
+    Load --> Deserialize[UnmarshalHistory<br/>JSON → types.Message]
+    Deserialize --> Agent
+```
+
+### Session File Structure
+
+```json
+{
+  "meta": {
+    "id": "ses_abc12345",
+    "created_at": "2026-06-01T08:00:00Z",
+    "updated_at": "2026-06-01T08:15:00Z",
+    "title": "Fix Compile Errors",
+    "model": "us.anthropic.claude-opus-4-6-v1",
+    "region": "us-east-1",
+    "work_dir": "/home/user/project",
+    "stats": { "turns": 3, "tool_calls": 7, "input_tokens": 5000, "output_tokens": 2000 }
+  },
+  "messages": [...],
+  "todos": [...],
+  "inkwell": [...]
+}
 ```
 
 ## Naming
 
-The architecture draws from cephalopod biology. The one subsystem that's implemented and named today:
+The architecture draws from cephalopod biology:
 
-- **Cuttlebone Substrate** — The rigid internal shell of a cuttlefish provides compressive strength to an otherwise soft-bodied organism. In the software, the Cuttlebone Substrate is the compiled protobuf + gRPC layer that enforces strict type safety between the orchestrator and its tool plugins, preventing the LLM from invoking malformed tool calls.
+| Name | Biological Analog | Software Function |
+|------|-------------------|-------------------|
+| **Cuttlebone Substrate** | Rigid internal shell providing compressive strength | Compiled protobuf + gRPC layer enforcing type safety |
+| **Inkwell** | Ink sac defense mechanism | Diagnostic capture and error analysis cache |
+| **Chromatophore Engine** | Pigment cells enabling rapid color change | (Future) Dynamic complexity routing via Chomsky Hierarchy |
+| **Optic Lobe** | Multi-dimensional visual processing center | (Future) PostgreSQL + pgvector + AGE hybrid memory |
+| **Stellate Ganglion** | Peripheral motor center bypassing the brain | Raw bash/shell fallback when structured tools fail |
+| **Arm Nodes** | Distributed neural clusters in tentacles | (Future) Edge-localized lightweight inference agents |
 
 ## TUI Layout
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  codecuttlectl | model | region | plugins     in:X out:X│ Status Bar
+│  codecuttlectl | model | region | 8p        in:X out:X  │ Status Bar
 ├─────────────────────────────────────────────────────────┤
-│  ▶ user message (highlighted background)                │
+│  ❯ user message                                         │
 │                                                         │
-│    💭 thinking... (muted, indented)                     │ Viewport
+│    ◇ thinking... (muted, collapsible)                   │ Viewport
 │                                                         │ (scrollable)
-│  ◆ assistant response                                   │
-│  ⚡ Calling tool_name...                                │
-│  ✓ tool result                                          │
+│  ◆ codecuttle                                           │
+│    assistant response (markdown rendered)                │
+│  ⚡ Calling read_file...                                │
+│  ✓ 1: package main...                                   │
 ├─────────────────────────────────────────────────────────┤
 │  ╭──────────────────────────────────────────────────╮   │
-│  │ input area                                       │   │ Input
+│  │ Type a message...                                │   │ Input
 │  ╰──────────────────────────────────────────────────╯   │
 ├─────────────────────────────────────────────────────────┤
-│  2/5 done · 1 active · 2 pending          ctrl+t expand│ Todo Bar
+│  2/5 done · 1 active · 2 pending        ctrl+t tasks   │ Todo Bar
 ├─────────────────────────────────────────────────────────┤
-│  ↑↓ scroll  enter send  ctrl+r thinking  ctrl+c quit   │ Help Bar
+│  enter send  ctrl+r thinking  ctrl+t tasks  ctrl+c quit │ Help Bar
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -140,5 +266,3 @@ sequenceDiagram
     B->>A: ContentBlockStop
     B->>A: MessageStop
 ```
-
-The reasoning signature is stored for multi-turn continuity — Bedrock requires it when sending previous reasoning context back.
