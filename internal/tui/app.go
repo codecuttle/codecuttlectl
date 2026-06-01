@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
+	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
@@ -30,6 +31,10 @@ type Config struct {
 	Verbose        bool
 	EnableThinking bool // Enable extended thinking (model must support it)
 	ThinkingBudget int  // Token budget for thinking (default: 16000)
+
+	// Session persistence
+	Store     session.Store
+	SessionID string // If set, resume this session
 }
 
 // Model is the main Bubble Tea application model.
@@ -69,6 +74,10 @@ type Model struct {
 	// Todo state
 	todos        *todo.List
 	todoExpanded bool
+
+	// Session persistence
+	store     session.Store
+	sessionID string
 
 	// Stats
 	totalInputTokens  int32
@@ -121,7 +130,7 @@ func New(cfg Config) Model {
 		glamour.WithWordWrap(100),
 	)
 
-	return Model{
+	m := Model{
 		input:            ta,
 		spinner:          sp,
 		client:           cfg.Client,
@@ -137,7 +146,32 @@ func New(cfg Config) Model {
 		currentToolInput: &strings.Builder{},
 		showThinking:     true,
 		mdRenderer:       renderer,
+		store:            cfg.Store,
+		sessionID:        cfg.SessionID,
 	}
+
+	// If resuming a session, restore conversation history
+	if cfg.Store != nil && cfg.SessionID != "" {
+		m.restoreSession()
+	} else if cfg.Store != nil {
+		// Create a new session
+		meta := session.SessionMeta{
+			Model:   cfg.Client.ModelID(),
+			Region:  cfg.Client.Region(),
+			WorkDir: cfg.WorkDir,
+		}
+		id, err := cfg.Store.Create(meta)
+		if err == nil {
+			m.sessionID = id
+		}
+	}
+
+	return m
+}
+
+// SessionID returns the current session ID for display on exit.
+func (m Model) SessionID() string {
+	return m.sessionID
 }
 
 func (m Model) Init() tea.Cmd {
@@ -170,6 +204,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.recalcLayout()
 		m.ready = true
+		// Render any pre-existing messages (e.g., restored from a session)
+		if len(m.messages) > 0 {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -323,6 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.streaming = false
 		m.streamCh = nil
+		m.saveSession()
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		return m, nil
@@ -392,6 +432,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		// Add tool results to history and start new stream
 		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
+		m.saveSession()
 		return m, m.launchStream()
 
 	case TodoUpdatedMsg:
@@ -619,6 +660,91 @@ func (m *Model) executePendingTools() tea.Cmd {
 
 		return ContinueStreamMsg{Messages: results, TodoInputs: todoInputs}
 	}
+}
+
+// --- Session persistence ---
+
+// restoreSession loads a saved session and rebuilds the display state.
+func (m *Model) restoreSession() {
+	if m.store == nil || m.sessionID == "" {
+		return
+	}
+
+	state, err := m.store.Load(m.sessionID)
+	if err != nil {
+		return
+	}
+
+	// Restore conversation history for the model
+	messages, err := session.UnmarshalHistory(state.Messages)
+	if err != nil {
+		return
+	}
+	m.history = messages
+
+	// Restore todos
+	if len(state.Todos) > 0 {
+		m.todos.Replace(state.Todos)
+	}
+
+	// Rebuild display messages from the serialized history
+	for _, msg := range state.Messages {
+		for _, block := range msg.Blocks {
+			switch block.Type {
+			case "text":
+				if msg.Role == "user" {
+					m.messages = append(m.messages, chatMessage{role: "user", content: block.Text})
+				} else {
+					m.messages = append(m.messages, chatMessage{role: "assistant", content: block.Text})
+				}
+			case "tool_use":
+				m.messages = append(m.messages, chatMessage{
+					role:    "tool_call",
+					content: fmt.Sprintf("Called %s", block.Name),
+					name:    block.Name,
+				})
+			case "tool_result":
+				m.messages = append(m.messages, chatMessage{
+					role:    "tool_result",
+					content: truncateToolResult(block.Content, 200),
+					isError: block.Status == "error",
+				})
+			}
+		}
+	}
+}
+
+// saveSession persists current TUI state to disk.
+func (m *Model) saveSession() {
+	if m.store == nil || m.sessionID == "" {
+		return
+	}
+
+	serialized, err := session.MarshalHistory(m.history)
+	if err != nil {
+		return
+	}
+
+	// Load existing to preserve metadata
+	existing, loadErr := m.store.Load(m.sessionID)
+	var meta session.SessionMeta
+	if loadErr == nil {
+		meta = existing.Meta
+	} else {
+		meta.ID = m.sessionID
+	}
+
+	meta.Stats.InputTokens = m.totalInputTokens
+	meta.Stats.OutputTokens = m.totalOutputTokens
+
+	state := &session.SessionState{
+		Meta:     meta,
+		Messages: serialized,
+		Todos:    m.todos.Items(),
+		Inkwell:  []session.InkEntry{}, // TUI inkwell tracking can be added later
+	}
+
+	m.store.Save(m.sessionID, state)
 }
 
 // --- Rendering ---
