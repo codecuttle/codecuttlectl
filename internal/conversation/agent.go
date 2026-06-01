@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
+	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/session"
@@ -29,6 +30,9 @@ type Agent struct {
 	todos        *todo.List
 	maxSteps     int
 	verbose      bool
+
+	// Inkwell reconciliation loop
+	reconciler *inkwell.Reconciler
 
 	// Session persistence
 	store     session.Store
@@ -88,6 +92,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		todos:        todo.NewList(),
 		maxSteps:     cfg.MaxSteps,
 		verbose:      cfg.Verbose,
+		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
 	}
@@ -141,7 +146,10 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
 
 	for step := 0; step < a.maxSteps; step++ {
-		resp, err := a.client.Converse(ctx, a.systemPrompt, a.history, a.allToolDefs())
+		// Compute effective system prompt (base + reconciler injection)
+		effectivePrompt := a.effectiveSystemPrompt()
+
+		resp, err := a.client.Converse(ctx, effectivePrompt, a.history, a.allToolDefs())
 		if err != nil {
 			return "", fmt.Errorf("converse step %d: %w", step, err)
 		}
@@ -192,7 +200,7 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 				Output:     result,
 				DurationMs: duration.Milliseconds(),
 				IsError:    isErr,
-				ErrorType:  classifyError(isErr, toolUse.Name, result),
+				ErrorType:  string(inkwell.Classify(toolUse.Name, result, isErr).Class),
 			})
 
 			toolResults = append(toolResults, bedrock.ToolResult{
@@ -205,6 +213,19 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 		a.history = append(a.history, bedrock.BuildToolResultMessage(toolResults))
 		a.dirty = true
 		a.flushSession()
+
+		// Check if the reconciler recommends aborting
+		advice := a.reconciler.Advise(a.inkwell)
+		if advice.ShouldAbort {
+			if a.verbose {
+				log.Printf("[inkwell] ABORT recommended: %s", advice.AbortReason)
+			}
+			// Don't actually abort — let the model handle it via the injected prompt.
+			// The escalation prompt tells the model to stop retrying and explain the failure.
+		}
+		if advice.InjectPrompt != "" && a.verbose {
+			log.Printf("[inkwell] injecting corrective prompt (%d chars)", len(advice.InjectPrompt))
+		}
 	}
 
 	return "", fmt.Errorf("exceeded maximum steps (%d) without completing", a.maxSteps)
@@ -230,7 +251,7 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
 
 	for step := 0; step < a.maxSteps; step++ {
-		ch := a.client.ConverseStream(ctx, a.systemPrompt, a.history, a.allToolDefs())
+		ch := a.client.ConverseStream(ctx, a.effectiveSystemPrompt(), a.history, a.allToolDefs())
 
 		var textBuf strings.Builder
 		var toolCalls []pendingToolCall
@@ -335,7 +356,7 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 				Output:     result,
 				DurationMs: duration.Milliseconds(),
 				IsError:    isErr,
-				ErrorType:  classifyError(isErr, tc.name, result),
+				ErrorType:  string(inkwell.Classify(tc.name, result, isErr).Class),
 			})
 
 			toolResults = append(toolResults, bedrock.ToolResult{
@@ -385,6 +406,12 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 		return result, types.ToolResultStatusSuccess
 	}
 
+	// Built-in: tool_info
+	if name == "tool_info" {
+		result := a.handleToolInfo(input)
+		return result, types.ToolResultStatusSuccess
+	}
+
 	// Plugin tools
 	output, err := a.pluginMgr.Execute(ctx, name, input, a.workDir)
 	if err != nil {
@@ -410,10 +437,68 @@ func (a *Agent) handleTodoTool(input json.RawMessage) string {
 	return fmt.Sprintf("Todo list updated: %s", a.todos.Summary())
 }
 
+func (a *Agent) handleToolInfo(input json.RawMessage) string {
+	var params struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return fmt.Sprintf("Error parsing input: %v", err)
+	}
+
+	defs := a.allToolDefs()
+
+	// If no name specified, list all tools
+	if params.Name == "" {
+		var sb strings.Builder
+		sb.WriteString("Available tools:\n\n")
+		for _, d := range defs {
+			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", d.Name, d.Description))
+		}
+		sb.WriteString(fmt.Sprintf("\nTotal: %d tools. Use tool_info with a specific name to see full parameter schema.", len(defs)))
+		return sb.String()
+	}
+
+	// Look up specific tool
+	for _, d := range defs {
+		if d.Name == params.Name {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("## %s\n\n", d.Name))
+			sb.WriteString(fmt.Sprintf("%s\n\n", d.Description))
+			sb.WriteString("### Input Schema\n\n```json\n")
+			// Pretty-print the schema
+			var pretty json.RawMessage
+			if err := json.Unmarshal(d.InputSchema, &pretty); err == nil {
+				formatted, fmtErr := json.MarshalIndent(pretty, "", "  ")
+				if fmtErr == nil {
+					sb.Write(formatted)
+				} else {
+					sb.Write(d.InputSchema)
+				}
+			} else {
+				sb.Write(d.InputSchema)
+			}
+			sb.WriteString("\n```\n")
+			return sb.String()
+		}
+	}
+
+	return fmt.Sprintf("Tool %q not found. Use tool_info without a name to list all available tools.", params.Name)
+}
+
+// effectiveSystemPrompt returns the system prompt with any reconciler injections appended.
+func (a *Agent) effectiveSystemPrompt() string {
+	advice := a.reconciler.Advise(a.inkwell)
+	if advice.InjectPrompt == "" {
+		return a.systemPrompt
+	}
+	return a.systemPrompt + advice.InjectPrompt
+}
+
 // allToolDefs returns combined tool definitions from plugins + built-in tools.
 func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	defs := a.pluginMgr.Definitions()
 	defs = append(defs, todoToolDefinition())
+	defs = append(defs, toolInfoDefinition())
 	return defs
 }
 
@@ -439,6 +524,22 @@ func todoToolDefinition() bedrock.ToolDefinition {
 				}
 			},
 			"required": ["todos"]
+		}`),
+	}
+}
+
+func toolInfoDefinition() bedrock.ToolDefinition {
+	return bedrock.ToolDefinition{
+		Name:        "tool_info",
+		Description: "Introspect available tools. Call with no name to list all tools, or with a specific tool name to see its full parameter schema and usage details.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"description": "Name of the tool to get details for. Leave empty to list all available tools."
+				}
+			}
 		}`),
 	}
 }
@@ -585,66 +686,4 @@ func (a *Agent) SystemPrompt() string {
 // Todos returns the current todo list.
 func (a *Agent) Todos() *todo.List {
 	return a.todos
-}
-
-// classifyError attempts to categorize a tool error for Inkwell analysis.
-func classifyError(isErr bool, toolName string, output string) string {
-	if !isErr {
-		return ""
-	}
-
-	// Simple heuristic classification — Phase 3 will make this much smarter
-	switch {
-	case contains(output, "not found") || contains(output, "no such file"):
-		return "not_found"
-	case contains(output, "permission denied"):
-		return "permission"
-	case contains(output, "syntax error") || contains(output, "unexpected token"):
-		return "syntax"
-	case contains(output, "compile") || contains(output, "cannot find package") || contains(output, "undefined:"):
-		return "compile"
-	case contains(output, "timeout") || contains(output, "timed out"):
-		return "timeout"
-	case contains(output, "connection refused") || contains(output, "network"):
-		return "network"
-	default:
-		return "runtime"
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsLower(s, substr))
-}
-
-func containsLower(s, substr string) bool {
-	// Simple case-insensitive contains
-	sl := toLower(s)
-	return indexOf(sl, toLower(substr)) >= 0
-}
-
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := range s {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		b[i] = c
-	}
-	return string(b)
-}
-
-func indexOf(s, substr string) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	if len(s) < len(substr) {
-		return -1
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

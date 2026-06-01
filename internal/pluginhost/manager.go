@@ -1,5 +1,12 @@
 // Package pluginhost implements the HashiCorp go-plugin host (orchestrator side)
 // for managing Cuttlebone tool plugins as isolated subprocesses.
+//
+// Robustness guarantees:
+//   - Startup timeout: plugins that fail to handshake within 10s are skipped
+//   - Execution timeout: per-plugin max timeout (from Describe), default 120s
+//   - Crash recovery: if a plugin process dies mid-execution, it is automatically restarted
+//   - Graceful degradation: a crashed/unavailable plugin returns an error to the model
+//     rather than crashing the orchestrator
 package pluginhost
 
 import (
@@ -10,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
@@ -31,6 +39,15 @@ var Handshake = plugin.HandshakeConfig{
 var PluginMap = map[string]plugin.Plugin{
 	"tool": &ToolGRPCPlugin{},
 }
+
+const (
+	// DefaultStartupTimeout is how long we wait for a plugin to start and handshake.
+	DefaultStartupTimeout = 10 * time.Second
+	// DefaultExecTimeout is the fallback execution timeout if the plugin doesn't specify one.
+	DefaultExecTimeout = 120 * time.Second
+	// MaxRestartAttempts is how many times we'll try to restart a crashed plugin.
+	MaxRestartAttempts = 3
+)
 
 // ToolGRPCPlugin implements plugin.GRPCPlugin for the ToolPlugin service.
 type ToolGRPCPlugin struct {
@@ -92,8 +109,15 @@ type ManagedPlugin struct {
 	InputSchema json.RawMessage
 	LLMHint     string
 	Version     string
-	client      *plugin.Client
-	rpcClient   *grpcClient
+	Path        string // Binary path for restart
+	MaxTimeout  time.Duration
+
+	client    *plugin.Client
+	rpcClient *grpcClient
+
+	// Crash recovery state
+	restarts int
+	healthy  bool
 }
 
 // Manager discovers, launches, and manages tool plugin subprocesses.
@@ -121,6 +145,7 @@ func NewManager(verbose bool) *Manager {
 
 // DiscoverPlugins scans a directory for plugin binaries and starts them.
 // Plugin binaries must be named with the prefix "cuttlebone-".
+// Plugins that fail to start within the startup timeout are skipped (not fatal).
 func (m *Manager) DiscoverPlugins(ctx context.Context, pluginDir string) error {
 	entries, err := os.ReadDir(pluginDir)
 	if err != nil {
@@ -158,7 +183,12 @@ func (m *Manager) DiscoverPlugins(ctx context.Context, pluginDir string) error {
 }
 
 // LoadPlugin starts a single plugin binary and registers it.
+// Applies a startup timeout to prevent hanging on broken plugins.
 func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
+	// Apply startup timeout
+	startCtx, cancel := context.WithTimeout(ctx, DefaultStartupTimeout)
+	defer cancel()
+
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: Handshake,
 		Plugins:         PluginMap,
@@ -187,11 +217,17 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 		return fmt.Errorf("plugin %s does not implement tool interface", path)
 	}
 
-	// Describe the plugin to get its metadata
-	desc, err := toolClient.Describe(ctx)
+	// Describe the plugin to get its metadata (with startup timeout)
+	desc, err := toolClient.Describe(startCtx)
 	if err != nil {
 		client.Kill()
 		return fmt.Errorf("describing plugin %s: %w", path, err)
+	}
+
+	// Determine max timeout from plugin capabilities
+	maxTimeout := DefaultExecTimeout
+	if desc.Capabilities != nil && desc.Capabilities.MaxTimeoutSeconds > 0 {
+		maxTimeout = time.Duration(desc.Capabilities.MaxTimeoutSeconds) * time.Second
 	}
 
 	managed := &ManagedPlugin{
@@ -200,19 +236,24 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 		InputSchema: json.RawMessage(desc.InputSchema),
 		LLMHint:     desc.LlmContextHint,
 		Version:     desc.Version,
+		Path:        path,
+		MaxTimeout:  maxTimeout,
 		client:      client,
 		rpcClient:   toolClient,
+		healthy:     true,
 	}
 
 	m.mu.Lock()
 	m.plugins[desc.Name] = managed
 	m.mu.Unlock()
 
-	m.logger.Info("loaded plugin", "name", desc.Name, "version", desc.Version, "path", path)
+	m.logger.Info("loaded plugin", "name", desc.Name, "version", desc.Version, "path", path, "timeout", maxTimeout)
 	return nil
 }
 
 // Execute invokes a tool by name with the given JSON input.
+// Applies a per-plugin execution timeout.
+// If the plugin has crashed, attempts to restart it before failing.
 func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessage, workDir string) (string, error) {
 	m.mu.RLock()
 	p, ok := m.plugins[name]
@@ -222,17 +263,56 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 		return "", fmt.Errorf("unknown plugin tool: %s", name)
 	}
 
-	resp, err := p.rpcClient.Execute(ctx, &pb.ExecuteRequest{
+	// Check if the plugin process is still alive; restart if needed
+	if !p.healthy || p.client.Exited() {
+		if err := m.restartPlugin(ctx, p); err != nil {
+			return fmt.Sprintf("Plugin %s is unavailable: %s", name, err.Error()),
+				fmt.Errorf("plugin %s crashed and could not be restarted: %w", name, err)
+		}
+	}
+
+	// Apply execution timeout
+	execCtx, cancel := context.WithTimeout(ctx, p.MaxTimeout)
+	defer cancel()
+
+	resp, err := p.rpcClient.Execute(execCtx, &pb.ExecuteRequest{
 		Input:            string(input),
 		WorkingDirectory: workDir,
 	})
 	if err != nil {
-		return "", fmt.Errorf("executing plugin %s: %w", name, err)
+		// Check if this is a crash (connection lost)
+		if p.client.Exited() {
+			p.healthy = false
+			m.logger.Warn("plugin crashed during execution", "name", name, "error", err)
+
+			// Attempt restart and retry once
+			if restartErr := m.restartPlugin(ctx, p); restartErr == nil {
+				// Retry the execution on the fresh process
+				retryCtx, retryCancel := context.WithTimeout(ctx, p.MaxTimeout)
+				defer retryCancel()
+				resp, err = p.rpcClient.Execute(retryCtx, &pb.ExecuteRequest{
+					Input:            string(input),
+					WorkingDirectory: workDir,
+				})
+				if err != nil {
+					return fmt.Sprintf("Plugin %s failed after restart: %s", name, err.Error()),
+						fmt.Errorf("executing plugin %s after restart: %w", name, err)
+				}
+			} else {
+				return fmt.Sprintf("Plugin %s crashed and could not be restarted: %s", name, restartErr.Error()),
+					fmt.Errorf("plugin %s unavailable: %w", name, restartErr)
+			}
+		} else if execCtx.Err() == context.DeadlineExceeded {
+			return fmt.Sprintf("Plugin %s timed out after %s", name, p.MaxTimeout),
+				fmt.Errorf("plugin %s execution timed out after %s", name, p.MaxTimeout)
+		} else {
+			return fmt.Sprintf("Plugin %s error: %s", name, err.Error()),
+				fmt.Errorf("executing plugin %s: %w", name, err)
+		}
 	}
 
 	if resp.IsError {
-		// Return the error message as content (not a Go error) so the model can see
-		// and reason about tool-level errors (file not found, permission denied, etc.)
+		// Return the error message as content so the model can reason about it
 		errMsg := resp.ErrorMessage
 		if resp.Output != "" {
 			errMsg = resp.Output + "\n" + errMsg
@@ -241,6 +321,96 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 	}
 
 	return resp.Output, nil
+}
+
+// restartPlugin attempts to restart a crashed plugin subprocess.
+func (m *Manager) restartPlugin(ctx context.Context, p *ManagedPlugin) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if p.restarts >= MaxRestartAttempts {
+		return fmt.Errorf("plugin %s exceeded max restart attempts (%d)", p.Name, MaxRestartAttempts)
+	}
+
+	m.logger.Info("restarting plugin", "name", p.Name, "path", p.Path, "attempt", p.restarts+1)
+
+	// Kill any lingering process
+	if p.client != nil {
+		p.client.Kill()
+	}
+
+	// Start a fresh process
+	client := plugin.NewClient(&plugin.ClientConfig{
+		HandshakeConfig: Handshake,
+		Plugins:         PluginMap,
+		Cmd:             exec.Command(p.Path),
+		AllowedProtocols: []plugin.Protocol{
+			plugin.ProtocolGRPC,
+		},
+		Logger: m.logger,
+	})
+
+	rpcClient, err := client.Client()
+	if err != nil {
+		client.Kill()
+		p.restarts++
+		return fmt.Errorf("reconnecting to plugin %s: %w", p.Name, err)
+	}
+
+	raw, err := rpcClient.Dispense("tool")
+	if err != nil {
+		client.Kill()
+		p.restarts++
+		return fmt.Errorf("dispensing tool from restarted plugin %s: %w", p.Name, err)
+	}
+
+	toolClient, ok := raw.(*grpcClient)
+	if !ok {
+		client.Kill()
+		p.restarts++
+		return fmt.Errorf("restarted plugin %s does not implement tool interface", p.Name)
+	}
+
+	// Verify the restarted plugin is healthy
+	startCtx, cancel := context.WithTimeout(ctx, DefaultStartupTimeout)
+	defer cancel()
+	if _, err := toolClient.Describe(startCtx); err != nil {
+		client.Kill()
+		p.restarts++
+		return fmt.Errorf("health check failed for restarted plugin %s: %w", p.Name, err)
+	}
+
+	// Update the managed plugin with new connections
+	p.client = client
+	p.rpcClient = toolClient
+	p.healthy = true
+	p.restarts++
+
+	m.logger.Info("plugin restarted successfully", "name", p.Name, "total_restarts", p.restarts)
+	return nil
+}
+
+// IsHealthy returns whether a specific plugin is currently responsive.
+func (m *Manager) IsHealthy(name string) bool {
+	m.mu.RLock()
+	p, ok := m.plugins[name]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return p.healthy && !p.client.Exited()
+}
+
+// HealthStatus returns a map of plugin names to their health status.
+func (m *Manager) HealthStatus() map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	status := make(map[string]bool, len(m.plugins))
+	for name, p := range m.plugins {
+		status[name] = p.healthy && !p.client.Exited()
+	}
+	return status
 }
 
 // Definitions returns bedrock-compatible tool definitions for all loaded plugins.

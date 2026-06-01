@@ -117,3 +117,11 @@ When in doubt, use it.
 {{if .Platform}}Platform: {{.Platform}}{{end}}
 {{if .Date}}Date: {{.Date}}{{end}}
 {{if .Model}}Model: {{.Model}}{{end}}
+
+## Your Tools
+
+You have access to the following tools. Use ONLY these exact tool names when invoking tools:
+{{range .Tools}}
+- **{{.Name}}**: {{.Description}}
+{{end}}
+Use these exact names in your tool invocations. Do not invent, rename, or abbreviate tool names.

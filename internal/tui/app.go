@@ -127,7 +127,7 @@ func New(cfg Config) Model {
 
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStylePath("dark"),
-		glamour.WithWordWrap(100),
+		glamour.WithWordWrap(200), // Wide enough to avoid clipping table content
 	)
 
 	m := Model{
