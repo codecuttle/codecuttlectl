@@ -59,6 +59,9 @@ type Model struct {
 	streamBuf *strings.Builder
 	streamCh  <-chan bedrock.StreamEvent // Active stream channel
 
+	// Interrupt state
+	interruptPending bool // true when user pressed esc once, waiting for confirmation
+
 	// Reasoning/thinking state
 	reasoningBuf       *strings.Builder
 	reasoningSignature string
@@ -90,6 +93,10 @@ type Model struct {
 	height int
 	ready  bool
 
+	// Mouse mode toggle: when true, mouse is captured (scroll works).
+	// When false, terminal handles mouse natively (text selection works).
+	mouseEnabled bool
+
 	// Markdown renderer
 	mdRenderer *glamour.TermRenderer
 }
@@ -113,6 +120,11 @@ func New(cfg Config) Model {
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = "" // Remove the vertical bar cursor prompt
 	ta.ShowLineNumbers = false
+
+	// Dynamic height: starts at 1 row, grows up to 10 as user types multi-line
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = 10
 	ta.SetHeight(1)
 	ta.Focus()
 
@@ -143,6 +155,7 @@ func New(cfg Config) Model {
 		messages:         []chatMessage{},
 		streamBuf:        &strings.Builder{},
 		reasoningBuf:     &strings.Builder{},
+		mouseEnabled:     true,
 		currentToolInput: &strings.Builder{},
 		showThinking:     true,
 		mdRenderer:       renderer,
@@ -223,16 +236,78 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showThinking = !m.showThinking
 			m.viewport.SetContent(m.renderMessages())
 			return m, nil
+		case "ctrl+m":
+			// Toggle mouse mode: on = scroll wheel works, off = text selection works
+			m.mouseEnabled = !m.mouseEnabled
+			return m, nil
+		case "shift+enter", "alt+enter", "ctrl+j":
+			// Insert a newline in the textarea (multi-line input)
+			if !m.streaming {
+				var cmd tea.Cmd
+				// Forward an enter keypress to textarea (it handles newline insertion)
+				enterMsg := tea.KeyPressMsg{Code: tea.KeyEnter}
+				m.input, cmd = m.input.Update(enterMsg)
+				m.recalcLayout()
+				return m, cmd
+			}
+			return m, nil
 		case "enter":
 			if !m.streaming {
 				text := strings.TrimSpace(m.input.Value())
 				if text != "" {
 					m.input.Reset()
+					m.input.SetHeight(1)
+					m.recalcLayout()
 					return m, m.submitMessage(text)
 				}
 			}
 			return m, nil
 		case "esc":
+			if m.streaming {
+				if m.interruptPending {
+					// Second esc: confirm interrupt — stop the stream
+					m.streaming = false
+					m.streamCh = nil
+					m.interruptPending = false
+					// Finalize any partial content as the response
+					if m.streamBuf.Len() > 0 {
+						content := m.streamBuf.String()
+						m.messages = append(m.messages, chatMessage{
+							role:    "assistant",
+							content: sanitizeModelText(content) + "\n\n*(interrupted)*",
+						})
+						m.history = append(m.history, bedrock.BuildAssistantMessage(
+							[]types.ContentBlock{
+								&types.ContentBlockMemberText{Value: content},
+							},
+						))
+						m.streamBuf.Reset()
+					} else if m.reasoningBuf.Len() > 0 {
+						m.messages = append(m.messages, chatMessage{
+							role:    "reasoning",
+							content: m.reasoningBuf.String(),
+						})
+						m.reasoningBuf.Reset()
+					}
+					m.inReasoning = false
+					m.pendingToolCalls = nil
+					m.messages = append(m.messages, chatMessage{
+						role:    "assistant",
+						content: "*(generation interrupted by user)*",
+					})
+					m.saveSession()
+					m.viewport.SetContent(m.renderMessages())
+					m.viewport.GotoBottom()
+					return m, nil
+				}
+				// First esc: show confirmation prompt
+				m.interruptPending = true
+				m.viewport.SetContent(m.renderMessages())
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+			// Not streaming: clear interrupt state, handle other esc uses
+			m.interruptPending = false
 			if m.todoExpanded {
 				m.todoExpanded = false
 				m.recalcLayout()
@@ -243,6 +318,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Stream event handling ---
 
 	case StreamTextMsg:
+		// Clear interrupt pending on new content (user didn't confirm)
+		m.interruptPending = false
 		// If we were in reasoning, finalize it before text starts
 		if m.inReasoning && m.reasoningBuf.Len() > 0 {
 			m.messages = append(m.messages, chatMessage{
@@ -461,13 +538,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Pass remaining events to sub-components
 	if !m.streaming {
 		var cmd tea.Cmd
+		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+
+		// If textarea height changed (dynamic grow/shrink), recalculate layout
+		if m.input.Height() != prevHeight {
+			m.recalcLayout()
+		}
 	}
 
-	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	cmds = append(cmds, vpCmd)
+	// Only pass scroll-related events to the viewport.
+	// Passing all key events causes the viewport to interfere with scroll
+	// position while the user is typing. Mouse events (scroll wheel) are
+	// safe to forward since they don't conflict with typing.
+	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	case tea.WindowSizeMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	case tea.KeyMsg:
+		// Only pass navigation keys to viewport (not typing keys)
+		switch msg.String() {
+		case "pgup", "pgdown", "home", "end", "ctrl+u", "ctrl+d":
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			cmds = append(cmds, vpCmd)
+		}
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -499,7 +601,12 @@ func (m Model) View() tea.View {
 
 	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
+	if m.mouseEnabled {
+		// Mouse captured: scroll wheel works, shift+drag for selection
+		view.MouseMode = tea.MouseModeCellMotion
+	}
+	// When mouseEnabled is false, MouseMode defaults to None:
+	// native text selection works, use pgup/pgdown/ctrl+u/ctrl+d to scroll
 	return view
 }
 
@@ -569,11 +676,11 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 func (m *Model) recalcLayout() {
 	// Fixed height elements:
 	// - Status bar: 1 line
-	// - Input area: 3 lines (1 content + 2 border)
+	// - Input area: textarea height + 2 (border)
 	// - Todo bar: 1 line
 	// - Help bar: 1 line
-	// Total fixed: 6
-	headerFooter := 6
+	inputHeight := m.input.Height() + 2
+	headerFooter := 1 + inputHeight + 1 + 1 // status + input + todo + help
 	if m.todoExpanded && !m.todos.IsEmpty() {
 		todoLines := min(len(m.todos.Items())+2, 8)
 		headerFooter += todoLines
@@ -587,8 +694,18 @@ func (m *Model) recalcLayout() {
 	if !m.ready {
 		m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(vpHeight))
 	} else {
+		oldHeight := m.viewport.Height()
 		m.viewport.SetWidth(m.width)
 		m.viewport.SetHeight(vpHeight)
+
+		// When the viewport shrinks (textarea grew), adjust scroll position
+		// so the same content remains visible. Instead of jumping to bottom,
+		// scroll down by exactly the number of lines lost — this preserves
+		// the user's scroll position relative to what they were reading.
+		if vpHeight < oldHeight {
+			linesLost := oldHeight - vpHeight
+			m.viewport.ScrollDown(linesLost)
+		}
 	}
 
 	m.input.SetWidth(m.width - 4)
@@ -802,7 +919,12 @@ func (m *Model) renderInput() string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderColor).
 			Padding(0, 1)
-		content := SpinnerStyle.Render(m.spinner.View()) + " thinking..."
+		var content string
+		if m.interruptPending {
+			content = ErrorStyle.Render("Press esc again to interrupt, or wait...")
+		} else {
+			content = SpinnerStyle.Render(m.spinner.View()) + " thinking..."
+		}
 		return style.Width(m.width - 4).Render(content)
 	}
 	return InputActiveStyle.Width(m.width - 4).Render(m.input.View())
@@ -871,6 +993,8 @@ func (m *Model) renderTodoPanel() string {
 func (m *Model) renderHelpBar() string {
 	keys := []struct{ key, desc string }{
 		{"enter", "send"},
+		{"shift+enter", "newline"},
+		{"ctrl+m", "mouse"},
 		{"ctrl+r", "thinking"},
 		{"ctrl+t", "tasks"},
 		{"ctrl+c", "quit"},
@@ -913,9 +1037,13 @@ func (m *Model) renderMessages() string {
 				header := ReasoningPrefixStyle.Render("  ◇ thinking")
 				lines = append(lines, header)
 				content := strings.TrimSpace(msg.content)
+				maxW := m.width - 8 // 4 indent + padding
+				if maxW < 20 {
+					maxW = 20
+				}
 				for _, line := range strings.Split(content, "\n") {
 					if strings.TrimSpace(line) != "" {
-						lines = append(lines, "    "+ReasoningBodyStyle.Render(line))
+						lines = append(lines, "    "+ReasoningBodyStyle.Width(maxW).Render(line))
 					}
 				}
 				lines = append(lines, "")
@@ -951,17 +1079,19 @@ func (m *Model) renderMessages() string {
 			header := ReasoningPrefixStyle.Render("  ◇ thinking...")
 			lines = append(lines, header)
 			content := m.reasoningBuf.String()
+			maxW := m.width - 8 // 4 indent + padding
+			if maxW < 20 {
+				maxW = 20
+			}
 			for _, line := range strings.Split(content, "\n") {
 				if strings.TrimSpace(line) != "" {
-					lines = append(lines, "    "+ReasoningBodyStyle.Render(line))
+					lines = append(lines, "    "+ReasoningBodyStyle.Width(maxW).Render(line))
 				}
 			}
 			lines = append(lines, StreamingCursorStyle.Render("    █"))
 		} else if m.inReasoning && !m.showThinking {
 			lines = append(lines, ReasoningCollapsedStyle.Render("  ◇ thinking..."))
-		}
-
-		if m.streamBuf.Len() > 0 {
+		} else if m.streamBuf.Len() > 0 {
 			prefix := AssistantPrefixStyle.Render(" ◆ ")
 			lines = append(lines, prefix+"codecuttle")
 			// During streaming, show plain text (not markdown-rendered) to avoid
@@ -972,8 +1102,24 @@ func (m *Model) renderMessages() string {
 				lines = append(lines, m.wrapText(content))
 			}
 			lines = append(lines, StreamingCursorStyle.Render("█"))
-		} else if !m.inReasoning && m.streamBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
-			lines = append(lines, "", SpinnerStyle.Render("  "+m.spinner.View()+" thinking..."))
+		} else if !m.inReasoning && m.streamBuf.Len() == 0 && m.reasoningBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
+			// Only show the "thinking..." spinner if no tool calls or results
+			// have appeared yet in this streaming round. Otherwise, the model
+			// is processing tool results — the tool_call/result messages are
+			// already visible and sufficient feedback.
+			hasToolActivity := false
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "user" {
+					break
+				}
+				if m.messages[i].role == "tool_call" || m.messages[i].role == "tool_result" {
+					hasToolActivity = true
+					break
+				}
+			}
+			if !hasToolActivity {
+				lines = append(lines, "", SpinnerStyle.Render("  "+m.spinner.View()+" thinking..."))
+			}
 		}
 	}
 
