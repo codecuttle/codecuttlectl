@@ -52,9 +52,9 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 
 ## Tools
 
-14 total (9 plugin, 5 built-in):
+16 total (11 plugin, 5 built-in):
 
-`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `todo_manage` `tool_info` `get_skill` `scaffold_plugin` `reload_plugins`
+`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `websearch` `webfetch` `todo_manage` `tool_info` `get_skill` `scaffold_plugin` `reload_plugins`
 
 ## Plugins
 
@@ -97,7 +97,7 @@ See [`docs/sessions-and-inkwell.md`](docs/sessions-and-inkwell.md).
 ## Development
 
 ```bash
-make all     # Build orchestrator + 9 plugins
+make all     # Build orchestrator + 11 plugins
 make test    # 76 tests, 7 packages
 make proto   # Regenerate protobuf
 ```
