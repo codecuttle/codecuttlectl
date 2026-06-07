@@ -492,9 +492,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Only pass scroll-related events to the viewport.
 	// Passing all key events causes the viewport to interfere with scroll
 	// position while the user is typing. We explicitly handle scroll keys
-	// and mouse events only.
+	// and mouse wheel only. MouseModeNone is set in View() so the terminal
+	// handles drag-to-select natively; scroll wheel events are still
+	// delivered as MouseWheelMsg by Bubble Tea without mouse capture mode.
 	switch msg := msg.(type) {
-	case tea.MouseMsg:
+	case tea.MouseWheelMsg:
+		// Mouse wheel scrolls the viewport (chat history)
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		cmds = append(cmds, vpCmd)
@@ -505,7 +508,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Only pass navigation keys to viewport (not typing keys)
 		switch msg.String() {
-		case "pgup", "pgdown", "home", "end":
+		case "pgup", "pgdown", "home", "end", "ctrl+u", "ctrl+d":
 			var vpCmd tea.Cmd
 			m.viewport, vpCmd = m.viewport.Update(msg)
 			cmds = append(cmds, vpCmd)
@@ -542,9 +545,9 @@ func (m Model) View() tea.View {
 
 	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
-	// Enable mouse for scroll wheel support in the viewport.
-	// Text selection still works in most terminals via shift+drag.
-	view.MouseMode = tea.MouseModeCellMotion
+	// MouseModeNone allows native terminal text selection (drag to copy).
+	// Scroll is handled via pgup/pgdown/ctrl+u/ctrl+d keyboard shortcuts
+	// which we explicitly forward to the viewport.
 	return view
 }
 
