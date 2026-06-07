@@ -113,6 +113,11 @@ func New(cfg Config) Model {
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = "" // Remove the vertical bar cursor prompt
 	ta.ShowLineNumbers = false
+
+	// Dynamic height: starts at 1 row, grows up to 10 as user types multi-line
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = 10
 	ta.SetHeight(1)
 	ta.Focus()
 
@@ -223,11 +228,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showThinking = !m.showThinking
 			m.viewport.SetContent(m.renderMessages())
 			return m, nil
+		case "shift+enter", "alt+enter", "ctrl+j":
+			// Insert a newline in the textarea (multi-line input)
+			if !m.streaming {
+				var cmd tea.Cmd
+				// Forward an enter keypress to textarea (it handles newline insertion)
+				enterMsg := tea.KeyPressMsg{Code: tea.KeyEnter}
+				m.input, cmd = m.input.Update(enterMsg)
+				m.recalcLayout()
+				return m, cmd
+			}
+			return m, nil
 		case "enter":
 			if !m.streaming {
 				text := strings.TrimSpace(m.input.Value())
 				if text != "" {
 					m.input.Reset()
+					m.input.SetHeight(1)
+					m.recalcLayout()
 					return m, m.submitMessage(text)
 				}
 			}
@@ -499,7 +517,8 @@ func (m Model) View() tea.View {
 
 	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
+	// Use MouseModeNone to allow native terminal text selection (copy/paste).
+	// The viewport still handles scroll via keyboard (pgup/pgdn/arrows).
 	return view
 }
 
@@ -569,11 +588,11 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 func (m *Model) recalcLayout() {
 	// Fixed height elements:
 	// - Status bar: 1 line
-	// - Input area: 3 lines (1 content + 2 border)
+	// - Input area: textarea height + 2 (border)
 	// - Todo bar: 1 line
 	// - Help bar: 1 line
-	// Total fixed: 6
-	headerFooter := 6
+	inputHeight := m.input.Height() + 2
+	headerFooter := 1 + inputHeight + 1 + 1 // status + input + todo + help
 	if m.todoExpanded && !m.todos.IsEmpty() {
 		todoLines := min(len(m.todos.Items())+2, 8)
 		headerFooter += todoLines
@@ -871,6 +890,7 @@ func (m *Model) renderTodoPanel() string {
 func (m *Model) renderHelpBar() string {
 	keys := []struct{ key, desc string }{
 		{"enter", "send"},
+		{"shift+enter", "newline"},
 		{"ctrl+r", "thinking"},
 		{"ctrl+t", "tasks"},
 		{"ctrl+c", "quit"},
