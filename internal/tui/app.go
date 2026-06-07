@@ -489,9 +489,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	var vpCmd tea.Cmd
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	cmds = append(cmds, vpCmd)
+	// Only pass scroll-related events to the viewport.
+	// Passing all events (especially key events) causes the viewport to
+	// interfere with scroll position while the user is typing.
+	switch msg.(type) {
+	case tea.MouseMsg, tea.WindowSizeMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
