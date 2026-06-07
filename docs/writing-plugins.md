@@ -295,11 +295,122 @@ Because the interface is gRPC, plugins can be written in **any language** that s
 
 For non-Go plugins, implement the handshake protocol directly. See [HashiCorp go-plugin docs](https://github.com/hashicorp/go-plugin) for cross-language examples.
 
+## Proto-Defined Inputs (Cross-Language Path)
+
+For plugins where **multiple languages share the same input definition**, or where you want a formal API contract, you can define your tool input as a protobuf message and derive the JSON Schema from it.
+
+### Defining the Input Proto
+
+```protobuf
+// plugins/cuttlebone-my-tool/input.proto
+syntax = "proto3";
+package mytool.v1;
+option go_package = "cuttlebone-my-tool/inputpb;inputpb";
+
+message MyToolInput {
+  // The search query to execute
+  string query = 1;
+  // Maximum number of results to return
+  int32 max_results = 2;
+  // Output format
+  OutputFormat format = 3;
+}
+
+enum OutputFormat {
+  OUTPUT_FORMAT_UNSPECIFIED = 0;
+  OUTPUT_FORMAT_JSON = 1;
+  OUTPUT_FORMAT_TABLE = 2;
+  OUTPUT_FORMAT_CSV = 3;
+}
+```
+
+### Using Proto Schema in Go
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+
+    pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
+    "github.com/codecuttle/codecuttlectl/internal/pluginkit"
+    "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
+    "google.golang.org/protobuf/encoding/protojson"
+
+    inputpb "cuttlebone-my-tool/inputpb"
+)
+
+type myTool struct{}
+
+func (t *myTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
+    msg := &inputpb.MyToolInput{}
+    return &pb.DescribeResponse{
+        Name:        "my_tool",
+        Description: "Search with structured input",
+        InputSchema: schema.MustProtoSchemaWithOptions(
+            msg.ProtoReflect().Descriptor(),
+            schema.ProtoSchemaOptions{
+                Required: []string{"query"},
+                Descriptions: map[string]string{
+                    "query":      "The search query to execute",
+                    "maxResults": "Maximum number of results (default 10)",
+                    "format":     "Output format: OUTPUT_FORMAT_JSON, OUTPUT_FORMAT_TABLE, or OUTPUT_FORMAT_CSV",
+                },
+            },
+        ),
+        Version: "1.0.0",
+    }, nil
+}
+
+func (t *myTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
+    var input inputpb.MyToolInput
+    // Use protojson for lenient parsing (handles LLM quirks for int64, enums, etc.)
+    if err := protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal([]byte(req.Input), &input); err != nil {
+        return &pb.ExecuteResponse{IsError: true, ErrorMessage: err.Error()}, nil
+    }
+
+    // Use typed fields directly
+    _ = input.Query
+    _ = input.MaxResults
+    _ = input.Format
+    return &pb.ExecuteResponse{Output: "result"}, nil
+}
+```
+
+### Key Differences from Go Struct Path
+
+| Aspect | Go Struct Path | Proto Path |
+|--------|---------------|-----------|
+| Input definition | Go struct with tags | `.proto` message |
+| Schema derivation | `schema.MustSchema(&s{})` | `schema.MustProtoSchema(md)` |
+| JSON parsing | `json.Unmarshal` | `protojson.Unmarshal` |
+| Cross-language | Go only | Any language with protoc |
+| Field naming | Explicit via `json` tag | camelCase (proto default) or snake_case |
+| Required fields | Via `jsonschema:"required"` tag | Via `ProtoSchemaOptions.Required` |
+| Descriptions | Via `jsonschema_description` tag | Via `ProtoSchemaOptions.Descriptions` |
+| Enums | Via `jsonschema:"enum=..."` tag | Auto-derived from proto enum values |
+| LLM flexibility | `FlexInt` handles string/int | `protojson` handles int64-as-string natively |
+
+### When to Use Proto Path
+
+- Multiple languages implement the same tool (Python + Go + Rust)
+- Formal API contract needed (internal systems, shared tooling)
+- Existing `.proto` definitions you want to expose as tool inputs
+- Enums with many values (auto-derived from proto enum definition)
+
+### When to Use Go Struct Path
+
+- Go-only plugins (simpler, fewer moving parts)
+- Rapid iteration (no codegen step)
+- `FlexInt`/`FlexBool` LLM tolerance needed (proto path is stricter)
+- Plugin being scaffolded by `scaffold_plugin` (generates Go structs)
+
 ## Packages for Plugin Authors
 
 | Package | Purpose |
 |---------|---------|
 | `internal/pluginkit` | `Serve()`, `EmbedSkill()`, `NewSkill()` |
-| `internal/pluginkit/schema` | `MustSchema()`, `FromStruct()`, `Validate()` |
+| `internal/pluginkit/schema` | `MustSchema()`, `FromStruct()`, `MustProtoSchema()`, `FromProtoDescriptor()`, `Validate()` |
 | `internal/pluginkit/types` | `FlexInt`, `FlexBool` (LLM-tolerant types) |
 | `internal/cuttlebone/v1` | Generated protobuf types (`DescribeResponse`, etc.) |
