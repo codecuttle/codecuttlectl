@@ -59,8 +59,7 @@ var (
 			Bold(true)
 
 	UserBodyStyle = lipgloss.NewStyle().
-			Foreground(colorBright).
-			PaddingLeft(2)
+			Foreground(colorBright)
 
 	// Assistant: green prefix, normal text
 	AssistantPrefixStyle = lipgloss.NewStyle().

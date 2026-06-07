@@ -127,7 +127,7 @@ func New(cfg Config) Model {
 
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStylePath("dark"),
-		glamour.WithWordWrap(200), // Wide enough to avoid clipping table content
+		glamour.WithWordWrap(0), // Will be re-created on WindowSizeMsg with actual width
 	)
 
 	m := Model{
@@ -253,8 +253,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inReasoning = false
 		}
 		m.streamBuf.WriteString(msg.Text)
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		// Throttle viewport updates during streaming: only re-render when
+		// we receive a newline (paragraph boundary) or every 200 bytes.
+		// This prevents layout thrashing from partial markdown re-interpretation.
+		if strings.HasSuffix(msg.Text, "\n") || m.streamBuf.Len()%200 < len(msg.Text) {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
 		return m, m.readNextStreamEvent()
 
 	case StreamReasoningMsg:
@@ -587,6 +592,20 @@ func (m *Model) recalcLayout() {
 	}
 
 	m.input.SetWidth(m.width - 4)
+
+	// Re-create the markdown renderer with the correct word-wrap width.
+	// Subtract 6 for padding/margins that glamour applies internally.
+	wrapWidth := m.width - 6
+	if wrapWidth < 40 {
+		wrapWidth = 40
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylePath("dark"),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	if err == nil {
+		m.mdRenderer = renderer
+	}
 }
 
 // --- Actions ---
@@ -881,7 +900,12 @@ func (m *Model) renderMessages() string {
 		switch msg.role {
 		case "user":
 			prefix := UserPrefixStyle.Render(" ❯ ")
-			body := UserBodyStyle.Render(msg.content)
+			// Wrap user message to viewport width
+			maxW := m.width - 6
+			if maxW < 20 {
+				maxW = 20
+			}
+			body := UserBodyStyle.Width(maxW).Render(msg.content)
 			lines = append(lines, prefix+body, "")
 
 		case "reasoning":
@@ -914,9 +938,9 @@ func (m *Model) renderMessages() string {
 
 		case "tool_result":
 			if msg.isError {
-				lines = append(lines, ToolResultErrorStyle.Render("  ✗ "+msg.content), "")
+				lines = append(lines, ToolResultErrorStyle.Width(m.width-6).Render("  ✗ "+truncateToolResult(msg.content, 200)), "")
 			} else {
-				lines = append(lines, ToolResultSuccessStyle.Render("  ✓ "+truncateToolResult(msg.content, 200)), "")
+				lines = append(lines, ToolResultSuccessStyle.Width(m.width-6).Render("  ✓ "+truncateToolResult(msg.content, 200)), "")
 			}
 		}
 	}
@@ -940,15 +964,12 @@ func (m *Model) renderMessages() string {
 		if m.streamBuf.Len() > 0 {
 			prefix := AssistantPrefixStyle.Render(" ◆ ")
 			lines = append(lines, prefix+"codecuttle")
-			// Progressive markdown rendering during streaming
+			// During streaming, show plain text (not markdown-rendered) to avoid
+			// layout jumps as partial markdown is re-interpreted each frame.
+			// Markdown rendering happens once the message is finalized.
 			content := sanitizeModelText(m.streamBuf.String())
 			if strings.TrimSpace(content) != "" {
-				rendered := m.renderMarkdown(content)
-				if rendered != "" {
-					lines = append(lines, rendered)
-				} else {
-					lines = append(lines, content)
-				}
+				lines = append(lines, m.wrapText(content))
 			}
 			lines = append(lines, StreamingCursorStyle.Render("█"))
 		} else if !m.inReasoning && m.streamBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
@@ -962,16 +983,48 @@ func (m *Model) renderMessages() string {
 // renderMarkdown renders markdown text using glamour.
 func (m *Model) renderMarkdown(text string) string {
 	if m.mdRenderer == nil || strings.TrimSpace(text) == "" {
-		return text
+		return m.wrapText(text)
 	}
 
 	rendered, err := m.mdRenderer.Render(text)
 	if err != nil {
-		return text
+		return m.wrapText(text)
 	}
 
 	// Glamour output includes trailing newlines, trim them
 	return strings.TrimRight(rendered, "\n")
+}
+
+// wrapText manually wraps text lines that exceed the viewport width.
+// This is the fallback when glamour isn't used or for non-markdown content.
+func (m *Model) wrapText(text string) string {
+	if m.width <= 0 {
+		return text
+	}
+	maxW := m.width - 4 // Leave margin for padding
+	if maxW < 20 {
+		maxW = 20
+	}
+
+	var result strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if lipgloss.Width(line) <= maxW {
+			result.WriteString(line)
+			result.WriteString("\n")
+			continue
+		}
+		// Hard-wrap long lines at maxW characters
+		for len(line) > 0 {
+			end := maxW
+			if end > len(line) {
+				end = len(line)
+			}
+			result.WriteString(line[:end])
+			result.WriteString("\n")
+			line = line[end:]
+		}
+	}
+	return strings.TrimRight(result.String(), "\n")
 }
 
 func truncateToolResult(s string, maxLen int) string {
