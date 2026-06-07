@@ -1102,8 +1102,24 @@ func (m *Model) renderMessages() string {
 				lines = append(lines, m.wrapText(content))
 			}
 			lines = append(lines, StreamingCursorStyle.Render("█"))
-		} else if !m.inReasoning && m.streamBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
-			lines = append(lines, "", SpinnerStyle.Render("  "+m.spinner.View()+" thinking..."))
+		} else if !m.inReasoning && m.streamBuf.Len() == 0 && m.reasoningBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
+			// Only show the "thinking..." spinner if no tool calls or results
+			// have appeared yet in this streaming round. Otherwise, the model
+			// is processing tool results — the tool_call/result messages are
+			// already visible and sufficient feedback.
+			hasToolActivity := false
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "user" {
+					break
+				}
+				if m.messages[i].role == "tool_call" || m.messages[i].role == "tool_result" {
+					hasToolActivity = true
+					break
+				}
+			}
+			if !hasToolActivity {
+				lines = append(lines, "", SpinnerStyle.Render("  "+m.spinner.View()+" thinking..."))
+			}
 		}
 	}
 
