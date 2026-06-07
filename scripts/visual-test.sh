@@ -54,23 +54,24 @@ launch_terminal() {
     local cols="${1:-$TERM_COLS}"
     local rows="${2:-$TERM_ROWS}"
 
-    echo "[test] Launching xterm (${cols}x${rows})"
-    xterm -geometry "${cols}x${rows}+0+0" \
-        -fa "DejaVu Sans Mono" -fs 11 \
-        -bg black -fg white \
-        -e bash -c "export TERM=xterm-256color; exec bash" &
+    echo "[test] Launching mlterm (${cols}x${rows})"
+    DISPLAY=:99 mlterm -g "${cols}x${rows}" \
+        -w 14 \
+        -b "#1a1b1e" -f "#dee2e6" \
+        --boxdraw=unicode \
+        -y xterm-256color \
+        -e bash -c "export COLORTERM=truecolor LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; exec bash" &
     TERM_PID=$!
-    sleep 1
+    sleep 2
 
-    # Find the xterm window
-    TERM_WID=$(xdotool search --pid $TERM_PID --name "" 2>/dev/null | head -1)
+    # Find the mlterm window
+    TERM_WID=$(xdotool search --pid $TERM_PID 2>/dev/null | head -1)
     if [ -z "$TERM_WID" ]; then
-        # Fallback: search by class
-        TERM_WID=$(xdotool search --class "XTerm" 2>/dev/null | tail -1)
+        TERM_WID=$(xdotool search --class "mlterm" 2>/dev/null | tail -1)
     fi
 
     if [ -z "$TERM_WID" ]; then
-        echo "ERROR: Could not find xterm window"
+        echo "ERROR: Could not find mlterm window"
         exit 1
     fi
 
