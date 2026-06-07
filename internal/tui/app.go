@@ -982,9 +982,13 @@ func (m *Model) renderMessages() string {
 				header := ReasoningPrefixStyle.Render("  ◇ thinking")
 				lines = append(lines, header)
 				content := strings.TrimSpace(msg.content)
+				maxW := m.width - 8 // 4 indent + padding
+				if maxW < 20 {
+					maxW = 20
+				}
 				for _, line := range strings.Split(content, "\n") {
 					if strings.TrimSpace(line) != "" {
-						lines = append(lines, "    "+ReasoningBodyStyle.Render(line))
+						lines = append(lines, "    "+ReasoningBodyStyle.Width(maxW).Render(line))
 					}
 				}
 				lines = append(lines, "")
@@ -1020,17 +1024,19 @@ func (m *Model) renderMessages() string {
 			header := ReasoningPrefixStyle.Render("  ◇ thinking...")
 			lines = append(lines, header)
 			content := m.reasoningBuf.String()
+			maxW := m.width - 8 // 4 indent + padding
+			if maxW < 20 {
+				maxW = 20
+			}
 			for _, line := range strings.Split(content, "\n") {
 				if strings.TrimSpace(line) != "" {
-					lines = append(lines, "    "+ReasoningBodyStyle.Render(line))
+					lines = append(lines, "    "+ReasoningBodyStyle.Width(maxW).Render(line))
 				}
 			}
 			lines = append(lines, StreamingCursorStyle.Render("    █"))
 		} else if m.inReasoning && !m.showThinking {
 			lines = append(lines, ReasoningCollapsedStyle.Render("  ◇ thinking..."))
-		}
-
-		if m.streamBuf.Len() > 0 {
+		} else if m.streamBuf.Len() > 0 {
 			prefix := AssistantPrefixStyle.Render(" ◆ ")
 			lines = append(lines, prefix+"codecuttle")
 			// During streaming, show plain text (not markdown-rendered) to avoid
