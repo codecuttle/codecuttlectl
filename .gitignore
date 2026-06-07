@@ -38,5 +38,9 @@ go.work.sum
 
 # TUI test artifacts
 testdata/screenshots/
+testdata/visual-frames/
 scripts/__pycache__/
 *.pyc
+
+# Visual test env (contains credentials)
+.env.visual-test

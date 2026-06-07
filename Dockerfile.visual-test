@@ -1,0 +1,73 @@
+FROM ubuntu:24.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Core: virtual display, VNC, input injection, capture tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb \
+    x11vnc \
+    xdotool \
+    xterm \
+    mlterm \
+    imagemagick \
+    ffmpeg \
+    scrot \
+    novnc \
+    websockify \
+    fonts-dejavu-core \
+    fonts-noto-mono \
+    ca-certificates \
+    curl \
+    git \
+    bash \
+    make \
+    bc \
+    locales \
+    && rm -rf /var/lib/apt/lists/*
+
+# Generate UTF-8 locale (required for proper Unicode rendering)
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# Optional: OCR for text extraction from frames
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go
+ARG GO_VERSION=1.25.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+
+# Working directory
+WORKDIR /app
+
+# Copy go.mod/go.sum first for layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build everything
+RUN make all
+
+# Entrypoint
+COPY scripts/visual-test-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Environment
+ENV DISPLAY=:99
+ENV TERM=xterm-256color
+ENV SCREEN_WIDTH=1920
+ENV SCREEN_HEIGHT=1080
+ENV FRAME_DIR=/tmp/frames
+ENV C3_BINARY=/app/bin/codecuttlectl
+ENV PLUGIN_DIR=/app/bin/plugins
+
+EXPOSE 5900 6080
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

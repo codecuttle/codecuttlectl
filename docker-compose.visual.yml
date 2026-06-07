@@ -1,0 +1,35 @@
+# Visual Testing Harness
+#
+# Usage:
+#   docker compose -f docker-compose.visual.yml build
+#   docker compose -f docker-compose.visual.yml run --rm visual-test ./scripts/visual-test.sh basic
+#   docker compose -f docker-compose.visual.yml up -d   # Start with noVNC for manual observation
+#
+# noVNC: http://localhost:6080/vnc.html
+# Frames: mounted at ./testdata/visual-frames/ on the host
+
+services:
+  visual-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.visual-test
+    ports:
+      - "6080:6080"   # noVNC web UI
+      - "5900:5900"   # VNC (for native VNC clients)
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+      - ENABLE_VNC=true
+      - TERM_COLS=100
+      - TERM_ROWS=30
+      - FRAME_FPS=4
+      - CAPTURE_DURATION=10
+      - AWS_REGION=us-west-2
+    volumes:
+      - ./testdata/visual-frames:/tmp/frames
+      - ${HOME}/.aws:/root/.aws:ro
+    # Use host network to access EC2 instance metadata (169.254.169.254)
+    # which provides IAM role credentials for Bedrock access.
+    network_mode: host
+    stdin_open: true
+    tty: true
