@@ -90,6 +90,10 @@ type Model struct {
 	height int
 	ready  bool
 
+	// Mouse mode toggle: when true, mouse is captured (scroll works).
+	// When false, terminal handles mouse natively (text selection works).
+	mouseEnabled bool
+
 	// Markdown renderer
 	mdRenderer *glamour.TermRenderer
 }
@@ -148,6 +152,7 @@ func New(cfg Config) Model {
 		messages:         []chatMessage{},
 		streamBuf:        &strings.Builder{},
 		reasoningBuf:     &strings.Builder{},
+		mouseEnabled:     true,
 		currentToolInput: &strings.Builder{},
 		showThinking:     true,
 		mdRenderer:       renderer,
@@ -227,6 +232,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+r":
 			m.showThinking = !m.showThinking
 			m.viewport.SetContent(m.renderMessages())
+			return m, nil
+		case "ctrl+m":
+			// Toggle mouse mode: on = scroll wheel works, off = text selection works
+			m.mouseEnabled = !m.mouseEnabled
 			return m, nil
 		case "shift+enter", "alt+enter", "ctrl+j":
 			// Insert a newline in the textarea (multi-line input)
@@ -542,9 +551,12 @@ func (m Model) View() tea.View {
 
 	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
-	// MouseModeCellMotion enables scroll wheel events for viewport scrolling.
-	// Text selection works via shift+drag in VS Code terminal, iTerm2, kitty, etc.
-	view.MouseMode = tea.MouseModeCellMotion
+	if m.mouseEnabled {
+		// Mouse captured: scroll wheel works, shift+drag for selection
+		view.MouseMode = tea.MouseModeCellMotion
+	}
+	// When mouseEnabled is false, MouseMode defaults to None:
+	// native text selection works, use pgup/pgdown/ctrl+u/ctrl+d to scroll
 	return view
 }
 
@@ -927,6 +939,7 @@ func (m *Model) renderHelpBar() string {
 	keys := []struct{ key, desc string }{
 		{"enter", "send"},
 		{"shift+enter", "newline"},
+		{"ctrl+m", "mouse"},
 		{"ctrl+r", "thinking"},
 		{"ctrl+t", "tasks"},
 		{"ctrl+c", "quit"},
