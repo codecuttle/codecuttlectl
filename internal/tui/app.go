@@ -479,8 +479,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Pass remaining events to sub-components
 	if !m.streaming {
 		var cmd tea.Cmd
+		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+
+		// If textarea height changed (dynamic grow/shrink), recalculate layout
+		if m.input.Height() != prevHeight {
+			m.recalcLayout()
+		}
 	}
 
 	var vpCmd tea.Cmd
@@ -606,8 +612,16 @@ func (m *Model) recalcLayout() {
 	if !m.ready {
 		m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(vpHeight))
 	} else {
+		oldHeight := m.viewport.Height()
 		m.viewport.SetWidth(m.width)
 		m.viewport.SetHeight(vpHeight)
+
+		// When the viewport shrinks (textarea grew), adjust scroll position
+		// to keep the bottom of the content visible. This prevents the
+		// textarea from covering up the chat history where the user was reading.
+		if vpHeight < oldHeight {
+			m.viewport.GotoBottom()
+		}
 	}
 
 	m.input.SetWidth(m.width - 4)

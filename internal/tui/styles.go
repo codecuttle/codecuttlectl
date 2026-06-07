@@ -15,11 +15,13 @@ var (
 	colorHoney       = lipgloss.Color("#f4a261")
 	colorRed         = lipgloss.Color("#ef476f")
 
-	// Neutrals
+	// Neutrals — chosen for selection visibility.
+	// Most terminals invert fg/bg for selection, so having distinct fg colors
+	// from the background ensures highlighted text remains readable.
 	colorDim    = lipgloss.Color("#6c757d")
 	colorMuted  = lipgloss.Color("#495057")
-	colorText   = lipgloss.Color("#dee2e6")
-	colorBright = lipgloss.Color("#f8f9fa")
+	colorText   = lipgloss.Color("#e9ecef")
+	colorBright = lipgloss.Color("#ffffff")
 
 	// Surfaces (Material Design: elevation via subtle color shifts)
 	colorSurface0 = lipgloss.Color("#1a1b1e") // Base (input area fill)
