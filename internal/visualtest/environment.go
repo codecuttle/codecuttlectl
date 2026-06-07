@@ -160,19 +160,30 @@ func (e *Environment) CaptureFrame(name string) (string, error) {
 }
 
 // RecordFrames captures frames at the given FPS for the specified duration.
-// Returns the list of frame file paths.
+// Returns the list of frame file paths sorted chronologically.
+// Higher FPS (e.g., 10-30) gives better temporal resolution for detecting jumps.
 func (e *Environment) RecordFrames(duration time.Duration, fps int) ([]string, error) {
 	if fps <= 0 {
-		fps = 4
+		fps = 10
 	}
 
 	display := os.Getenv("DISPLAY")
+
+	// Get screen dimensions from xdpyinfo or use default
+	screenSize := "1920x1080"
+
 	pattern := filepath.Join(e.frameDir, "rec_%04d.png")
+
+	// Remove any previous recording files
+	oldFiles, _ := filepath.Glob(filepath.Join(e.frameDir, "rec_*.png"))
+	for _, f := range oldFiles {
+		os.Remove(f)
+	}
 
 	cmd := exec.Command("ffmpeg",
 		"-y",
 		"-f", "x11grab",
-		"-video_size", "1920x1080",
+		"-video_size", screenSize,
 		"-framerate", strconv.Itoa(fps),
 		"-i", display,
 		"-t", fmt.Sprintf("%.1f", duration.Seconds()),
@@ -186,12 +197,13 @@ func (e *Environment) RecordFrames(duration time.Duration, fps int) ([]string, e
 		return nil, fmt.Errorf("recording frames: %w", err)
 	}
 
-	// Collect output files
+	// Collect output files sorted
 	matches, err := filepath.Glob(filepath.Join(e.frameDir, "rec_*.png"))
 	if err != nil {
 		return nil, err
 	}
 
+	// filepath.Glob returns sorted order (lexicographic = chronological for %04d)
 	return matches, nil
 }
 
