@@ -253,8 +253,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inReasoning = false
 		}
 		m.streamBuf.WriteString(msg.Text)
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		// Throttle viewport updates during streaming: only re-render when
+		// we receive a newline (paragraph boundary) or every 200 bytes.
+		// This prevents layout thrashing from partial markdown re-interpretation.
+		if strings.HasSuffix(msg.Text, "\n") || m.streamBuf.Len()%200 < len(msg.Text) {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
 		return m, m.readNextStreamEvent()
 
 	case StreamReasoningMsg:
@@ -959,15 +964,12 @@ func (m *Model) renderMessages() string {
 		if m.streamBuf.Len() > 0 {
 			prefix := AssistantPrefixStyle.Render(" ◆ ")
 			lines = append(lines, prefix+"codecuttle")
-			// Progressive markdown rendering during streaming
+			// During streaming, show plain text (not markdown-rendered) to avoid
+			// layout jumps as partial markdown is re-interpreted each frame.
+			// Markdown rendering happens once the message is finalized.
 			content := sanitizeModelText(m.streamBuf.String())
 			if strings.TrimSpace(content) != "" {
-				rendered := m.renderMarkdown(content)
-				if rendered != "" {
-					lines = append(lines, rendered)
-				} else {
-					lines = append(lines, content)
-				}
+				lines = append(lines, m.wrapText(content))
 			}
 			lines = append(lines, StreamingCursorStyle.Render("█"))
 		} else if !m.inReasoning && m.streamBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
