@@ -18,12 +18,14 @@ func (FlexInt) JSONSchema() *jsonschema.Schema {
 // JSONSchema implements the jsonschema.JSONSchemaProperty interface for FlexBool.
 // This tells invopop/jsonschema to emit an accurate schema: the type accepts
 // a JSON boolean, an integer (0/1), or a string like "true"/"false".
+// The string variant uses a case-insensitive pattern rather than an enum to
+// avoid rejecting common LLM outputs like "True" or "FALSE" during validation.
 func (FlexBool) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		OneOf: []*jsonschema.Schema{
 			{Type: "boolean"},
 			{Type: "integer", Enum: []any{0, 1}},
-			{Type: "string", Enum: []any{"true", "false", "1", "0", "yes", "no"}},
+			{Type: "string", Pattern: "^(?i)(true|false|1|0|yes|no)$"},
 		},
 		Description: "Boolean value (accepts boolean, 0/1 integer, or string)",
 	}

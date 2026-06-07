@@ -259,3 +259,47 @@ func TestValidate_ExtraFieldsAllowed(t *testing.T) {
 		t.Errorf("expected extra fields to be allowed, got error: %v", err)
 	}
 }
+
+func TestValidate_FlexBool_AcceptsCasings(t *testing.T) {
+	schema := MustSchema(&testBoolInput{})
+
+	// All of these are valid according to FlexBool.UnmarshalJSON
+	valid := []string{
+		`{"path": "/tmp/x", "replace_all": true}`,
+		`{"path": "/tmp/x", "replace_all": false}`,
+		`{"path": "/tmp/x", "replace_all": "true"}`,
+		`{"path": "/tmp/x", "replace_all": "True"}`,
+		`{"path": "/tmp/x", "replace_all": "TRUE"}`,
+		`{"path": "/tmp/x", "replace_all": "false"}`,
+		`{"path": "/tmp/x", "replace_all": "False"}`,
+		`{"path": "/tmp/x", "replace_all": "FALSE"}`,
+		`{"path": "/tmp/x", "replace_all": "yes"}`,
+		`{"path": "/tmp/x", "replace_all": "Yes"}`,
+		`{"path": "/tmp/x", "replace_all": "YES"}`,
+		`{"path": "/tmp/x", "replace_all": "no"}`,
+		`{"path": "/tmp/x", "replace_all": "No"}`,
+		`{"path": "/tmp/x", "replace_all": "NO"}`,
+		`{"path": "/tmp/x", "replace_all": "1"}`,
+		`{"path": "/tmp/x", "replace_all": "0"}`,
+		`{"path": "/tmp/x", "replace_all": 1}`,
+		`{"path": "/tmp/x", "replace_all": 0}`,
+	}
+
+	for _, input := range valid {
+		if err := Validate(schema, []byte(input)); err != nil {
+			t.Errorf("expected valid: %s\n  got error: %v", input, err)
+		}
+	}
+
+	// These should be rejected by the schema (garbage strings)
+	invalid := []string{
+		`{"path": "/tmp/x", "replace_all": "maybe"}`,
+		`{"path": "/tmp/x", "replace_all": "2"}`,
+	}
+
+	for _, input := range invalid {
+		if err := Validate(schema, []byte(input)); err == nil {
+			t.Errorf("expected rejection: %s", input)
+		}
+	}
+}

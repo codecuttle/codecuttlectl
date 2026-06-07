@@ -306,7 +306,6 @@ func Diagnose(entries []session.InkEntry, lookback int) Diagnosis {
 			maxCount = count
 			diag.DominantClass = class
 		}
-		_ = class
 	}
 
 	// Detect looping: same tool failing 3+ times in the recent window
@@ -335,7 +334,6 @@ func Diagnose(entries []session.InkEntry, lookback int) Diagnosis {
 			diag.IsLooping = true
 			break
 		}
-		_ = file
 	}
 
 	// Escalation logic

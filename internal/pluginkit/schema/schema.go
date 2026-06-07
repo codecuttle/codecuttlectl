@@ -160,13 +160,7 @@ func cleanSchema(m map[string]interface{}) map[string]interface{} {
 			}
 			result[k] = val
 		case float64:
-			if val == 0 {
-				// Keep explicit zeros for things like minItems
-				// but skip for version/id fields (already handled above)
-				result[k] = val
-			} else {
-				result[k] = val
-			}
+			result[k] = val
 		case bool:
 			// Keep all bools (including false — they're meaningful in schemas)
 			result[k] = val
