@@ -617,10 +617,12 @@ func (m *Model) recalcLayout() {
 		m.viewport.SetHeight(vpHeight)
 
 		// When the viewport shrinks (textarea grew), adjust scroll position
-		// to keep the bottom of the content visible. This prevents the
-		// textarea from covering up the chat history where the user was reading.
+		// so the same content remains visible. Instead of jumping to bottom,
+		// scroll down by exactly the number of lines lost — this preserves
+		// the user's scroll position relative to what they were reading.
 		if vpHeight < oldHeight {
-			m.viewport.GotoBottom()
+			linesLost := oldHeight - vpHeight
+			m.viewport.ScrollDown(linesLost)
 		}
 	}
 
