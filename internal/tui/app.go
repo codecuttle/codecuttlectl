@@ -59,6 +59,9 @@ type Model struct {
 	streamBuf *strings.Builder
 	streamCh  <-chan bedrock.StreamEvent // Active stream channel
 
+	// Interrupt state
+	interruptPending bool // true when user pressed esc once, waiting for confirmation
+
 	// Reasoning/thinking state
 	reasoningBuf       *strings.Builder
 	reasoningSignature string
@@ -260,6 +263,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
+			if m.streaming {
+				if m.interruptPending {
+					// Second esc: confirm interrupt — stop the stream
+					m.streaming = false
+					m.streamCh = nil
+					m.interruptPending = false
+					// Finalize any partial content as the response
+					if m.streamBuf.Len() > 0 {
+						content := m.streamBuf.String()
+						m.messages = append(m.messages, chatMessage{
+							role:    "assistant",
+							content: sanitizeModelText(content) + "\n\n*(interrupted)*",
+						})
+						m.history = append(m.history, bedrock.BuildAssistantMessage(
+							[]types.ContentBlock{
+								&types.ContentBlockMemberText{Value: content},
+							},
+						))
+						m.streamBuf.Reset()
+					} else if m.reasoningBuf.Len() > 0 {
+						m.messages = append(m.messages, chatMessage{
+							role:    "reasoning",
+							content: m.reasoningBuf.String(),
+						})
+						m.reasoningBuf.Reset()
+					}
+					m.inReasoning = false
+					m.pendingToolCalls = nil
+					m.messages = append(m.messages, chatMessage{
+						role:    "assistant",
+						content: "*(generation interrupted by user)*",
+					})
+					m.saveSession()
+					m.viewport.SetContent(m.renderMessages())
+					m.viewport.GotoBottom()
+					return m, nil
+				}
+				// First esc: show confirmation prompt
+				m.interruptPending = true
+				m.viewport.SetContent(m.renderMessages())
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+			// Not streaming: clear interrupt state, handle other esc uses
+			m.interruptPending = false
 			if m.todoExpanded {
 				m.todoExpanded = false
 				m.recalcLayout()
@@ -270,6 +318,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Stream event handling ---
 
 	case StreamTextMsg:
+		// Clear interrupt pending on new content (user didn't confirm)
+		m.interruptPending = false
 		// If we were in reasoning, finalize it before text starts
 		if m.inReasoning && m.reasoningBuf.Len() > 0 {
 			m.messages = append(m.messages, chatMessage{
@@ -869,7 +919,12 @@ func (m *Model) renderInput() string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderColor).
 			Padding(0, 1)
-		content := SpinnerStyle.Render(m.spinner.View()) + " thinking..."
+		var content string
+		if m.interruptPending {
+			content = ErrorStyle.Render("Press esc again to interrupt, or wait...")
+		} else {
+			content = SpinnerStyle.Render(m.spinner.View()) + " thinking..."
+		}
 		return style.Width(m.width - 4).Render(content)
 	}
 	return InputActiveStyle.Width(m.width - 4).Render(m.input.View())
