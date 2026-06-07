@@ -2,7 +2,9 @@
 
 Cuttlebone plugins are standalone executables that communicate with the orchestrator via gRPC over Unix domain sockets using the HashiCorp go-plugin framework.
 
-## Minimal Tool Plugin
+## Minimal Tool Plugin (Recommended: Typed Schema)
+
+The recommended approach uses annotated Go structs for input definition. The JSON Schema is auto-derived via `schema.MustSchema()` — one source of truth, no schema/struct drift.
 
 ```go
 package main
@@ -14,21 +16,20 @@ import (
 
     pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
     "github.com/codecuttle/codecuttlectl/internal/pluginkit"
+    "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 type myTool struct{}
+
+type myToolInput struct {
+    Query string `json:"query" jsonschema:"required" jsonschema_description:"The search query"`
+}
 
 func (t *myTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
     return &pb.DescribeResponse{
         Name:        "my_tool",
         Description: "One-line description shown to the LLM",
-        InputSchema: `{
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query"}
-            },
-            "required": ["query"]
-        }`,
+        InputSchema: schema.MustSchema(&myToolInput{}),
         LlmContextHint: "Use my_tool when the user asks about X.",
         Version:         "1.0.0",
         Capabilities: &pb.ToolCapabilities{
@@ -39,9 +40,7 @@ func (t *myTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 }
 
 func (t *myTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
-    var params struct {
-        Query string `json:"query"`
-    }
+    var params myToolInput
     if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
         return &pb.ExecuteResponse{IsError: true, ErrorMessage: err.Error()}, nil
     }
@@ -58,6 +57,53 @@ func main() {
 }
 ```
 
+## Input Struct Tags
+
+The schema derivation system uses these struct tags:
+
+| Tag | Purpose | Example |
+|-----|---------|---------|
+| `json:"name"` | JSON field name | `json:"max_results,omitempty"` |
+| `jsonschema:"required"` | Mark field as required | `jsonschema:"required"` |
+| `jsonschema:"enum=a,enum=b"` | Enumerate valid values | `jsonschema:"enum=status,enum=log,enum=diff"` |
+| `jsonschema_description:"..."` | Human/LLM-readable description | `jsonschema_description:"Timeout in seconds"` |
+
+Fields with `,omitempty` in the json tag are treated as optional (not required).
+
+## Shared Types for LLM Quirks
+
+The `pluginkit/types` package provides types that handle common LLM JSON generation issues:
+
+### `types.FlexInt`
+
+LLMs frequently emit integers as strings (`"5"` instead of `5`). `FlexInt` accepts both forms transparently:
+
+```go
+import "github.com/codecuttle/codecuttlectl/internal/pluginkit/types"
+
+type myInput struct {
+    Timeout types.FlexInt `json:"timeout,omitempty" jsonschema_description:"Timeout in seconds"`
+}
+
+// In Execute():
+timeout := params.Timeout.Int()  // Always returns int, regardless of JSON form
+```
+
+The generated schema accurately reflects this: `oneOf[integer, string{pattern: "^-?[0-9]+$"}]`
+
+### `types.FlexBool`
+
+Handles `true`, `"true"`, `"yes"`, `1`, etc.:
+
+```go
+type myInput struct {
+    Force types.FlexBool `json:"force,omitempty" jsonschema_description:"Force the operation"`
+}
+
+// In Execute():
+if params.Force.Bool() { ... }
+```
+
 ## Plugin with Embedded Skills
 
 Plugins can ship versioned knowledge alongside their tools:
@@ -68,10 +114,10 @@ package main
 import (
     "context"
     "embed"
-    "encoding/json"
 
     pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
     "github.com/codecuttle/codecuttlectl/internal/pluginkit"
+    "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 //go:embed skills/*
@@ -79,11 +125,15 @@ var skillFS embed.FS
 
 type myTool struct{}
 
+type myToolInput struct {
+    Input string `json:"input" jsonschema:"required" jsonschema_description:"The input to process"`
+}
+
 func (t *myTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
     return &pb.DescribeResponse{
         Name:        "my_tool",
         Description: "Does something useful",
-        InputSchema: `{"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}`,
+        InputSchema: schema.MustSchema(&myToolInput{}),
         Version:     "2.0.0",
         Skills: []*pb.Skill{
             pluginkit.EmbedSkill(skillFS, "skills/workflow.md",
@@ -110,6 +160,7 @@ import (
 
     pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
     "github.com/codecuttle/codecuttlectl/internal/pluginkit"
+    "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 //go:embed skills/*
@@ -121,7 +172,7 @@ func (t *knowledgePlugin) Describe(ctx context.Context) (*pb.DescribeResponse, e
     return &pb.DescribeResponse{
         Name:        "domain_knowledge",
         Description: "Domain-specific knowledge (no tool)",
-        InputSchema: `{"type": "object", "properties": {}}`,
+        InputSchema: schema.MustSchema(&struct{}{}),
         Version:     "1.0.0",
         Skills: []*pb.Skill{
             pluginkit.EmbedSkill(skillFS, "skills/debugging.md",
@@ -162,7 +213,7 @@ Binary must be named `cuttlebone-<name>` (e.g., `cuttlebone-git`). The orchestra
 |-------|----------|---------|
 | `name` | Yes | Unique tool identifier (used in LLM tool_use blocks) |
 | `description` | Yes | Shown to LLM alongside the tool definition |
-| `input_schema` | Yes | JSON Schema string defining input parameters |
+| `input_schema` | Yes | JSON Schema string (use `schema.MustSchema(&input{})`) |
 | `llm_context_hint` | No | Extra guidance injected into the system prompt |
 | `version` | No | Semantic version for tracking |
 | `capabilities` | No | Declares timeout, cancellation, confirmation support |
@@ -186,26 +237,9 @@ Triggers determine when a skill is injected into the LLM context:
 
 Combine with `|` (OR): `on_error:compile|on_language:go`
 
-### Flexible JSON Parsing
+### Input Validation
 
-LLMs often emit numbers as strings (`"5"` instead of `5`). Handle this in your input parsing:
-
-```go
-type flexInt int
-
-func (f *flexInt) UnmarshalJSON(data []byte) error {
-    var i int
-    if err := json.Unmarshal(data, &i); err == nil {
-        *f = flexInt(i)
-        return nil
-    }
-    var s string
-    if err := json.Unmarshal(data, &s); err == nil {
-        fmt.Sscanf(s, "%d", (*int)(f))
-    }
-    return nil
-}
-```
+The orchestrator validates tool input against the declared JSON Schema **before** sending it to the plugin. If validation fails, the LLM receives a clear error message and can fix its input on the next iteration. This is enabled by default and can be controlled via `Manager.SetValidateInput(bool)`.
 
 ### Error Handling
 
@@ -226,6 +260,7 @@ The orchestrator provides:
 - **Execution timeout**: Per-plugin, declared in `Capabilities.MaxTimeoutSeconds`
 - **Crash recovery**: If your plugin crashes, it's automatically restarted (up to 3 times)
 - **Process isolation**: Panics/OOM in your plugin never crash the orchestrator
+- **Input validation**: Schema validation before execution catches malformed LLM output early
 
 ### Building and Installing
 
@@ -240,6 +275,16 @@ sudo cp cuttlebone-my-tool /usr/local/lib/codecuttlectl/plugins/
 c3 -message "Use tool_info to list all tools"
 ```
 
+### Scaffold Generator
+
+New plugins can be scaffolded via the `scaffold_plugin` built-in tool during a session. The agent calls it with a structured spec (tool name, description, parameters) and receives a buildable Go module with:
+- Annotated input struct with proper tags
+- `Describe()` using `schema.MustSchema()`
+- Stub `Execute()` ready for implementation
+- `go.mod` with the correct replace directive
+
+After building and installing the scaffold output, call `reload_plugins` to discover the new tool within the same session.
+
 ### Language Agnosticism
 
 Because the interface is gRPC, plugins can be written in **any language** that supports gRPC (Python, Rust, Java, TypeScript, etc.). They need to:
@@ -249,3 +294,12 @@ Because the interface is gRPC, plugins can be written in **any language** that s
 3. Serve on the negotiated Unix socket
 
 For non-Go plugins, implement the handshake protocol directly. See [HashiCorp go-plugin docs](https://github.com/hashicorp/go-plugin) for cross-language examples.
+
+## Packages for Plugin Authors
+
+| Package | Purpose |
+|---------|---------|
+| `internal/pluginkit` | `Serve()`, `EmbedSkill()`, `NewSkill()` |
+| `internal/pluginkit/schema` | `MustSchema()`, `FromStruct()`, `Validate()` |
+| `internal/pluginkit/types` | `FlexInt`, `FlexBool` (LLM-tolerant types) |
+| `internal/cuttlebone/v1` | Generated protobuf types (`DescribeResponse`, etc.) |

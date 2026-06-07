@@ -12,32 +12,23 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/types"
 )
 
 type globTool struct{}
+
+type globInput struct {
+	Pattern    string        `json:"pattern" jsonschema:"required" jsonschema_description:"Glob pattern to match files (e.g. '**/*.go', 'src/**/*.ts', 'Makefile')"`
+	Path       string        `json:"path,omitempty" jsonschema_description:"Base directory to search from. Defaults to working directory."`
+	MaxResults types.FlexInt `json:"max_results,omitempty" jsonschema_description:"Maximum number of results. Default: 100"`
+}
 
 func (t *globTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "glob",
 		Description: "Find files matching a glob pattern. Supports patterns like '**/*.go', 'src/**/*.ts', '*.md'. Returns matching file paths sorted by modification time (most recent first).",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"pattern": {
-					"type": "string",
-					"description": "Glob pattern to match files (e.g. '**/*.go', 'src/**/*.ts', 'Makefile')"
-				},
-				"path": {
-					"type": "string",
-					"description": "Base directory to search from. Defaults to working directory."
-				},
-				"max_results": {
-					"type": "integer",
-					"description": "Maximum number of results. Default: 100"
-				}
-			},
-			"required": ["pattern"]
-		}`,
+		InputSchema: schema.MustSchema(&globInput{}),
 		LlmContextHint: "Use glob to find files by name pattern before reading or editing them. Useful for discovering project structure, finding config files, or locating all files of a specific type.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -45,31 +36,6 @@ func (t *globTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 			MaxTimeoutSeconds:    15,
 		},
 	}, nil
-}
-
-type globInput struct {
-	Pattern    string  `json:"pattern"`
-	Path       string  `json:"path,omitempty"`
-	MaxResults flexInt `json:"max_results,omitempty"`
-}
-
-type flexInt int
-
-func (f *flexInt) UnmarshalJSON(data []byte) error {
-	var i int
-	if err := json.Unmarshal(data, &i); err == nil {
-		*f = flexInt(i)
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		var i2 int
-		fmt.Sscanf(s, "%d", &i2)
-		*f = flexInt(i2)
-		return nil
-	}
-	*f = 0
-	return nil
 }
 
 type fileResult struct {
@@ -98,7 +64,7 @@ func (t *globTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Exe
 		baseDir = "."
 	}
 
-	maxResults := int(params.MaxResults)
+	maxResults := params.MaxResults.Int()
 	if maxResults <= 0 {
 		maxResults = 100
 	}

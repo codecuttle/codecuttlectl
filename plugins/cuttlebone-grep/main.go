@@ -13,36 +13,24 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/types"
 )
 
 type grepTool struct{}
+
+type grepInput struct {
+	Pattern    string        `json:"pattern" jsonschema:"required" jsonschema_description:"Regular expression pattern to search for in file contents"`
+	Path       string        `json:"path,omitempty" jsonschema_description:"Directory to search in. Defaults to working directory."`
+	Include    string        `json:"include,omitempty" jsonschema_description:"File glob pattern to filter which files to search (e.g. '*.go', '*.{ts,tsx}')"`
+	MaxResults types.FlexInt `json:"max_results,omitempty" jsonschema_description:"Maximum number of matching lines to return. Default: 50"`
+}
 
 func (t *grepTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "grep",
 		Description: "Search file contents using a regular expression pattern. Returns matching file paths and line numbers. Optionally filter by file name pattern (glob). Searches recursively from the given directory.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"pattern": {
-					"type": "string",
-					"description": "Regular expression pattern to search for in file contents"
-				},
-				"path": {
-					"type": "string",
-					"description": "Directory to search in. Defaults to working directory."
-				},
-				"include": {
-					"type": "string",
-					"description": "File glob pattern to filter which files to search (e.g. '*.go', '*.{ts,tsx}')"
-				},
-				"max_results": {
-					"type": "integer",
-					"description": "Maximum number of matching lines to return. Default: 50"
-				}
-			},
-			"required": ["pattern"]
-		}`,
+		InputSchema: schema.MustSchema(&grepInput{}),
 		LlmContextHint: "Use grep to find files containing specific code patterns, function definitions, variable usages, or error messages. Supports full regex syntax. Use the include parameter to narrow results to specific file types.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -50,38 +38,6 @@ func (t *grepTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 			MaxTimeoutSeconds:    30,
 		},
 	}, nil
-}
-
-type grepInput struct {
-	Pattern    string  `json:"pattern"`
-	Path       string  `json:"path,omitempty"`
-	Include    string  `json:"include,omitempty"`
-	MaxResults flexInt `json:"max_results,omitempty"`
-}
-
-type flexInt int
-
-func (f *flexInt) UnmarshalJSON(data []byte) error {
-	var i int
-	if err := json.Unmarshal(data, &i); err == nil {
-		*f = flexInt(i)
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		for _, c := range s {
-			if c < '0' || c > '9' {
-				*f = 0
-				return nil
-			}
-		}
-		var i2 int
-		fmt.Sscanf(s, "%d", &i2)
-		*f = flexInt(i2)
-		return nil
-	}
-	*f = 0
-	return nil
 }
 
 func (t *grepTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
@@ -113,7 +69,7 @@ func (t *grepTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Exe
 		searchDir = "."
 	}
 
-	maxResults := int(params.MaxResults)
+	maxResults := params.MaxResults.Int()
 	if maxResults <= 0 {
 		maxResults = 50
 	}

@@ -10,36 +10,23 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 type editFileTool struct{}
+
+type editFileInput struct {
+	Path       string `json:"path" jsonschema:"required" jsonschema_description:"Absolute path to the file to edit"`
+	OldString  string `json:"old_string" jsonschema:"required" jsonschema_description:"The exact string to find and replace. Must match file content exactly including whitespace and newlines."`
+	NewString  string `json:"new_string" jsonschema:"required" jsonschema_description:"The replacement string"`
+	ReplaceAll bool   `json:"replace_all,omitempty" jsonschema_description:"If true, replace all occurrences. Default: false (replace first only)"`
+}
 
 func (t *editFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "edit_file",
 		Description: "Perform an exact string replacement in a file. Finds the first occurrence of 'old_string' and replaces it with 'new_string'. Use 'replace_all' to replace every occurrence. The file must exist. Always read a file before editing it to ensure you have the correct content to match.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"path": {
-					"type": "string",
-					"description": "Absolute path to the file to edit"
-				},
-				"old_string": {
-					"type": "string",
-					"description": "The exact string to find and replace. Must match file content exactly including whitespace and newlines."
-				},
-				"new_string": {
-					"type": "string",
-					"description": "The replacement string"
-				},
-				"replace_all": {
-					"type": "boolean",
-					"description": "If true, replace all occurrences. Default: false (replace first only)"
-				}
-			},
-			"required": ["path", "old_string", "new_string"]
-		}`,
+		InputSchema: schema.MustSchema(&editFileInput{}),
 		LlmContextHint: "Use edit_file for surgical modifications to existing files. Always read_file first to see current content. The old_string must match exactly — include sufficient surrounding context (3-5 lines) to ensure a unique match. Prefer edit_file over write_file when modifying existing files.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -47,13 +34,6 @@ func (t *editFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 			MaxTimeoutSeconds:    10,
 		},
 	}, nil
-}
-
-type editFileInput struct {
-	Path       string `json:"path"`
-	OldString  string `json:"old_string"`
-	NewString  string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
 func (t *editFileTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {

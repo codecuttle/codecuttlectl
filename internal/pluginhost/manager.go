@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
+	pluginschema "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 	"github.com/codecuttle/codecuttlectl/internal/skills"
 )
 
@@ -123,10 +124,11 @@ type ManagedPlugin struct {
 
 // Manager discovers, launches, and manages tool plugin subprocesses.
 type Manager struct {
-	mu      sync.RWMutex
-	plugins map[string]*ManagedPlugin
-	logger  hclog.Logger
-	skills  *skills.Registry
+	mu            sync.RWMutex
+	plugins       map[string]*ManagedPlugin
+	logger        hclog.Logger
+	skills        *skills.Registry
+	validateInput bool // When true, validate tool input against schema before execution
 }
 
 // NewManager creates a new plugin manager.
@@ -142,7 +144,8 @@ func NewManager(verbose bool) *Manager {
 			Level:  level,
 			Output: os.Stderr,
 		}),
-		skills: skills.NewRegistry(skills.DefaultBudget),
+		skills:        skills.NewRegistry(skills.DefaultBudget),
+		validateInput: true, // Enabled by default
 	}
 }
 
@@ -277,6 +280,15 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 		if err := m.restartPlugin(ctx, p); err != nil {
 			return fmt.Sprintf("Plugin %s is unavailable: %s", name, err.Error()),
 				fmt.Errorf("plugin %s crashed and could not be restarted: %w", name, err)
+		}
+	}
+
+	// Validate input against the plugin's declared schema (if validation is enabled)
+	if m.validateInput && len(p.InputSchema) > 0 {
+		if err := pluginschema.Validate(string(p.InputSchema), input); err != nil {
+			errMsg := fmt.Sprintf("Input validation failed for tool %s: %s", name, err.Error())
+			m.logger.Debug("input validation failed", "tool", name, "error", err)
+			return errMsg, fmt.Errorf("input validation: %w", err)
 		}
 	}
 
@@ -486,4 +498,14 @@ func (m *Manager) Count() int {
 // Skills returns the skill registry.
 func (m *Manager) Skills() *skills.Registry {
 	return m.skills
+}
+
+// SetValidateInput enables or disables input schema validation before tool execution.
+// When enabled (default), tool inputs are validated against the plugin's declared
+// JSON Schema before being sent to the plugin. Validation failures are returned
+// to the LLM as tool errors so it can fix its input.
+func (m *Manager) SetValidateInput(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.validateInput = enabled
 }

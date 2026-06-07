@@ -6,38 +6,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/types"
 )
 
 type bashExecTool struct{}
+
+type bashExecInput struct {
+	Command string        `json:"command" jsonschema:"required" jsonschema_description:"The bash command to execute"`
+	WorkDir string        `json:"workdir,omitempty" jsonschema_description:"Working directory for the command. Defaults to the session working directory."`
+	Timeout types.FlexInt `json:"timeout,omitempty" jsonschema_description:"Timeout in seconds. Default: 120"`
+}
 
 func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "bash_exec",
 		Description: "Execute a bash command and return its stdout and stderr. Use for running builds, tests, installing dependencies, or any shell operation.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"command": {
-					"type": "string",
-					"description": "The bash command to execute"
-				},
-				"workdir": {
-					"type": "string",
-					"description": "Working directory for the command. Defaults to the session working directory."
-				},
-				"timeout": {
-					"type": "integer",
-					"description": "Timeout in seconds. Default: 120"
-				}
-			},
-			"required": ["command"]
-		}`,
+		InputSchema: schema.MustSchema(&bashExecInput{}),
 		LlmContextHint: "Use bash_exec for system commands: building, testing, installing packages, running programs. Check exit codes in output for errors. Never run destructive commands (rm -rf /, DROP DATABASE) without explicit user permission.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -45,33 +35,6 @@ func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 			MaxTimeoutSeconds:    300,
 		},
 	}, nil
-}
-
-type bashExecInput struct {
-	Command string  `json:"command"`
-	WorkDir string  `json:"workdir,omitempty"`
-	Timeout flexInt `json:"timeout,omitempty"`
-}
-
-// flexInt handles both integer and string-encoded integer values from LLM JSON.
-type flexInt int
-
-func (f *flexInt) UnmarshalJSON(data []byte) error {
-	var i int
-	if err := json.Unmarshal(data, &i); err == nil {
-		*f = flexInt(i)
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		i, err := strconv.Atoi(s)
-		if err == nil {
-			*f = flexInt(i)
-			return nil
-		}
-	}
-	*f = 0
-	return nil
 }
 
 func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
@@ -89,7 +52,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 			ErrorMessage: "command is required",
 		}, nil
 	}
-	timeout := int(params.Timeout)
+	timeout := params.Timeout.Int()
 	if timeout == 0 {
 		timeout = 120
 	}

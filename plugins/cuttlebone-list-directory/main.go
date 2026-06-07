@@ -10,24 +10,20 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 type listDirTool struct{}
+
+type listDirInput struct {
+	Path string `json:"path" jsonschema:"required" jsonschema_description:"Absolute path to the directory to list"`
+}
 
 func (t *listDirTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "list_directory",
 		Description: "List the contents of a directory. Returns entries with a trailing / for subdirectories. Does not recurse into subdirectories.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"path": {
-					"type": "string",
-					"description": "Absolute path to the directory to list"
-				}
-			},
-			"required": ["path"]
-		}`,
+		InputSchema: schema.MustSchema(&listDirInput{}),
 		LlmContextHint: "Use list_directory to understand project structure before navigating. Check directory layout before creating files to avoid placing them in the wrong location.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -35,10 +31,6 @@ func (t *listDirTool) Describe(ctx context.Context) (*pb.DescribeResponse, error
 			MaxTimeoutSeconds:    10,
 		},
 	}, nil
-}
-
-type listDirInput struct {
-	Path string `json:"path"`
 }
 
 func (t *listDirTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
