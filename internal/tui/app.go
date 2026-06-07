@@ -490,13 +490,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Only pass scroll-related events to the viewport.
-	// Passing all events (especially key events) causes the viewport to
-	// interfere with scroll position while the user is typing.
-	switch msg.(type) {
-	case tea.MouseMsg, tea.WindowSizeMsg:
+	// Passing all key events causes the viewport to interfere with scroll
+	// position while the user is typing. We explicitly handle scroll keys
+	// and mouse events only.
+	switch msg := msg.(type) {
+	case tea.MouseMsg:
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		cmds = append(cmds, vpCmd)
+	case tea.WindowSizeMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	case tea.KeyMsg:
+		// Only pass navigation keys to viewport (not typing keys)
+		switch msg.String() {
+		case "pgup", "pgdown", "home", "end":
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			cmds = append(cmds, vpCmd)
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -529,8 +542,9 @@ func (m Model) View() tea.View {
 
 	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
-	// Use MouseModeNone to allow native terminal text selection (copy/paste).
-	// The viewport still handles scroll via keyboard (pgup/pgdn/arrows).
+	// Enable mouse for scroll wheel support in the viewport.
+	// Text selection still works in most terminals via shift+drag.
+	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
 
