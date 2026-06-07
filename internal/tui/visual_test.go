@@ -98,8 +98,8 @@ func TestViewportStableAfterResponse(t *testing.T) {
 	// Wait for response to complete
 	env.Wait(15 * time.Second)
 
-	// Record idle frames at 10fps for 3 seconds (30 frames)
-	frames, err := env.RecordFrames(3*time.Second, 10)
+	// Record idle frames at 30fps for 3 seconds (90 frames)
+	frames, err := env.RecordFrames(3*time.Second, 30)
 	if err != nil {
 		t.Fatalf("recording frames: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestViewportStableDuringTyping(t *testing.T) {
 	env.Wait(15 * time.Second)
 
 	// Now start recording while typing a new message
-	frames, err := env.RecordFrames(4*time.Second, 10)
+	frames, err := env.RecordFrames(4*time.Second, 30)
 	if err != nil {
 		t.Fatalf("starting recording: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestViewportScrollMonotonic(t *testing.T) {
 
 	// Wait a moment for streaming to start, then record
 	env.Wait(2 * time.Second)
-	frames, err := env.RecordFrames(10*time.Second, 10)
+	frames, err := env.RecordFrames(10*time.Second, 30)
 	if err != nil {
 		t.Fatalf("recording frames: %v", err)
 	}

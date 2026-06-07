@@ -164,7 +164,7 @@ func (e *Environment) CaptureFrame(name string) (string, error) {
 // Higher FPS (e.g., 10-30) gives better temporal resolution for detecting jumps.
 func (e *Environment) RecordFrames(duration time.Duration, fps int) ([]string, error) {
 	if fps <= 0 {
-		fps = 10
+		fps = 30
 	}
 
 	display := os.Getenv("DISPLAY")
