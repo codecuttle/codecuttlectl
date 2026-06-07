@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -14,6 +15,9 @@ import (
 )
 
 type gitTool struct{}
+
+//go:embed skills/*
+var skillFS embed.FS
 
 type gitInput struct {
 	Subcommand string   `json:"subcommand" jsonschema:"required,enum=status,enum=diff,enum=log,enum=add,enum=commit,enum=branch,enum=checkout,enum=stash,enum=show,enum=rev-parse,enum=remote,enum=fetch,enum=pull,enum=push,enum=tag,enum=blame,enum=merge,enum=rebase,enum=cherry-pick,enum=init" jsonschema_description:"Git subcommand to run"`
@@ -31,6 +35,10 @@ func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
 			MaxTimeoutSeconds:    30,
+		},
+		Skills: []*pb.Skill{
+			pluginkit.EmbedSkill(skillFS, "skills/commit_workflow.md",
+				"git_commit_workflow", "on_tool:git|on_request", 50),
 		},
 	}, nil
 }
