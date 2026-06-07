@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 //go:embed skills/*
@@ -20,7 +21,7 @@ func (t *goSkills) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "go_skills",
 		Description: "Go language knowledge, workflows, and best practices. This is a companion plugin that provides contextual guidance — it has no executable tool.",
-		InputSchema: `{"type": "object", "properties": {}}`,
+		InputSchema: schema.MustSchema(&struct{}{}),
 		Version:     "1.0.0",
 		Skills: []*pb.Skill{
 			pluginkit.EmbedSkill(skillFS, "skills/compile_errors.md",

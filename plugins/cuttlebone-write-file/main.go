@@ -10,28 +10,21 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 type writeFileTool struct{}
+
+type writeFileInput struct {
+	Path    string `json:"path" jsonschema:"required" jsonschema_description:"Absolute path to the file to write"`
+	Content string `json:"content" jsonschema:"required" jsonschema_description:"The full content to write to the file"`
+}
 
 func (t *writeFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "write_file",
 		Description: "Write content to a file at the given absolute path. Creates the file and any parent directories if they do not exist. Overwrites the file if it already exists.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"path": {
-					"type": "string",
-					"description": "Absolute path to the file to write"
-				},
-				"content": {
-					"type": "string",
-					"description": "The full content to write to the file"
-				}
-			},
-			"required": ["path", "content"]
-		}`,
+		InputSchema: schema.MustSchema(&writeFileInput{}),
 		LlmContextHint: "Use write_file to create or overwrite files. Always use absolute paths. Parent directories are created automatically. You must read a file before overwriting it to understand existing content.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -39,11 +32,6 @@ func (t *writeFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, err
 			MaxTimeoutSeconds:    30,
 		},
 	}, nil
-}
-
-type writeFileInput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
 }
 
 func (t *writeFileTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {

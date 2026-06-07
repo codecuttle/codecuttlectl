@@ -43,25 +43,38 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Inkwell** — error classification + reconciliation loop | Done |
 | **Skills Registry** — conditional knowledge injection | Done |
 | **Sessions** — persistence, resume, Inkwell capture | Done |
+| **Typed Schema** — auto-derived JSON Schema from Go structs | Done |
+| **Scaffold Generator** — plugin stub generation mid-session | Done |
+| **Work Backlog** — cross-session deferred intent queue | Designed |
 | **Chromatophore Engine** — Chomsky hierarchy routing | Planned |
 | **Optic Lobe** — PostgreSQL + pgvector + AGE memory | Planned |
 | **Arm Nodes** — edge inference agents | Planned |
 
 ## Tools
 
-12 total (9 plugin, 3 built-in):
+14 total (9 plugin, 5 built-in):
 
-`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `todo_manage` `tool_info` `get_skill`
+`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `todo_manage` `tool_info` `get_skill` `scaffold_plugin` `reload_plugins`
 
 ## Plugins
 
-Standalone gRPC binaries. Drop a `cuttlebone-*` binary in the plugin directory, discovered on next launch. Any language. Plugins ship embedded skills (versioned Markdown) that activate based on context triggers.
+Standalone gRPC binaries. Drop a `cuttlebone-*` binary in the plugin directory, discovered on next launch (or mid-session via `reload_plugins`). Any language. Plugins ship embedded skills (versioned Markdown) that activate based on context triggers.
+
+Plugin inputs are defined as annotated Go structs with JSON Schema auto-derived at startup:
 
 ```go
-pluginkit.EmbedSkill(fs, "skills/debugging.md", "go_debugging", "on_error:compile|on_language:go", 60)
+type myInput struct {
+    Query   string        `json:"query" jsonschema:"required" jsonschema_description:"Search query"`
+    Limit   types.FlexInt `json:"limit,omitempty" jsonschema_description:"Max results"`
+}
+
+// In Describe():
+InputSchema: schema.MustSchema(&myInput{}),
 ```
 
-Crash recovery, execution timeouts, auto-restart. See [`docs/writing-plugins.md`](docs/writing-plugins.md).
+New plugins can be scaffolded mid-session via the `scaffold_plugin` tool — generates a buildable stub with typed inputs, schema derivation, and proper boilerplate.
+
+Crash recovery, execution timeouts, input validation, auto-restart. See [`docs/writing-plugins.md`](docs/writing-plugins.md).
 
 ## Sessions + Inkwell
 
@@ -73,17 +86,19 @@ See [`docs/sessions-and-inkwell.md`](docs/sessions-and-inkwell.md).
 
 - Chomsky routing (dynamic complexity classification)
 - Optic Lobe (cross-session semantic memory)
+- Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md))
 - Fleet telemetry (OpenTelemetry)
 - Swarm orchestration
 - Self-evolving harness (outer loop from execution traces)
+- Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
-- Hot-reload plugins
+- Hot-reload plugins (fsnotify-based auto-discovery)
 
 ## Development
 
 ```bash
 make all     # Build orchestrator + 9 plugins
-make test    # 69 tests, 5 packages
+make test    # 76 tests, 7 packages
 make proto   # Regenerate protobuf
 ```
 

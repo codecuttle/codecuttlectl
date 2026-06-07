@@ -36,6 +36,15 @@
 
 **Why Bubble Tea over tview?** tview is widget-based (OOP/callbacks). Bubble Tea's functional approach (Model-Update-View) is predictable, testable, and composes well. The Elm Architecture eliminates an entire class of state-mutation bugs that are common in TUI development.
 
+### Core: Schema and Validation
+
+| Package | Why |
+|---------|-----|
+| `github.com/invopop/jsonschema` | Generates JSON Schema from Go structs via reflection. Supports struct tags for descriptions, enums, required fields. Used by `pluginkit/schema` to auto-derive tool schemas from annotated input structs. |
+| `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema validator (Draft 2020-12). Validates LLM-generated tool input against plugin schemas before execution. Returns structured errors the LLM can act on. |
+
+**Why not hand-write JSON Schema?** Hand-written schemas drift from the actual Go struct over time. Auto-derivation ensures the schema always matches the struct the plugin actually unmarshals into. The `FlexInt.JSONSchema()` method emits `oneOf[integer, string]` — accurately reflecting what the type accepts.
+
 ### Internal Packages (no external deps)
 
 | Package | Purpose |
@@ -45,6 +54,14 @@
 | `internal/skills` | Trigger expression parser + skill registry + budget management. Pure Go. |
 | `internal/todo` | In-memory task list. Pure Go. |
 | `internal/prompt` | Embedded Markdown templates via `embed.FS` + `text/template`. Pure Go stdlib. |
+
+### Internal Packages (with external deps)
+
+| Package | Purpose | Deps |
+|---------|---------|------|
+| `internal/pluginkit/schema` | JSON Schema generation from Go structs + validation | `invopop/jsonschema`, `santhosh-tekuri/jsonschema` |
+| `internal/pluginkit/types` | `FlexInt`, `FlexBool` — LLM-tolerant JSON types with `JSONSchema()` methods | `invopop/jsonschema` (for interface) |
+| `internal/scaffold` | Plugin stub generator from structured specs | `text/template` (stdlib) |
 
 ### Indirect (pulled in by direct deps)
 

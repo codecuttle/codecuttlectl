@@ -15,6 +15,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
+	"github.com/codecuttle/codecuttlectl/internal/scaffold"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/skills"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
@@ -27,6 +28,7 @@ type Agent struct {
 	pluginMgr    *pluginhost.Manager
 	systemPrompt string
 	workDir      string
+	pluginDir    string
 	history      []types.Message
 	todos        *todo.List
 	maxSteps     int
@@ -49,8 +51,9 @@ type Config struct {
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
 	WorkDir   string
-	MaxSteps  int  // Maximum tool-use iterations per turn. Default: 25
-	Verbose   bool // Print debug info
+	PluginDir string // Plugin binary directory (for reload)
+	MaxSteps  int    // Maximum tool-use iterations per turn. Default: 25
+	Verbose   bool   // Print debug info
 
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
@@ -90,6 +93,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		pluginMgr:    cfg.PluginMgr,
 		systemPrompt: systemPrompt,
 		workDir:      cfg.WorkDir,
+		pluginDir:    cfg.PluginDir,
 		todos:        todo.NewList(),
 		maxSteps:     cfg.MaxSteps,
 		verbose:      cfg.Verbose,
@@ -419,6 +423,18 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 		return result, types.ToolResultStatusSuccess
 	}
 
+	// Built-in: scaffold_plugin
+	if name == "scaffold_plugin" {
+		result, status := a.handleScaffoldPlugin(input)
+		return result, status
+	}
+
+	// Built-in: reload_plugins
+	if name == "reload_plugins" {
+		result, status := a.handleReloadPlugins(ctx)
+		return result, status
+	}
+
 	// Plugin tools
 	output, err := a.pluginMgr.Execute(ctx, name, input, a.workDir)
 	if err != nil {
@@ -537,6 +553,67 @@ func (a *Agent) handleGetSkill(input json.RawMessage) string {
 	return sb.String()
 }
 
+func (a *Agent) handleScaffoldPlugin(input json.RawMessage) (string, types.ToolResultStatus) {
+	var params struct {
+		Title                string `json:"title"`
+		Description          string `json:"description"`
+		Params               []struct {
+			Name        string   `json:"name"`
+			Type        string   `json:"type"`
+			Description string   `json:"description"`
+			Required    bool     `json:"required"`
+			EnumValues  []string `json:"enum_values,omitempty"`
+		} `json:"params"`
+		LLMHint              string `json:"llm_hint,omitempty"`
+		RequiresConfirmation bool   `json:"requires_confirmation,omitempty"`
+		MaxTimeoutSeconds    int    `json:"max_timeout_seconds,omitempty"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return fmt.Sprintf("Error parsing scaffold input: %v", err), types.ToolResultStatusError
+	}
+
+	// Build scaffold spec
+	spec := scaffold.Spec{
+		ToolName:    params.Title,
+		Description: params.Description,
+		LLMHint:     params.LLMHint,
+		Capabilities: scaffold.CapSpec{
+			RequiresConfirmation: params.RequiresConfirmation,
+			MaxTimeoutSeconds:    params.MaxTimeoutSeconds,
+			SupportsCancellation: true,
+		},
+	}
+	for _, p := range params.Params {
+		spec.Params = append(spec.Params, scaffold.ParamSpec{
+			Name:        p.Name,
+			Type:        p.Type,
+			Description: p.Description,
+			Required:    p.Required,
+			EnumValues:  p.EnumValues,
+		})
+	}
+
+	// Generate the scaffold
+	result, err := scaffold.Generate(spec, a.workDir)
+	if err != nil {
+		return fmt.Sprintf("Scaffold generation failed: %v", err), types.ToolResultStatusError
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Plugin stub generated successfully.\n\n"))
+	sb.WriteString(fmt.Sprintf("**Binary name:** %s\n", result.BinaryName))
+	sb.WriteString(fmt.Sprintf("**Source directory:** %s\n", result.Dir))
+	sb.WriteString(fmt.Sprintf("**Main file:** %s\n\n", result.MainGo))
+	sb.WriteString("Next steps:\n")
+	sb.WriteString(fmt.Sprintf("1. Review the generated code at %s\n", result.MainGo))
+	sb.WriteString("2. Implement the Execute() function body\n")
+	sb.WriteString(fmt.Sprintf("3. Build: `cd %s && go build -o %s .`\n", result.Dir, result.BinaryName))
+	sb.WriteString("4. Install the binary to the plugin directory\n")
+	sb.WriteString("5. Call reload_plugins to discover the new tool\n")
+
+	return sb.String(), types.ToolResultStatusSuccess
+}
+
 // effectiveSystemPrompt returns the system prompt with any reconciler and skill injections appended.
 func (a *Agent) effectiveSystemPrompt() string {
 	prompt := a.systemPrompt
@@ -622,6 +699,8 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	defs = append(defs, todoToolDefinition())
 	defs = append(defs, toolInfoDefinition())
 	defs = append(defs, getSkillDefinition())
+	defs = append(defs, scaffoldPluginDefinition())
+	defs = append(defs, reloadPluginsDefinition())
 	return defs
 }
 
@@ -681,6 +760,105 @@ func getSkillDefinition() bedrock.ToolDefinition {
 			}
 		}`),
 	}
+}
+
+func scaffoldPluginDefinition() bedrock.ToolDefinition {
+	return bedrock.ToolDefinition{
+		Name:        "scaffold_plugin",
+		Description: "Generate a new Cuttlebone plugin stub. Produces a buildable Go module with typed input struct, auto-derived JSON Schema, and a stub Execute() ready for implementation. The generated plugin can be built and installed in the plugin directory.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"title": {
+					"type": "string",
+					"description": "Tool name using snake_case (e.g. 'json_query'). Will become cuttlebone-<name> binary."
+				},
+				"description": {
+					"type": "string",
+					"description": "One-line description of what the tool does (shown to the LLM)"
+				},
+				"params": {
+					"type": "array",
+					"description": "Input parameters for the tool",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {"type": "string", "description": "Parameter name in snake_case"},
+							"type": {"type": "string", "enum": ["string", "integer", "boolean", "string_array"], "description": "Parameter type"},
+							"description": {"type": "string", "description": "Human-readable description of the parameter"},
+							"required": {"type": "boolean", "description": "Whether this parameter is required"},
+							"enum_values": {"type": "array", "items": {"type": "string"}, "description": "Optional: valid values for enum parameters"}
+						},
+						"required": ["name", "type", "description"]
+					}
+				},
+				"llm_hint": {
+					"type": "string",
+					"description": "Optional guidance for the LLM about when and how to use this tool"
+				},
+				"requires_confirmation": {
+					"type": "boolean",
+					"description": "Whether the tool performs destructive operations requiring user confirmation"
+				},
+				"max_timeout_seconds": {
+					"type": "integer",
+					"description": "Maximum execution timeout in seconds (default 60)"
+				}
+			},
+			"required": ["title", "description", "params"]
+		}`),
+	}
+}
+
+func reloadPluginsDefinition() bedrock.ToolDefinition {
+	return bedrock.ToolDefinition{
+		Name:        "reload_plugins",
+		Description: "Re-scan the plugin directory and load any new or updated plugins. Use after scaffold_plugin has generated and built a new tool, or after manually installing a plugin binary.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {}
+		}`),
+	}
+}
+
+func (a *Agent) handleReloadPlugins(ctx context.Context) (string, types.ToolResultStatus) {
+	if a.pluginDir == "" {
+		return "Plugin directory not configured. Cannot reload.", types.ToolResultStatusError
+	}
+
+	beforeCount := a.pluginMgr.Count()
+	beforeNames := a.pluginMgr.PluginNames()
+
+	// Discover new plugins (existing ones are already loaded and won't be duplicated
+	// because LoadPlugin checks if the name already exists via the plugins map)
+	if err := a.pluginMgr.DiscoverPlugins(ctx, a.pluginDir); err != nil {
+		return fmt.Sprintf("Error reloading plugins: %v", err), types.ToolResultStatusError
+	}
+
+	afterCount := a.pluginMgr.Count()
+	afterNames := a.pluginMgr.PluginNames()
+
+	// Find newly discovered plugins
+	beforeSet := make(map[string]bool, len(beforeNames))
+	for _, n := range beforeNames {
+		beforeSet[n] = true
+	}
+	var newPlugins []string
+	for _, n := range afterNames {
+		if !beforeSet[n] {
+			newPlugins = append(newPlugins, n)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Plugin reload complete. %d plugins loaded (was %d).\n", afterCount, beforeCount))
+	if len(newPlugins) > 0 {
+		sb.WriteString(fmt.Sprintf("New plugins discovered: %s\n", strings.Join(newPlugins, ", ")))
+	} else {
+		sb.WriteString("No new plugins found.\n")
+	}
+
+	return sb.String(), types.ToolResultStatusSuccess
 }
 
 // --- Session persistence ---

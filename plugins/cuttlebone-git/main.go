@@ -10,33 +10,22 @@ import (
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
+	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 )
 
 type gitTool struct{}
+
+type gitInput struct {
+	Subcommand string   `json:"subcommand" jsonschema:"required,enum=status,enum=diff,enum=log,enum=add,enum=commit,enum=branch,enum=checkout,enum=stash,enum=show,enum=rev-parse,enum=remote,enum=fetch,enum=pull,enum=push,enum=tag,enum=blame,enum=merge,enum=rebase,enum=cherry-pick,enum=init" jsonschema_description:"Git subcommand to run"`
+	Args       []string `json:"args,omitempty" jsonschema_description:"Arguments to pass to the git subcommand"`
+	WorkDir    string   `json:"workdir,omitempty" jsonschema_description:"Working directory for the git command. Defaults to session working directory."`
+}
 
 func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
 		Name:        "git",
 		Description: "Execute git commands for version control. Supports: status, diff, log, add, commit, branch, checkout, stash. For safety, destructive operations (force push, reset --hard) are rejected.",
-		InputSchema: `{
-			"type": "object",
-			"properties": {
-				"subcommand": {
-					"type": "string",
-					"description": "Git subcommand to run (e.g. 'status', 'diff', 'log', 'add', 'commit', 'branch', 'checkout', 'stash')"
-				},
-				"args": {
-					"type": "array",
-					"items": {"type": "string"},
-					"description": "Arguments to pass to the git subcommand"
-				},
-				"workdir": {
-					"type": "string",
-					"description": "Working directory for the git command. Defaults to session working directory."
-				}
-			},
-			"required": ["subcommand"]
-		}`,
+		InputSchema: schema.MustSchema(&gitInput{}),
 		LlmContextHint: "Use git for version control operations. Always check 'git status' before committing. Use 'git diff' to review changes. Allowed subcommands: status, diff, log, add, commit, branch, checkout, stash, show, rev-parse, remote, fetch, pull, tag, blame. Forbidden: push --force, reset --hard, clean -fd.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
@@ -44,12 +33,6 @@ func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 			MaxTimeoutSeconds:    30,
 		},
 	}, nil
-}
-
-type gitInput struct {
-	Subcommand string   `json:"subcommand"`
-	Args       []string `json:"args,omitempty"`
-	WorkDir    string   `json:"workdir,omitempty"`
 }
 
 // Allowed git subcommands (safety whitelist)
