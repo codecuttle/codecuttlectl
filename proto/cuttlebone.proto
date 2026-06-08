@@ -15,6 +15,11 @@ service ToolPlugin {
   // Execute runs the tool with the given input parameters.
   // Called each time the LLM invokes this tool.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // ExecuteStream runs the tool and streams output incrementally.
+  // Plugins that support streaming declare supports_streaming=true in capabilities.
+  // The orchestrator falls back to Execute() for non-streaming plugins.
+  rpc ExecuteStream(ExecuteRequest) returns (stream ExecuteStreamEvent);
 }
 
 // DescribeRequest is sent by the orchestrator to discover tool capabilities.
@@ -140,4 +145,40 @@ message ExecuteResponse {
   // metadata contains optional structured data about the execution
   // (e.g., bytes written, exit code, timing information).
   map<string, string> metadata = 4;
+}
+
+// ExecuteStreamEvent is a single event emitted during streaming tool execution.
+message ExecuteStreamEvent {
+  oneof event {
+    // output_delta contains incremental output text (stdout).
+    OutputDelta output_delta = 1;
+
+    // error_delta contains incremental error text (stderr).
+    OutputDelta error_delta = 2;
+
+    // progress contains a structured progress update.
+    ProgressUpdate progress = 3;
+
+    // final contains the completed result (same as ExecuteResponse).
+    // This is always the last event in the stream.
+    ExecuteResponse final = 4;
+  }
+}
+
+// OutputDelta represents an incremental chunk of tool output.
+message OutputDelta {
+  // text is the incremental output content.
+  string text = 1;
+}
+
+// ProgressUpdate provides structured progress information during execution.
+message ProgressUpdate {
+  // message is a human-readable progress description (e.g., "Building plugin 3/12...").
+  string message = 1;
+
+  // percent is the completion percentage (0.0-1.0). Use -1 if unknown.
+  float percent = 2;
+
+  // metadata contains optional structured progress data.
+  map<string, string> metadata = 3;
 }
