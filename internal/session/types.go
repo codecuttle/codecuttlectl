@@ -38,6 +38,40 @@ type SessionState struct {
 	Messages []Message   `json:"messages"` // Serializable conversation history
 	Todos    []todo.Item `json:"todos"`    // Current task state
 	Inkwell  []InkEntry  `json:"inkwell"`  // Tool execution diagnostics
+	Audit    AuditTrail  `json:"audit"`    // Session-level governance/audit info
+}
+
+// AuditTrail captures session-level governance and accounting metadata.
+// This is the authoritative record for liability determination, cost attribution,
+// security monitoring, and compliance reviews. Persisted in the session file and
+// emitted as structured log events.
+type AuditTrail struct {
+	// Who
+	AuthMethod   string `json:"auth_method,omitempty"`   // "iam_role", "pat", "coder_oauth", "env"
+	AuthIdentity string `json:"auth_identity,omitempty"` // Role ARN, username, etc.
+
+	// What model
+	ModelID      string `json:"model_id"`
+	ModelVersion string `json:"model_version,omitempty"`
+
+	// Token accounting (for cost attribution)
+	TotalInputTokens      int64 `json:"total_input_tokens"`
+	TotalOutputTokens     int64 `json:"total_output_tokens"`
+	TotalCacheReadTokens  int64 `json:"total_cache_read_tokens"`
+	TotalCacheWriteTokens int64 `json:"total_cache_write_tokens"`
+
+	// Safety
+	ToolDisciplineBlocks    int `json:"tool_discipline_blocks"`
+	ToolDisciplineOverrides int `json:"tool_discipline_overrides"`
+	DestructiveOpsAttempted int `json:"destructive_ops_attempted"`
+	DestructiveOpsApproved  int `json:"destructive_ops_approved"`
+	DestructiveOpsDenied    int `json:"destructive_ops_denied"`
+
+	// Timing
+	FirstToolCallAt *time.Time `json:"first_tool_call_at,omitempty"`
+	LastToolCallAt  *time.Time `json:"last_tool_call_at,omitempty"`
+	WallClockMs     int64      `json:"wall_clock_ms"`
+	SessionStartAt  time.Time  `json:"session_start_at"`
 }
 
 // InkEntry records a single tool execution event for diagnostic analysis.

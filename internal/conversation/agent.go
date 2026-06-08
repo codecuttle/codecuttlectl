@@ -11,9 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/codecuttle/codecuttlectl/internal/approval"
+	"github.com/codecuttle/codecuttlectl/internal/audit"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
-	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/scaffold"
@@ -39,6 +40,10 @@ type Agent struct {
 	autoApprove  bool
 	approvalFunc func(toolName, command, reason, risk string) bool
 
+	// Audit trail
+	auditLogger *audit.Logger
+	auditTrail  session.AuditTrail
+
 	// Inkwell reconciliation loop
 	reconciler *inkwell.Reconciler
 
@@ -63,6 +68,9 @@ type Config struct {
 	// Safety
 	AutoApprove    bool                       // When true, skip destructive op confirmation
 	ApprovalFunc   func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
+
+	// Audit
+	AuditLogger *audit.Logger // Structured event logger (nil = no structured logs)
 
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
@@ -108,9 +116,16 @@ func NewAgent(cfg Config) (*Agent, error) {
 		verbose:      cfg.Verbose,
 		autoApprove:  cfg.AutoApprove,
 		approvalFunc: cfg.ApprovalFunc,
+		auditLogger:  cfg.AuditLogger,
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
+	}
+
+	// Initialize audit trail with model info and session start time
+	agent.auditTrail = session.AuditTrail{
+		ModelID:        cfg.Client.ModelID(),
+		SessionStartAt: time.Now().UTC(),
 	}
 
 	// If resuming a session, restore state
@@ -176,6 +191,9 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 				resp.CacheReadInputTokens, resp.CacheWriteInputTokens)
 		}
 
+		// Accumulate token usage in audit trail
+		a.recordTokenUsage(resp.InputTokens, resp.OutputTokens, resp.CacheReadInputTokens, resp.CacheWriteInputTokens, step)
+
 		// Record the assistant's full response
 		if len(resp.RawContentBlocks) > 0 {
 			a.history = append(a.history, bedrock.BuildAssistantMessage(resp.RawContentBlocks))
@@ -209,6 +227,7 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 
 			// Record in Inkwell — full output, never truncated
 			isErr := status == types.ToolResultStatusError
+			errType := string(inkwell.Classify(toolUse.Name, result, isErr).Class)
 			a.inkwell = append(a.inkwell, session.InkEntry{
 				Timestamp:        start.UTC(),
 				EndTime:          endTime,
@@ -220,10 +239,13 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 				Output:           result, // Full output — NEVER truncate in Inkwell
 				DurationMs:       duration.Milliseconds(),
 				IsError:          isErr,
-				ErrorType:        string(inkwell.Classify(toolUse.Name, result, isErr).Class),
+				ErrorType:        errType,
 				ReasoningContext: resp.Content, // Model's text reasoning this step
 				UserIntent:       userMessage,
 			})
+
+			// Emit structured audit log event
+			a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
 
 			toolResults = append(toolResults, bedrock.ToolResult{
 				ToolUseID: toolUse.ToolUseID,
@@ -313,7 +335,8 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 				}
 
 			case bedrock.UsageEvent:
-				// Track token usage (could record in stats)
+				// Track token usage in audit trail
+				a.recordTokenUsage(e.InputTokens, e.OutputTokens, 0, 0, step)
 
 			case bedrock.StreamErrorEvent:
 				if cb != nil {
@@ -370,6 +393,7 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 			}
 
 			isErr := status == types.ToolResultStatusError
+			errType := string(inkwell.Classify(tc.name, result, isErr).Class)
 			a.inkwell = append(a.inkwell, session.InkEntry{
 				Timestamp:        start.UTC(),
 				EndTime:          endTime,
@@ -381,10 +405,13 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 				Output:           result, // Full output — NEVER truncate in Inkwell
 				DurationMs:       duration.Milliseconds(),
 				IsError:          isErr,
-				ErrorType:        string(inkwell.Classify(tc.name, result, isErr).Class),
+				ErrorType:        errType,
 				ReasoningContext: textBuf.String(), // Model's reasoning text this round
 				UserIntent:       userMessage,
 			})
+
+			// Emit structured audit log event
+			a.recordToolExec(tc.name, tc.id, duration.Milliseconds(), isErr, errType, step)
 
 			toolResults = append(toolResults, bedrock.ToolResult{
 				ToolUseID: tc.id,
@@ -463,7 +490,7 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 			if a.approvalFunc != nil {
 				allowed := a.approvalFunc(name, req.Command, req.Reason, req.Risk.String())
 				if !allowed {
-					// Record the denied operation in inkwell
+					// Record the denied operation in inkwell and audit trail
 					a.inkwell = append(a.inkwell, session.InkEntry{
 						Timestamp:        time.Now().UTC(),
 						EndTime:          time.Now().UTC(),
@@ -475,15 +502,22 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 						RequiredApproval: true,
 						ApprovalDecision: "denied",
 					})
+					a.recordApproval(name, req.Risk.String(), "denied")
 					return "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.", types.ToolResultStatusError
 				}
-				// Approved: continue to execution below
+				// Approved: record and continue to execution below
+				a.recordApproval(name, req.Risk.String(), "approved")
 			} else {
 				// No approval function and not auto-approve: deny by default
+				a.recordApproval(name, req.Risk.String(), "denied")
 				return fmt.Sprintf("Operation requires user approval (risk: %s). Reason: %s. The command was NOT executed. Use --auto-approve for automated pipelines or provide an interactive approval handler.", req.Risk, req.Reason), types.ToolResultStatusError
 			}
-		} else if a.verbose {
-			log.Printf("[approval] auto-approved destructive op: %s (%s)", req.Command, req.Risk)
+		} else {
+			// Auto-approve: record and continue
+			a.recordApproval(name, req.Risk.String(), "auto_approved")
+			if a.verbose {
+				log.Printf("[approval] auto-approved destructive op: %s (%s)", req.Command, req.Risk)
+			}
 		}
 	}
 
@@ -937,6 +971,13 @@ func (a *Agent) loadSession() error {
 	// Restore inkwell
 	a.inkwell = state.Inkwell
 
+	// Restore audit trail (accumulate on resumed sessions)
+	a.auditTrail = state.Audit
+	// Keep original session start time; update model if changed
+	if a.auditTrail.ModelID == "" {
+		a.auditTrail.ModelID = a.client.ModelID()
+	}
+
 	// Restore turn counter from stats
 	a.turn = state.Meta.Stats.Turns
 
@@ -976,6 +1017,7 @@ func (a *Agent) flushSession() {
 		Messages: messages,
 		Todos:    a.todos.Items(),
 		Inkwell:  a.inkwell,
+		Audit:    a.AuditTrail(),
 	}
 
 	if err := a.store.Save(a.sessionID, state); err != nil {
@@ -1055,4 +1097,53 @@ func (a *Agent) SystemPrompt() string {
 // Todos returns the current todo list.
 func (a *Agent) Todos() *todo.List {
 	return a.todos
+}
+
+// --- Audit trail helpers ---
+
+// recordTokenUsage accumulates token usage and emits a structured log event.
+func (a *Agent) recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrite int32, step int) {
+	a.auditTrail.TotalInputTokens += int64(inputTokens)
+	a.auditTrail.TotalOutputTokens += int64(outputTokens)
+	a.auditTrail.TotalCacheReadTokens += int64(cacheRead)
+	a.auditTrail.TotalCacheWriteTokens += int64(cacheWrite)
+
+	if a.auditLogger != nil {
+		a.auditLogger.TokenUsage(a.sessionID, a.client.ModelID(), inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
+	}
+}
+
+// recordToolExec emits a structured tool execution event and updates audit timing.
+func (a *Agent) recordToolExec(toolName, toolUseID string, durationMs int64, isError bool, errorType string, step int) {
+	now := time.Now().UTC()
+	if a.auditTrail.FirstToolCallAt == nil {
+		a.auditTrail.FirstToolCallAt = &now
+	}
+	a.auditTrail.LastToolCallAt = &now
+
+	if a.auditLogger != nil {
+		a.auditLogger.ToolExec(a.sessionID, toolName, toolUseID, durationMs, isError, errorType, a.turn, step)
+	}
+}
+
+// recordApproval records a destructive operation approval decision.
+func (a *Agent) recordApproval(toolName, risk, decision string) {
+	a.auditTrail.DestructiveOpsAttempted++
+	switch decision {
+	case "approved", "auto_approved":
+		a.auditTrail.DestructiveOpsApproved++
+	case "denied":
+		a.auditTrail.DestructiveOpsDenied++
+	}
+
+	if a.auditLogger != nil {
+		a.auditLogger.ApprovalEvent(a.sessionID, toolName, risk, decision, a.turn)
+	}
+}
+
+// AuditTrail returns the current audit trail (for session persistence).
+func (a *Agent) AuditTrail() session.AuditTrail {
+	trail := a.auditTrail
+	trail.WallClockMs = time.Since(a.auditTrail.SessionStartAt).Milliseconds()
+	return trail
 }

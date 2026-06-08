@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/codecuttle/codecuttlectl/internal/audit"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/conversation"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
@@ -42,9 +43,13 @@ func main() {
 		pruneSessions = flag.Int("prune-sessions", 0, "Delete sessions older than N days and exit")
 
 		// Safety
-		autoApprove = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
+		autoApprove   = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
+		auditLog      = flag.Bool("audit-log", false, "Emit structured JSON audit events to stderr")
 	)
 	flag.Parse()
+
+	// Initialize audit logger
+	auditLogger := audit.NewLogger(os.Stderr, *auditLog)
 
 	// Resolve working directory
 	if *workDir == "" {
@@ -148,13 +153,13 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, *oneShot)
+		runOneShot(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove)
+		runPlainREPL(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
 		return
 	}
 
@@ -185,7 +190,7 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		PromptMgr:   nil, // Not needed, system prompt already rendered
@@ -194,6 +199,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginho
 		MaxSteps:    maxSteps,
 		Verbose:     verbose,
 		AutoApprove: autoApprove,
+		AuditLogger: auditLogger,
 		Store:       store,
 		SessionID:   sessionID,
 	})
@@ -237,7 +243,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginho
 }
 
 // runPlainREPL runs the old-style plain text REPL (fallback for non-TTY environments).
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -260,6 +266,7 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *plugin
 		Verbose:      verbose,
 		AutoApprove:  autoApprove,
 		ApprovalFunc: approvalFunc,
+		AuditLogger:  auditLogger,
 		Store:        store,
 		SessionID:    sessionID,
 	})
