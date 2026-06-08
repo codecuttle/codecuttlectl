@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ToolPlugin_Describe_FullMethodName = "/cuttlebone.v1.ToolPlugin/Describe"
-	ToolPlugin_Execute_FullMethodName  = "/cuttlebone.v1.ToolPlugin/Execute"
+	ToolPlugin_Describe_FullMethodName      = "/cuttlebone.v1.ToolPlugin/Describe"
+	ToolPlugin_Execute_FullMethodName       = "/cuttlebone.v1.ToolPlugin/Execute"
+	ToolPlugin_ExecuteStream_FullMethodName = "/cuttlebone.v1.ToolPlugin/ExecuteStream"
 )
 
 // ToolPluginClient is the client API for ToolPlugin service.
@@ -37,6 +38,10 @@ type ToolPluginClient interface {
 	// Execute runs the tool with the given input parameters.
 	// Called each time the LLM invokes this tool.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
+	// ExecuteStream runs the tool and streams output incrementally.
+	// Plugins that support streaming declare supports_streaming=true in capabilities.
+	// The orchestrator falls back to Execute() for non-streaming plugins.
+	ExecuteStream(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecuteStreamEvent], error)
 }
 
 type toolPluginClient struct {
@@ -67,6 +72,25 @@ func (c *toolPluginClient) Execute(ctx context.Context, in *ExecuteRequest, opts
 	return out, nil
 }
 
+func (c *toolPluginClient) ExecuteStream(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecuteStreamEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ToolPlugin_ServiceDesc.Streams[0], ToolPlugin_ExecuteStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ExecuteRequest, ExecuteStreamEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ToolPlugin_ExecuteStreamClient = grpc.ServerStreamingClient[ExecuteStreamEvent]
+
 // ToolPluginServer is the server API for ToolPlugin service.
 // All implementations must embed UnimplementedToolPluginServer
 // for forward compatibility.
@@ -81,6 +105,10 @@ type ToolPluginServer interface {
 	// Execute runs the tool with the given input parameters.
 	// Called each time the LLM invokes this tool.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
+	// ExecuteStream runs the tool and streams output incrementally.
+	// Plugins that support streaming declare supports_streaming=true in capabilities.
+	// The orchestrator falls back to Execute() for non-streaming plugins.
+	ExecuteStream(*ExecuteRequest, grpc.ServerStreamingServer[ExecuteStreamEvent]) error
 	mustEmbedUnimplementedToolPluginServer()
 }
 
@@ -96,6 +124,9 @@ func (UnimplementedToolPluginServer) Describe(context.Context, *DescribeRequest)
 }
 func (UnimplementedToolPluginServer) Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Execute not implemented")
+}
+func (UnimplementedToolPluginServer) ExecuteStream(*ExecuteRequest, grpc.ServerStreamingServer[ExecuteStreamEvent]) error {
+	return status.Error(codes.Unimplemented, "method ExecuteStream not implemented")
 }
 func (UnimplementedToolPluginServer) mustEmbedUnimplementedToolPluginServer() {}
 func (UnimplementedToolPluginServer) testEmbeddedByValue()                    {}
@@ -154,6 +185,17 @@ func _ToolPlugin_Execute_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ToolPlugin_ExecuteStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ExecuteRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ToolPluginServer).ExecuteStream(m, &grpc.GenericServerStream[ExecuteRequest, ExecuteStreamEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ToolPlugin_ExecuteStreamServer = grpc.ServerStreamingServer[ExecuteStreamEvent]
+
 // ToolPlugin_ServiceDesc is the grpc.ServiceDesc for ToolPlugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -170,6 +212,12 @@ var ToolPlugin_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ToolPlugin_Execute_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ExecuteStream",
+			Handler:       _ToolPlugin_ExecuteStream_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "cuttlebone.proto",
 }

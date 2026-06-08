@@ -497,6 +497,236 @@ func (x *ExecuteResponse) GetMetadata() map[string]string {
 	return nil
 }
 
+// ExecuteStreamEvent is a single event emitted during streaming tool execution.
+type ExecuteStreamEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Event:
+	//
+	//	*ExecuteStreamEvent_OutputDelta
+	//	*ExecuteStreamEvent_ErrorDelta
+	//	*ExecuteStreamEvent_Progress
+	//	*ExecuteStreamEvent_Final
+	Event         isExecuteStreamEvent_Event `protobuf_oneof:"event"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecuteStreamEvent) Reset() {
+	*x = ExecuteStreamEvent{}
+	mi := &file_cuttlebone_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecuteStreamEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecuteStreamEvent) ProtoMessage() {}
+
+func (x *ExecuteStreamEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_cuttlebone_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecuteStreamEvent.ProtoReflect.Descriptor instead.
+func (*ExecuteStreamEvent) Descriptor() ([]byte, []int) {
+	return file_cuttlebone_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ExecuteStreamEvent) GetEvent() isExecuteStreamEvent_Event {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+func (x *ExecuteStreamEvent) GetOutputDelta() *OutputDelta {
+	if x != nil {
+		if x, ok := x.Event.(*ExecuteStreamEvent_OutputDelta); ok {
+			return x.OutputDelta
+		}
+	}
+	return nil
+}
+
+func (x *ExecuteStreamEvent) GetErrorDelta() *OutputDelta {
+	if x != nil {
+		if x, ok := x.Event.(*ExecuteStreamEvent_ErrorDelta); ok {
+			return x.ErrorDelta
+		}
+	}
+	return nil
+}
+
+func (x *ExecuteStreamEvent) GetProgress() *ProgressUpdate {
+	if x != nil {
+		if x, ok := x.Event.(*ExecuteStreamEvent_Progress); ok {
+			return x.Progress
+		}
+	}
+	return nil
+}
+
+func (x *ExecuteStreamEvent) GetFinal() *ExecuteResponse {
+	if x != nil {
+		if x, ok := x.Event.(*ExecuteStreamEvent_Final); ok {
+			return x.Final
+		}
+	}
+	return nil
+}
+
+type isExecuteStreamEvent_Event interface {
+	isExecuteStreamEvent_Event()
+}
+
+type ExecuteStreamEvent_OutputDelta struct {
+	// output_delta contains incremental output text (stdout).
+	OutputDelta *OutputDelta `protobuf:"bytes,1,opt,name=output_delta,json=outputDelta,proto3,oneof"`
+}
+
+type ExecuteStreamEvent_ErrorDelta struct {
+	// error_delta contains incremental error text (stderr).
+	ErrorDelta *OutputDelta `protobuf:"bytes,2,opt,name=error_delta,json=errorDelta,proto3,oneof"`
+}
+
+type ExecuteStreamEvent_Progress struct {
+	// progress contains a structured progress update.
+	Progress *ProgressUpdate `protobuf:"bytes,3,opt,name=progress,proto3,oneof"`
+}
+
+type ExecuteStreamEvent_Final struct {
+	// final contains the completed result (same as ExecuteResponse).
+	// This is always the last event in the stream.
+	Final *ExecuteResponse `protobuf:"bytes,4,opt,name=final,proto3,oneof"`
+}
+
+func (*ExecuteStreamEvent_OutputDelta) isExecuteStreamEvent_Event() {}
+
+func (*ExecuteStreamEvent_ErrorDelta) isExecuteStreamEvent_Event() {}
+
+func (*ExecuteStreamEvent_Progress) isExecuteStreamEvent_Event() {}
+
+func (*ExecuteStreamEvent_Final) isExecuteStreamEvent_Event() {}
+
+// OutputDelta represents an incremental chunk of tool output.
+type OutputDelta struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// text is the incremental output content.
+	Text          string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OutputDelta) Reset() {
+	*x = OutputDelta{}
+	mi := &file_cuttlebone_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OutputDelta) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OutputDelta) ProtoMessage() {}
+
+func (x *OutputDelta) ProtoReflect() protoreflect.Message {
+	mi := &file_cuttlebone_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OutputDelta.ProtoReflect.Descriptor instead.
+func (*OutputDelta) Descriptor() ([]byte, []int) {
+	return file_cuttlebone_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *OutputDelta) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+// ProgressUpdate provides structured progress information during execution.
+type ProgressUpdate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// message is a human-readable progress description (e.g., "Building plugin 3/12...").
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// percent is the completion percentage (0.0-1.0). Use -1 if unknown.
+	Percent float32 `protobuf:"fixed32,2,opt,name=percent,proto3" json:"percent,omitempty"`
+	// metadata contains optional structured progress data.
+	Metadata      map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProgressUpdate) Reset() {
+	*x = ProgressUpdate{}
+	mi := &file_cuttlebone_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProgressUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProgressUpdate) ProtoMessage() {}
+
+func (x *ProgressUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_cuttlebone_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProgressUpdate.ProtoReflect.Descriptor instead.
+func (*ProgressUpdate) Descriptor() ([]byte, []int) {
+	return file_cuttlebone_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ProgressUpdate) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ProgressUpdate) GetPercent() float32 {
+	if x != nil {
+		return x.Percent
+	}
+	return 0
+}
+
+func (x *ProgressUpdate) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
 var File_cuttlebone_proto protoreflect.FileDescriptor
 
 const file_cuttlebone_proto_rawDesc = "" +
@@ -535,11 +765,28 @@ const file_cuttlebone_proto_rawDesc = "" +
 	"\bmetadata\x18\x04 \x03(\v2,.cuttlebone.v1.ExecuteResponse.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xa3\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x92\x02\n" +
+	"\x12ExecuteStreamEvent\x12?\n" +
+	"\foutput_delta\x18\x01 \x01(\v2\x1a.cuttlebone.v1.OutputDeltaH\x00R\voutputDelta\x12=\n" +
+	"\verror_delta\x18\x02 \x01(\v2\x1a.cuttlebone.v1.OutputDeltaH\x00R\n" +
+	"errorDelta\x12;\n" +
+	"\bprogress\x18\x03 \x01(\v2\x1d.cuttlebone.v1.ProgressUpdateH\x00R\bprogress\x126\n" +
+	"\x05final\x18\x04 \x01(\v2\x1e.cuttlebone.v1.ExecuteResponseH\x00R\x05finalB\a\n" +
+	"\x05event\"!\n" +
+	"\vOutputDelta\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\"\xca\x01\n" +
+	"\x0eProgressUpdate\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x18\n" +
+	"\apercent\x18\x02 \x01(\x02R\apercent\x12G\n" +
+	"\bmetadata\x18\x03 \x03(\v2+.cuttlebone.v1.ProgressUpdate.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xf8\x01\n" +
 	"\n" +
 	"ToolPlugin\x12K\n" +
 	"\bDescribe\x12\x1e.cuttlebone.v1.DescribeRequest\x1a\x1f.cuttlebone.v1.DescribeResponse\x12H\n" +
-	"\aExecute\x12\x1d.cuttlebone.v1.ExecuteRequest\x1a\x1e.cuttlebone.v1.ExecuteResponseBIZGgithub.com/codecuttle/codecuttlectl/internal/cuttlebone/v1;cuttlebonev1b\x06proto3"
+	"\aExecute\x12\x1d.cuttlebone.v1.ExecuteRequest\x1a\x1e.cuttlebone.v1.ExecuteResponse\x12S\n" +
+	"\rExecuteStream\x12\x1d.cuttlebone.v1.ExecuteRequest\x1a!.cuttlebone.v1.ExecuteStreamEvent0\x01BIZGgithub.com/codecuttle/codecuttlectl/internal/cuttlebone/v1;cuttlebonev1b\x06proto3"
 
 var (
 	file_cuttlebone_proto_rawDescOnce sync.Once
@@ -553,29 +800,40 @@ func file_cuttlebone_proto_rawDescGZIP() []byte {
 	return file_cuttlebone_proto_rawDescData
 }
 
-var file_cuttlebone_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_cuttlebone_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_cuttlebone_proto_goTypes = []any{
-	(*DescribeRequest)(nil),  // 0: cuttlebone.v1.DescribeRequest
-	(*DescribeResponse)(nil), // 1: cuttlebone.v1.DescribeResponse
-	(*Skill)(nil),            // 2: cuttlebone.v1.Skill
-	(*ToolCapabilities)(nil), // 3: cuttlebone.v1.ToolCapabilities
-	(*ExecuteRequest)(nil),   // 4: cuttlebone.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),  // 5: cuttlebone.v1.ExecuteResponse
-	nil,                      // 6: cuttlebone.v1.ExecuteResponse.MetadataEntry
+	(*DescribeRequest)(nil),    // 0: cuttlebone.v1.DescribeRequest
+	(*DescribeResponse)(nil),   // 1: cuttlebone.v1.DescribeResponse
+	(*Skill)(nil),              // 2: cuttlebone.v1.Skill
+	(*ToolCapabilities)(nil),   // 3: cuttlebone.v1.ToolCapabilities
+	(*ExecuteRequest)(nil),     // 4: cuttlebone.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),    // 5: cuttlebone.v1.ExecuteResponse
+	(*ExecuteStreamEvent)(nil), // 6: cuttlebone.v1.ExecuteStreamEvent
+	(*OutputDelta)(nil),        // 7: cuttlebone.v1.OutputDelta
+	(*ProgressUpdate)(nil),     // 8: cuttlebone.v1.ProgressUpdate
+	nil,                        // 9: cuttlebone.v1.ExecuteResponse.MetadataEntry
+	nil,                        // 10: cuttlebone.v1.ProgressUpdate.MetadataEntry
 }
 var file_cuttlebone_proto_depIdxs = []int32{
-	3, // 0: cuttlebone.v1.DescribeResponse.capabilities:type_name -> cuttlebone.v1.ToolCapabilities
-	2, // 1: cuttlebone.v1.DescribeResponse.skills:type_name -> cuttlebone.v1.Skill
-	6, // 2: cuttlebone.v1.ExecuteResponse.metadata:type_name -> cuttlebone.v1.ExecuteResponse.MetadataEntry
-	0, // 3: cuttlebone.v1.ToolPlugin.Describe:input_type -> cuttlebone.v1.DescribeRequest
-	4, // 4: cuttlebone.v1.ToolPlugin.Execute:input_type -> cuttlebone.v1.ExecuteRequest
-	1, // 5: cuttlebone.v1.ToolPlugin.Describe:output_type -> cuttlebone.v1.DescribeResponse
-	5, // 6: cuttlebone.v1.ToolPlugin.Execute:output_type -> cuttlebone.v1.ExecuteResponse
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3,  // 0: cuttlebone.v1.DescribeResponse.capabilities:type_name -> cuttlebone.v1.ToolCapabilities
+	2,  // 1: cuttlebone.v1.DescribeResponse.skills:type_name -> cuttlebone.v1.Skill
+	9,  // 2: cuttlebone.v1.ExecuteResponse.metadata:type_name -> cuttlebone.v1.ExecuteResponse.MetadataEntry
+	7,  // 3: cuttlebone.v1.ExecuteStreamEvent.output_delta:type_name -> cuttlebone.v1.OutputDelta
+	7,  // 4: cuttlebone.v1.ExecuteStreamEvent.error_delta:type_name -> cuttlebone.v1.OutputDelta
+	8,  // 5: cuttlebone.v1.ExecuteStreamEvent.progress:type_name -> cuttlebone.v1.ProgressUpdate
+	5,  // 6: cuttlebone.v1.ExecuteStreamEvent.final:type_name -> cuttlebone.v1.ExecuteResponse
+	10, // 7: cuttlebone.v1.ProgressUpdate.metadata:type_name -> cuttlebone.v1.ProgressUpdate.MetadataEntry
+	0,  // 8: cuttlebone.v1.ToolPlugin.Describe:input_type -> cuttlebone.v1.DescribeRequest
+	4,  // 9: cuttlebone.v1.ToolPlugin.Execute:input_type -> cuttlebone.v1.ExecuteRequest
+	4,  // 10: cuttlebone.v1.ToolPlugin.ExecuteStream:input_type -> cuttlebone.v1.ExecuteRequest
+	1,  // 11: cuttlebone.v1.ToolPlugin.Describe:output_type -> cuttlebone.v1.DescribeResponse
+	5,  // 12: cuttlebone.v1.ToolPlugin.Execute:output_type -> cuttlebone.v1.ExecuteResponse
+	6,  // 13: cuttlebone.v1.ToolPlugin.ExecuteStream:output_type -> cuttlebone.v1.ExecuteStreamEvent
+	11, // [11:14] is the sub-list for method output_type
+	8,  // [8:11] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_cuttlebone_proto_init() }
@@ -583,13 +841,19 @@ func file_cuttlebone_proto_init() {
 	if File_cuttlebone_proto != nil {
 		return
 	}
+	file_cuttlebone_proto_msgTypes[6].OneofWrappers = []any{
+		(*ExecuteStreamEvent_OutputDelta)(nil),
+		(*ExecuteStreamEvent_ErrorDelta)(nil),
+		(*ExecuteStreamEvent_Progress)(nil),
+		(*ExecuteStreamEvent_Final)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cuttlebone_proto_rawDesc), len(file_cuttlebone_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

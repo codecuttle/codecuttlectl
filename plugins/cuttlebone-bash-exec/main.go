@@ -53,6 +53,7 @@ bash_exec is for: make, go build, go test, apt install, pip install, npm, docker
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
+			SupportsStreaming:    true,
 			MaxTimeoutSeconds:    300,
 		},
 	}, nil
@@ -122,20 +123,37 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 		cmd.Dir = workDir
 	}
 
-	var output strings.Builder
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	// Capture stdout and stderr separately for telemetry.
+	// Combined output is still returned to the model, but the plugin response
+	// metadata carries separated stderr for Inkwell auditing.
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	err := cmd.Run()
 
-	result := output.String()
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
+	// Combined output for the model (same behavior as before)
+	result := stdout
+	if stderr != "" {
+		if result != "" {
+			result += "\n"
+		}
+		result += stderr
+	}
 	metadata := map[string]string{}
+
+	// Always include separated stderr in metadata for Inkwell capture
+	if stderr != "" {
+		metadata["stderr"] = stderr
+	}
 
 	if timeoutCtx.Err() == context.DeadlineExceeded {
 		return &pb.ExecuteResponse{
 			Output:   fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result),
 			IsError:  true,
-			Metadata: map[string]string{"timeout": "true"},
+			Metadata: map[string]string{"timeout": "true", "stderr": stderr},
 		}, nil
 	}
 
@@ -196,6 +214,172 @@ func detectToolMisuse(command string) string {
 	}
 
 	return ""
+}
+
+// ExecuteStream implements the streaming execution RPC.
+// Streams stdout/stderr incrementally as the command runs, then sends the final result.
+func (t *bashExecTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error {
+	var params bashExecInput
+	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("parsing input: %v", err),
+			}},
+		})
+	}
+
+	if params.Command == "" {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: "command is required",
+			}},
+		})
+	}
+
+	// Tool discipline check (same as Execute)
+	if warning := detectToolMisuse(params.Command); warning != "" {
+		patternKey := warning
+		misuseTracker.counts[patternKey]++
+		attempts := misuseTracker.counts[patternKey]
+		if attempts <= maxMisuseBlocks {
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE (attempt %d/%d): %s\n\nThe command was NOT executed.", attempts, maxMisuseBlocks, warning),
+					Metadata:     map[string]string{"tool_misuse": "true", "attempt": fmt.Sprintf("%d", attempts)},
+				}},
+			})
+		}
+		fmt.Fprintf(os.Stderr, "[TELEMETRY] TOOL_DISCIPLINE_OVERRIDE: command=%q attempts=%d\n", params.Command, attempts)
+	}
+
+	timeout := params.Timeout.Int()
+	if timeout == 0 {
+		timeout = 120
+	}
+
+	workDir := params.WorkDir
+	if workDir == "" {
+		workDir = req.WorkingDirectory
+	}
+
+	ctx := stream.Context()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", params.Command)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("creating stdout pipe: %v", err),
+			}},
+		})
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("creating stderr pipe: %v", err),
+			}},
+		})
+	}
+
+	if err := cmd.Start(); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("starting command: %v", err),
+			}},
+		})
+	}
+
+	// Stream stdout and stderr concurrently
+	var stdoutBuf, stderrBuf strings.Builder
+	done := make(chan struct{})
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stdout.Read(buf)
+			if n > 0 {
+				text := string(buf[:n])
+				stdoutBuf.WriteString(text)
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_OutputDelta{OutputDelta: &pb.OutputDelta{Text: text}},
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		done <- struct{}{}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				text := string(buf[:n])
+				stderrBuf.WriteString(text)
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_ErrorDelta{ErrorDelta: &pb.OutputDelta{Text: text}},
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		done <- struct{}{}
+	}()
+
+	// Wait for both readers to finish
+	<-done
+	<-done
+
+	cmdErr := cmd.Wait()
+
+	// Build final response
+	result := stdoutBuf.String()
+	stderrStr := stderrBuf.String()
+	if stderrStr != "" && result != "" {
+		result += "\n" + stderrStr
+	} else if stderrStr != "" {
+		result = stderrStr
+	}
+
+	metadata := map[string]string{}
+	if stderrStr != "" {
+		metadata["stderr"] = stderrStr
+	}
+
+	resp := &pb.ExecuteResponse{Metadata: metadata}
+
+	if timeoutCtx.Err() == context.DeadlineExceeded {
+		resp.Output = fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result)
+		resp.IsError = true
+		metadata["timeout"] = "true"
+	} else if cmdErr != nil {
+		metadata["exit_error"] = cmdErr.Error()
+		resp.Output = fmt.Sprintf("Exit code: %s\n\n%s", cmdErr.Error(), result)
+	} else {
+		metadata["exit_code"] = "0"
+		resp.Output = result
+	}
+
+	resp.Metadata = metadata
+	return stream.Send(&pb.ExecuteStreamEvent{
+		Event: &pb.ExecuteStreamEvent_Final{Final: resp},
+	})
 }
 
 func main() {

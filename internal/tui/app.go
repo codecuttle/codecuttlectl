@@ -74,6 +74,10 @@ type Model struct {
 	currentToolInput *strings.Builder
 	pendingToolCalls []pendingTool
 
+	// Active tool execution streaming state
+	activeToolName   string          // Name of currently executing tool
+	activeToolOutput *strings.Builder // Rolling output buffer for live preview
+
 	// Todo state
 	todos        *todo.List
 	todoExpanded bool
@@ -157,6 +161,7 @@ func New(cfg Config) Model {
 		reasoningBuf:     &strings.Builder{},
 		mouseEnabled:     true,
 		currentToolInput: &strings.Builder{},
+		activeToolOutput: &strings.Builder{},
 		showThinking:     true,
 		mdRenderer:       renderer,
 		store:            cfg.Store,
@@ -469,7 +474,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 
+	case ToolOutputDeltaMsg:
+		// Live tool output streaming — update the active tool preview
+		m.activeToolName = msg.Name
+		m.activeToolOutput.WriteString(msg.Delta)
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, nil
+
 	case ToolExecResultMsg:
+		// Tool finished — clear active preview, show final result
+		m.activeToolName = ""
+		m.activeToolOutput.Reset()
 		m.messages = append(m.messages, chatMessage{
 			role:    "tool_result",
 			content: truncateToolResult(msg.Output, 500),
@@ -1069,6 +1085,30 @@ func (m *Model) renderMessages() string {
 				lines = append(lines, ToolResultErrorStyle.Width(m.width-6).Render("  ✗ "+truncateToolResult(msg.content, 200)), "")
 			} else {
 				lines = append(lines, ToolResultSuccessStyle.Width(m.width-6).Render("  ✓ "+truncateToolResult(msg.content, 200)), "")
+			}
+		}
+	}
+
+	// Active tool execution preview (live streaming output)
+	if m.activeToolName != "" && m.activeToolOutput.Len() > 0 {
+		output := m.activeToolOutput.String()
+		outputLines := strings.Split(output, "\n")
+		// Show last 5 lines as a rolling preview
+		maxPreviewLines := 5
+		start := len(outputLines) - maxPreviewLines
+		if start < 0 {
+			start = 0
+		}
+		previewLines := outputLines[start:]
+
+		maxW := m.width - 8
+		if maxW < 20 {
+			maxW = 20
+		}
+
+		for _, line := range previewLines {
+			if strings.TrimSpace(line) != "" {
+				lines = append(lines, ToolCallStyle.Width(maxW).Render("  ┃ "+line))
 			}
 		}
 	}
