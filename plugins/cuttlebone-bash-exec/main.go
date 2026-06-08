@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,6 +17,16 @@ import (
 )
 
 type bashExecTool struct{}
+
+// misuseTracker tracks repeated tool discipline violations per command pattern.
+// The plugin process persists for the session, so this state accumulates.
+var misuseTracker = struct {
+	counts map[string]int
+}{
+	counts: make(map[string]int),
+}
+
+const maxMisuseBlocks = 3 // Allow through after 3 blocked attempts
 
 type bashExecInput struct {
 	Command string        `json:"command" jsonschema:"required" jsonschema_description:"The bash command to execute"`
@@ -64,17 +75,33 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 
 	// Self-monitoring: detect when bash_exec is being used for operations
-	// that have dedicated tools. Block the command and return an error so
-	// the agent can retry with the correct tool.
+	// that have dedicated tools. Block the command up to 3 times to give
+	// the agent a chance to self-correct. After 3 blocks, allow through
+	// with heavy telemetry for later analysis.
 	if warning := detectToolMisuse(params.Command); warning != "" {
-		return &pb.ExecuteResponse{
-			IsError:      true,
-			ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE: %s\n\nThe command was NOT executed. Use the appropriate tool instead.", warning),
-			Metadata: map[string]string{
-				"tool_misuse":  "true",
-				"blocked_cmd":  params.Command,
-			},
-		}, nil
+		// Track by the detected pattern (not exact command, to catch variations)
+		patternKey := warning
+		misuseTracker.counts[patternKey]++
+		attempts := misuseTracker.counts[patternKey]
+
+		if attempts <= maxMisuseBlocks {
+			return &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE (attempt %d/%d): %s\n\nThe command was NOT executed. Use the appropriate tool instead. After %d failed attempts, the command will be allowed through.",
+					attempts, maxMisuseBlocks, warning, maxMisuseBlocks),
+				Metadata: map[string]string{
+					"tool_misuse":    "true",
+					"blocked_cmd":    params.Command,
+					"attempt":        fmt.Sprintf("%d", attempts),
+					"max_attempts":   fmt.Sprintf("%d", maxMisuseBlocks),
+				},
+			}, nil
+		}
+
+		// After maxMisuseBlocks attempts, allow through but emit telemetry
+		// The command will execute below, but we tag the response heavily.
+		fmt.Fprintf(os.Stderr, "[TELEMETRY] TOOL_DISCIPLINE_OVERRIDE: command=%q warning=%q attempts=%d\n",
+			params.Command, warning, attempts)
 	}
 	timeout := params.Timeout.Int()
 	if timeout == 0 {
@@ -121,6 +148,19 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 
 	metadata["exit_code"] = "0"
+
+	// If this command was allowed through after repeated blocks, tag the output
+	if warning := detectToolMisuse(params.Command); warning != "" {
+		metadata["tool_misuse_override"] = "true"
+		metadata["override_reason"] = warning
+		metadata["total_attempts"] = fmt.Sprintf("%d", misuseTracker.counts[warning])
+		return &pb.ExecuteResponse{
+			Output: fmt.Sprintf("⚠️ TOOL DISCIPLINE OVERRIDE (after %d blocked attempts): %s\n\n%s",
+				misuseTracker.counts[warning], warning, result),
+			Metadata: metadata,
+		}, nil
+	}
+
 	return &pb.ExecuteResponse{
 		Output:   result,
 		Metadata: metadata,
