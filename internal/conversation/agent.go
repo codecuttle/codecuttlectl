@@ -160,8 +160,9 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 		}
 
 		if a.verbose {
-			log.Printf("[step %d] stop_reason=%s tools=%d tokens_in=%d tokens_out=%d",
-				step, resp.StopReason, len(resp.ToolUses), resp.InputTokens, resp.OutputTokens)
+			log.Printf("[step %d] stop_reason=%s tools=%d tokens_in=%d tokens_out=%d cache_read=%d cache_write=%d",
+				step, resp.StopReason, len(resp.ToolUses), resp.InputTokens, resp.OutputTokens,
+				resp.CacheReadInputTokens, resp.CacheWriteInputTokens)
 		}
 
 		// Record the assistant's full response

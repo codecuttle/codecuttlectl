@@ -22,7 +22,7 @@ type Client struct {
 
 // Config holds the configuration for creating a Bedrock client.
 type Config struct {
-	// Region is the AWS region. Defaults to us-east-1 if empty.
+	// Region is the AWS region. Defaults to us-west-2 if empty.
 	Region string
 	// ModelID is the Bedrock model identifier (e.g. "us.anthropic.claude-opus-4-6-v1").
 	ModelID string
@@ -36,7 +36,7 @@ type Config struct {
 func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	region := cfg.Region
 	if region == "" {
-		region = "us-east-1"
+		region = "us-west-2"
 	}
 
 	opts := []func(*config.LoadOptions) error{
@@ -80,6 +80,9 @@ type Response struct {
 	ToolUses     []ToolUseRequest
 	InputTokens  int32
 	OutputTokens int32
+	// Cache token metrics
+	CacheReadInputTokens  int32
+	CacheWriteInputTokens int32
 	// RawOutput preserves the full output for building history
 	RawOutput types.ConverseOutput
 	// RawContentBlocks preserves the full content blocks from the assistant message
@@ -88,6 +91,8 @@ type Response struct {
 
 // Converse sends the full message history and returns the response.
 // The messages slice should contain proper types.Message values.
+// Applies prompt caching: cache checkpoints are placed after the system prompt
+// and after the tools definition to maximize cache hits across turns.
 func (c *Client) Converse(ctx context.Context, system string, messages []types.Message, tools []ToolDefinition) (*Response, error) {
 	input := &bedrockruntime.ConverseInput{
 		ModelId:  aws.String(c.modelID),
@@ -97,6 +102,10 @@ func (c *Client) Converse(ctx context.Context, system string, messages []types.M
 	if system != "" {
 		input.System = []types.SystemContentBlock{
 			&types.SystemContentBlockMemberText{Value: system},
+			// Cache checkpoint after system prompt — this is stable across turns
+			&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
+				Type: types.CachePointTypeDefault,
+			}},
 		}
 	}
 
@@ -143,6 +152,8 @@ func parseConverseOutput(output *bedrockruntime.ConverseOutput) *Response {
 	if output.Usage != nil {
 		resp.InputTokens = aws.ToInt32(output.Usage.InputTokens)
 		resp.OutputTokens = aws.ToInt32(output.Usage.OutputTokens)
+		resp.CacheReadInputTokens = aws.ToInt32(output.Usage.CacheReadInputTokens)
+		resp.CacheWriteInputTokens = aws.ToInt32(output.Usage.CacheWriteInputTokens)
 	}
 
 	if output.Output != nil {
