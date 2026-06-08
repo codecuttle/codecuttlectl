@@ -102,12 +102,16 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 
 		input := &bedrockruntime.ConverseStreamInput{
 			ModelId:  aws.String(c.modelID),
-			Messages: messages,
+			Messages: applyCachePoints(messages),
 		}
 
 		if system != "" {
 			input.System = []types.SystemContentBlock{
 				&types.SystemContentBlockMemberText{Value: system},
+				// Cache checkpoint after system prompt — stable across turns
+				&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
+					Type: types.CachePointTypeDefault,
+				}},
 			}
 		}
 

@@ -25,7 +25,7 @@ import (
 func main() {
 	var (
 		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID")
-		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-east-1)")
+		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
 		profile   = flag.String("profile", "", "AWS profile name")
 		workDir   = flag.String("workdir", "", "Working directory (default: current directory)")
 		pluginDir = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
