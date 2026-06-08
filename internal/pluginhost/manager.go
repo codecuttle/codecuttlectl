@@ -102,6 +102,48 @@ func (c *grpcClient) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.E
 	return c.client.Execute(ctx, req)
 }
 
+// ToolStreamEvent represents a single event from a streaming tool execution.
+type ToolStreamEvent struct {
+	OutputDelta string // Incremental stdout text
+	ErrorDelta  string // Incremental stderr text
+	Progress    string // Progress message
+	Percent     float32
+	Final       *pb.ExecuteResponse // Set on the last event
+}
+
+// ExecuteStream calls the streaming RPC and returns a channel of events.
+// Falls back to Execute() if the stream call fails (plugin doesn't implement it).
+func (c *grpcClient) ExecuteStream(ctx context.Context, req *pb.ExecuteRequest) (<-chan ToolStreamEvent, error) {
+	stream, err := c.client.ExecuteStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	events := make(chan ToolStreamEvent, 64)
+	go func() {
+		defer close(events)
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			switch e := event.Event.(type) {
+			case *pb.ExecuteStreamEvent_OutputDelta:
+				events <- ToolStreamEvent{OutputDelta: e.OutputDelta.Text}
+			case *pb.ExecuteStreamEvent_ErrorDelta:
+				events <- ToolStreamEvent{ErrorDelta: e.ErrorDelta.Text}
+			case *pb.ExecuteStreamEvent_Progress:
+				events <- ToolStreamEvent{Progress: e.Progress.Message, Percent: e.Progress.Percent}
+			case *pb.ExecuteStreamEvent_Final:
+				events <- ToolStreamEvent{Final: e.Final}
+				return
+			}
+		}
+	}()
+
+	return events, nil
+}
+
 // --- Plugin Manager ---
 
 // ManagedPlugin holds a running plugin's client and its metadata.
@@ -111,8 +153,9 @@ type ManagedPlugin struct {
 	InputSchema json.RawMessage
 	LLMHint     string
 	Version     string
-	Path        string // Binary path for restart
-	MaxTimeout  time.Duration
+	Path           string // Binary path for restart
+	MaxTimeout     time.Duration
+	CanStream      bool   // Whether plugin supports ExecuteStream
 
 	client    *plugin.Client
 	rpcClient *grpcClient
@@ -236,6 +279,11 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 		maxTimeout = time.Duration(desc.Capabilities.MaxTimeoutSeconds) * time.Second
 	}
 
+	canStream := false
+	if desc.Capabilities != nil && desc.Capabilities.SupportsStreaming {
+		canStream = true
+	}
+
 	managed := &ManagedPlugin{
 		Name:        desc.Name,
 		Description: desc.Description,
@@ -244,6 +292,7 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 		Version:     desc.Version,
 		Path:        path,
 		MaxTimeout:  maxTimeout,
+		CanStream:   canStream,
 		client:      client,
 		rpcClient:   toolClient,
 		healthy:     true,
@@ -363,6 +412,86 @@ func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMe
 	}
 
 	return ExecuteResult{Output: resp.Output, Metadata: resp.Metadata, IsError: false}, nil
+}
+
+// ExecuteStream invokes a tool's streaming RPC if supported, otherwise falls
+// back to Execute() and synthesizes a single final event. Returns a channel
+// of ToolStreamEvents that the caller consumes.
+func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.RawMessage, workDir string) (<-chan ToolStreamEvent, error) {
+	m.mu.RLock()
+	p, ok := m.plugins[name]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("unknown plugin tool: %s", name)
+	}
+
+	// If plugin doesn't support streaming, fall back to Execute and wrap result
+	if !p.CanStream {
+		result, err := m.ExecuteFull(ctx, name, input, workDir)
+		ch := make(chan ToolStreamEvent, 1)
+		resp := &pb.ExecuteResponse{
+			Output:   result.Output,
+			IsError:  result.IsError,
+			Metadata: result.Metadata,
+		}
+		if err != nil && result.IsError {
+			resp.ErrorMessage = err.Error()
+		}
+		ch <- ToolStreamEvent{Final: resp}
+		close(ch)
+		return ch, nil
+	}
+
+	// Validate input
+	if m.validateInput && len(p.InputSchema) > 0 {
+		if err := pluginschema.Validate(string(p.InputSchema), input); err != nil {
+			ch := make(chan ToolStreamEvent, 1)
+			ch <- ToolStreamEvent{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("Input validation failed: %s", err.Error()),
+			}}
+			close(ch)
+			return ch, nil
+		}
+	}
+
+	// Call streaming RPC
+	execCtx, cancel := context.WithTimeout(ctx, p.MaxTimeout)
+	eventCh, err := p.rpcClient.ExecuteStream(execCtx, &pb.ExecuteRequest{
+		Input:            string(input),
+		WorkingDirectory: workDir,
+	})
+	if err != nil {
+		cancel()
+		// Fall back to non-streaming on RPC error
+		m.logger.Debug("ExecuteStream RPC failed, falling back to Execute", "plugin", name, "error", err)
+		result, execErr := m.ExecuteFull(ctx, name, input, workDir)
+		ch := make(chan ToolStreamEvent, 1)
+		resp := &pb.ExecuteResponse{
+			Output:   result.Output,
+			IsError:  result.IsError,
+			Metadata: result.Metadata,
+		}
+		if execErr != nil && result.IsError {
+			resp.ErrorMessage = execErr.Error()
+		}
+		ch <- ToolStreamEvent{Final: resp}
+		close(ch)
+		return ch, nil
+	}
+
+	// Wrap the event channel to handle cancellation
+	wrappedCh := make(chan ToolStreamEvent, 64)
+	go func() {
+		defer close(wrappedCh)
+		defer cancel()
+		for event := range eventCh {
+			wrappedCh <- event
+		}
+	}()
+
+	return wrappedCh, nil
 }
 
 // restartPlugin attempts to restart a crashed plugin subprocess.
