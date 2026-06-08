@@ -34,6 +34,7 @@ func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
+			SupportsStreaming:    true,
 			MaxTimeoutSeconds:    30,
 		},
 		Skills: []*pb.Skill{
@@ -192,6 +193,200 @@ func allowedList() string {
 		list = append(list, k)
 	}
 	return strings.Join(list, ", ")
+}
+
+// ExecuteStream implements the streaming execution RPC for git.
+// Streams stdout/stderr incrementally as the git command runs.
+func (t *gitTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error {
+	var params gitInput
+	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("parsing input: %v", err),
+			}},
+		})
+	}
+
+	if params.Subcommand == "" {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: "subcommand is required",
+			}},
+		})
+	}
+
+	// Safety: check subcommand whitelist
+	if !allowedSubcommands[params.Subcommand] {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("subcommand %q is not allowed. Allowed: %s", params.Subcommand, allowedList()),
+			}},
+		})
+	}
+
+	// Safety: same arg checks as Execute
+	for _, arg := range params.Args {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "--force" || trimmed == "-f" {
+			if trimmed == "-f" && (params.Subcommand == "checkout" || params.Subcommand == "branch") {
+				continue
+			}
+			if trimmed == "--force" {
+				continue
+			}
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("forbidden argument %q detected for %q.", trimmed, params.Subcommand),
+				}},
+			})
+		}
+		if params.Subcommand == "push" && trimmed == "--force" {
+			hasLease := false
+			for _, a := range params.Args {
+				if strings.TrimSpace(a) == "--force-with-lease" {
+					hasLease = true
+					break
+				}
+			}
+			if !hasLease {
+				return stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+						IsError:      true,
+						ErrorMessage: "forbidden: 'git push --force' is destructive.",
+					}},
+				})
+			}
+		}
+		if trimmed == "--hard" {
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: "forbidden: 'git reset --hard' is destructive.",
+				}},
+			})
+		}
+	}
+
+	// Build and run git command with pipes
+	cmdArgs := append([]string{params.Subcommand}, params.Args...)
+	ctx := stream.Context()
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+
+	workDir := params.WorkDir
+	if workDir == "" {
+		workDir = req.WorkingDirectory
+	}
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("creating stdout pipe: %v", err),
+			}},
+		})
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("creating stderr pipe: %v", err),
+			}},
+		})
+	}
+
+	if err := cmd.Start(); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("starting git: %v", err),
+			}},
+		})
+	}
+
+	// Stream stdout and stderr concurrently
+	var stdoutBuf, stderrBuf strings.Builder
+	done := make(chan struct{})
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stdout.Read(buf)
+			if n > 0 {
+				text := string(buf[:n])
+				stdoutBuf.WriteString(text)
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_OutputDelta{OutputDelta: &pb.OutputDelta{Text: text}},
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		done <- struct{}{}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				text := string(buf[:n])
+				stderrBuf.WriteString(text)
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_ErrorDelta{ErrorDelta: &pb.OutputDelta{Text: text}},
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+
+	cmdErr := cmd.Wait()
+
+	// Build final response
+	result := stdoutBuf.String()
+	stderrStr := stderrBuf.String()
+	metadata := map[string]string{"subcommand": params.Subcommand}
+	if stderrStr != "" {
+		metadata["stderr"] = stderrStr
+	}
+
+	resp := &pb.ExecuteResponse{Metadata: metadata}
+
+	if cmdErr != nil {
+		combined := result
+		if stderrStr != "" {
+			if combined != "" {
+				combined += "\n"
+			}
+			combined += stderrStr
+		}
+		resp.Output = fmt.Sprintf("git %s failed (exit: %v)\n\n%s", params.Subcommand, cmdErr, combined)
+		metadata["exit_error"] = cmdErr.Error()
+	} else {
+		if result == "" {
+			result = "(no output)"
+		}
+		resp.Output = result
+	}
+
+	return stream.Send(&pb.ExecuteStreamEvent{
+		Event: &pb.ExecuteStreamEvent_Final{Final: resp},
+	})
 }
 
 func main() {

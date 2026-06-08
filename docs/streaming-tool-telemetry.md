@@ -280,7 +280,7 @@ Every session file contains enough to reconstruct:
 | 5 | Plugin manager `ExecuteStream` + fallback to `Execute` | ✅ Done |
 | 6 | TUI: live tool output preview block | ✅ Done |
 | 7 | AuditTrail in session + structured log output | ✅ Done |
-| 8 | Other plugins streaming (git, grep, glob) | ⬜ Future |
+| 8 | Other plugins streaming (git, grep, glob) | ✅ Done |
 | 9 | User approval flow for destructive operations | ✅ Done |
 | 10 | OpenTelemetry integration | ⬜ Future |
 

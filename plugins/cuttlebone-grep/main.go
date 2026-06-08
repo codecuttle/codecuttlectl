@@ -35,6 +35,7 @@ func (t *grepTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
+			SupportsStreaming:    true,
 			MaxTimeoutSeconds:    30,
 		},
 	}, nil
@@ -181,6 +182,144 @@ func isBinaryExt(ext string) bool {
 		".wasm": true, ".pyc": true, ".pyo": true,
 	}
 	return binary[ext]
+}
+
+// ExecuteStream implements the streaming execution RPC for grep.
+// Streams matching lines incrementally as files are scanned.
+func (t *grepTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error {
+	var params grepInput
+	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("parsing input: %v", err),
+			}},
+		})
+	}
+
+	if params.Pattern == "" {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: "pattern is required",
+			}},
+		})
+	}
+
+	re, err := regexp.Compile(params.Pattern)
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("invalid regex: %v", err),
+			}},
+		})
+	}
+
+	searchDir := params.Path
+	if searchDir == "" {
+		searchDir = req.WorkingDirectory
+	}
+	if searchDir == "" {
+		searchDir = "."
+	}
+
+	maxResults := params.MaxResults.Int()
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+
+	ctx := stream.Context()
+	var results []string
+	matchCount := 0
+
+	err = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name != "." && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "__pycache__") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.Size() > 1024*1024 {
+			return nil
+		}
+		if params.Include != "" {
+			matched, _ := filepath.Match(params.Include, info.Name())
+			if !matched {
+				return nil
+			}
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if isBinaryExt(ext) {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+
+		scanner := bufio.NewScanner(f)
+		lineNum := 0
+		for scanner.Scan() {
+			lineNum++
+			line := scanner.Text()
+			if re.MatchString(line) {
+				relPath, _ := filepath.Rel(searchDir, path)
+				if relPath == "" {
+					relPath = path
+				}
+				matchLine := fmt.Sprintf("%s:%d: %s", relPath, lineNum, truncateLine(line, 200))
+				results = append(results, matchLine)
+
+				// Stream each match as an output delta
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_OutputDelta{OutputDelta: &pb.OutputDelta{Text: matchLine + "\n"}},
+				})
+
+				matchCount++
+				if matchCount >= maxResults {
+					return fmt.Errorf("max_results reached")
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil && err.Error() != "max_results reached" && ctx.Err() == nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("search error: %v", err),
+			}},
+		})
+	}
+
+	// Build final output
+	var output string
+	if len(results) == 0 {
+		output = fmt.Sprintf("No matches found for pattern %q", params.Pattern)
+	} else {
+		output = strings.Join(results, "\n")
+		if matchCount >= maxResults {
+			output += fmt.Sprintf("\n\n(showing first %d matches, more may exist)", maxResults)
+		}
+	}
+
+	return stream.Send(&pb.ExecuteStreamEvent{
+		Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+			Output:   output,
+			Metadata: map[string]string{"matches": fmt.Sprintf("%d", matchCount)},
+		}},
+	})
 }
 
 func main() {
