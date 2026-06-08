@@ -380,7 +380,7 @@ Searching by tag surfaces items from any project: `list_work(tag="needs-research
 
 | Phase | What | Dependencies | Status |
 |-------|------|-------------|--------|
-| 1 | `internal/backlog/` package: WorkItem types, FileStore, ID generation, project detection | None | ⬜ |
+| 1 | `internal/backlog/` package: WorkItem types, FileStore, ID generation, project detection | None | ✅ Done |
 | 2 | `propose_work` + `list_work` built-in tools | Phase 1 | ⬜ |
 | 3 | CLI subcommand: `codecuttlectl backlog list/show/approve/reject` | Phase 1 | ⬜ |
 | 4 | Integration: Inkwell CapabilityGap detection | Phase 1, Inkwell | ⬜ |
