@@ -19,6 +19,14 @@ type ToolImpl interface {
 	Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error)
 }
 
+// StreamingToolImpl is an optional interface that plugins can implement
+// to support streaming output. Plugins that implement this interface should
+// also set SupportsStreaming=true in their ToolCapabilities.
+type StreamingToolImpl interface {
+	ToolImpl
+	ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error
+}
+
 // Serve starts the gRPC plugin server. Call this from your plugin's main().
 func Serve(impl ToolImpl) {
 	plugin.Serve(&plugin.ServeConfig{
@@ -57,6 +65,26 @@ func (s *server) Describe(ctx context.Context, req *pb.DescribeRequest) (*pb.Des
 
 func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	return s.impl.Execute(ctx, req)
+}
+
+func (s *server) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error {
+	// If the implementation supports streaming, use it
+	if streamer, ok := s.impl.(StreamingToolImpl); ok {
+		return streamer.ExecuteStream(req, stream)
+	}
+	// Fallback: run Execute and send as a single final event
+	resp, err := s.impl.Execute(stream.Context(), req)
+	if err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: err.Error(),
+			}},
+		})
+	}
+	return stream.Send(&pb.ExecuteStreamEvent{
+		Event: &pb.ExecuteStreamEvent_Final{Final: resp},
+	})
 }
 
 // EmbedSkill creates a Skill proto from an embedded file. This is the recommended

@@ -33,6 +33,7 @@ func (t *globTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
+			SupportsStreaming:    true,
 			MaxTimeoutSeconds:    15,
 		},
 	}, nil
@@ -202,6 +203,131 @@ func matchGlob(pattern, path string) bool {
 	// Try matching just the filename
 	matched, _ = filepath.Match(pattern, filepath.Base(path))
 	return matched
+}
+
+// ExecuteStream implements the streaming execution RPC for glob.
+// Streams matched file paths incrementally as the filesystem is walked.
+func (t *globTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_ExecuteStreamServer) error {
+	var params globInput
+	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("parsing input: %v", err),
+			}},
+		})
+	}
+
+	if params.Pattern == "" {
+		return stream.Send(&pb.ExecuteStreamEvent{
+			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: "pattern is required",
+			}},
+		})
+	}
+
+	baseDir := params.Path
+	if baseDir == "" {
+		baseDir = req.WorkingDirectory
+	}
+	if baseDir == "" {
+		baseDir = "."
+	}
+
+	maxResults := params.MaxResults.Int()
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+
+	ctx := stream.Context()
+	var matches []fileResult
+
+	if strings.Contains(params.Pattern, "**") {
+		err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if info.IsDir() {
+				name := info.Name()
+				if name != "." && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			relPath, _ := filepath.Rel(baseDir, path)
+			if matchGlob(params.Pattern, relPath) {
+				matches = append(matches, fileResult{path: relPath, modTime: info.ModTime().Unix()})
+				// Stream each match as it's found
+				stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_OutputDelta{OutputDelta: &pb.OutputDelta{Text: relPath + "\n"}},
+				})
+			}
+			return nil
+		})
+		if err != nil && ctx.Err() == nil {
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("walking directory: %v", err),
+				}},
+			})
+		}
+	} else {
+		fullPattern := filepath.Join(baseDir, params.Pattern)
+		globMatches, err := filepath.Glob(fullPattern)
+		if err != nil {
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("invalid glob pattern: %v", err),
+				}},
+			})
+		}
+		for _, m := range globMatches {
+			info, err := os.Stat(m)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			relPath, _ := filepath.Rel(baseDir, m)
+			matches = append(matches, fileResult{path: relPath, modTime: info.ModTime().Unix()})
+			stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_OutputDelta{OutputDelta: &pb.OutputDelta{Text: relPath + "\n"}},
+			})
+		}
+	}
+
+	// Sort by modification time (most recent first)
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].modTime > matches[j].modTime
+	})
+
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	// Build final output (sorted)
+	var output string
+	if len(matches) == 0 {
+		output = fmt.Sprintf("No files found matching pattern %q", params.Pattern)
+	} else {
+		var lines []string
+		for _, m := range matches {
+			lines = append(lines, m.path)
+		}
+		output = strings.Join(lines, "\n")
+	}
+
+	return stream.Send(&pb.ExecuteStreamEvent{
+		Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+			Output:   output,
+			Metadata: map[string]string{"matches": fmt.Sprintf("%d", len(matches))},
+		}},
+	})
 }
 
 func main() {
