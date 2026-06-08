@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -30,7 +31,7 @@ func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Name:        "git",
 		Description: "Execute git commands for version control. Supports: status, diff, log, add, commit, branch, checkout, stash. For safety, destructive operations (force push, reset --hard) are rejected.",
 		InputSchema: schema.MustSchema(&gitInput{}),
-		LlmContextHint: "Use git for version control operations. Always check 'git status' before committing. Use 'git diff' to review changes. Allowed subcommands: status, diff, log, add, commit, branch, checkout, stash, show, rev-parse, remote, fetch, pull, tag, blame. Forbidden: push --force, reset --hard, clean -fd.",
+		LlmContextHint: "Use git for version control operations. Always check 'git status' before committing. Use 'git diff' to review changes. Allowed subcommands: status, diff, log, add, commit, branch, checkout, stash, show, rev-parse, remote, fetch, pull, push, tag, blame, merge, rebase, cherry-pick, init. Forbidden: push --force, reset --hard, clean -fd. Protected branches (main, master, production, prod): direct commits and pushes are blocked — always create a feature branch first.",
 		Version:         "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
@@ -71,6 +72,71 @@ var allowedSubcommands = map[string]bool{
 // Forbidden argument patterns
 // NOTE: These are now checked per-argument (not via substring of joined args)
 // to prevent false positives from commit messages containing these strings.
+
+// Default protected branches. Direct commits and pushes to these branches are blocked.
+// Override via CODECUTTLECTL_PROTECTED_BRANCHES env var (comma-separated).
+var protectedBranches = getProtectedBranches()
+
+func getProtectedBranches() map[string]bool {
+	defaults := map[string]bool{
+		"main":       true,
+		"master":     true,
+		"production": true,
+		"prod":       true,
+	}
+
+	env := os.Getenv("CODECUTTLECTL_PROTECTED_BRANCHES")
+	if env == "" {
+		return defaults
+	}
+
+	// If env is set, it completely overrides defaults
+	result := make(map[string]bool)
+	for _, b := range strings.Split(env, ",") {
+		b = strings.TrimSpace(b)
+		if b != "" {
+			result[b] = true
+		}
+	}
+	return result
+}
+
+// getCurrentBranch returns the current git branch name for the given working directory.
+func getCurrentBranch(workDir string) string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// getPushTarget extracts the target branch from push args.
+// Returns the remote branch name if explicit, or empty string if implicit (uses current).
+func getPushTarget(args []string) string {
+	// git push origin main → "main"
+	// git push origin feature:main → "main"
+	// git push → "" (uses current branch)
+	nonFlagArgs := []string{}
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			nonFlagArgs = append(nonFlagArgs, a)
+		}
+	}
+	// nonFlagArgs[0] = remote, nonFlagArgs[1] = refspec
+	if len(nonFlagArgs) >= 2 {
+		refspec := nonFlagArgs[1]
+		// Handle src:dst refspec
+		if idx := strings.Index(refspec, ":"); idx >= 0 {
+			return refspec[idx+1:]
+		}
+		return refspec
+	}
+	return ""
+}
 
 func (t *gitTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	var params gitInput
@@ -154,14 +220,45 @@ func (t *gitTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Exec
 		}
 	}
 
-	// Build git command
-	cmdArgs := append([]string{params.Subcommand}, params.Args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-
+	// Resolve working directory early (needed for branch detection)
 	workDir := params.WorkDir
 	if workDir == "" {
 		workDir = req.WorkingDirectory
 	}
+
+	// Protected branch guard: block direct commits and pushes to protected branches.
+	// The agent should always work on a feature branch and merge via PR.
+	if params.Subcommand == "commit" {
+		branch := getCurrentBranch(workDir)
+		if protectedBranches[branch] {
+			return &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: fmt.Sprintf("forbidden: direct commit to protected branch %q. Create a feature branch first with 'git checkout -b <branch-name>', then commit there.", branch),
+			}, nil
+		}
+	}
+	if params.Subcommand == "push" {
+		// Check explicit push target, or fall back to current branch
+		target := getPushTarget(params.Args)
+		if target == "" {
+			target = getCurrentBranch(workDir)
+		}
+		if protectedBranches[target] {
+			// Allow pushing if we're on a feature branch pushing to its own remote
+			currentBranch := getCurrentBranch(workDir)
+			if protectedBranches[currentBranch] {
+				return &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("forbidden: direct push to protected branch %q. Create a feature branch, commit there, and push the feature branch instead.", target),
+				}, nil
+			}
+		}
+	}
+
+	// Build git command
+	cmdArgs := append([]string{params.Subcommand}, params.Args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -271,15 +368,47 @@ func (t *gitTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugin_Exe
 		}
 	}
 
+	// Resolve working directory (needed for branch detection)
+	workDir := params.WorkDir
+	if workDir == "" {
+		workDir = req.WorkingDirectory
+	}
+
+	// Protected branch guard (same as Execute)
+	if params.Subcommand == "commit" {
+		branch := getCurrentBranch(workDir)
+		if protectedBranches[branch] {
+			return stream.Send(&pb.ExecuteStreamEvent{
+				Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: fmt.Sprintf("forbidden: direct commit to protected branch %q. Create a feature branch first.", branch),
+				}},
+			})
+		}
+	}
+	if params.Subcommand == "push" {
+		target := getPushTarget(params.Args)
+		if target == "" {
+			target = getCurrentBranch(workDir)
+		}
+		if protectedBranches[target] {
+			currentBranch := getCurrentBranch(workDir)
+			if protectedBranches[currentBranch] {
+				return stream.Send(&pb.ExecuteStreamEvent{
+					Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
+						IsError:      true,
+						ErrorMessage: fmt.Sprintf("forbidden: direct push to protected branch %q. Create a feature branch and push that instead.", target),
+					}},
+				})
+			}
+		}
+	}
+
 	// Build and run git command with pipes
 	cmdArgs := append([]string{params.Subcommand}, params.Args...)
 	ctx := stream.Context()
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 
-	workDir := params.WorkDir
-	if workDir == "" {
-		workDir = req.WorkingDirectory
-	}
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
