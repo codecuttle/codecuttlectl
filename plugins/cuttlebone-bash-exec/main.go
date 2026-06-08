@@ -64,13 +64,17 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 
 	// Self-monitoring: detect when bash_exec is being used for operations
-	// that have dedicated tools. Warn in the response so the Inkwell/reconciler
-	// can flag this pattern.
+	// that have dedicated tools. Block the command and return an error so
+	// the agent can retry with the correct tool.
 	if warning := detectToolMisuse(params.Command); warning != "" {
-		// Still execute the command (don't block), but prepend a warning
-		// that surfaces to the model for self-correction.
-		defer func() {}() // placeholder for future Inkwell integration
-		_ = warning       // Used below in response
+		return &pb.ExecuteResponse{
+			IsError:      true,
+			ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE: %s\n\nThe command was NOT executed. Use the appropriate tool instead.", warning),
+			Metadata: map[string]string{
+				"tool_misuse":  "true",
+				"blocked_cmd":  params.Command,
+			},
+		}, nil
 	}
 	timeout := params.Timeout.Int()
 	if timeout == 0 {
@@ -117,16 +121,6 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 
 	metadata["exit_code"] = "0"
-
-	// If tool misuse was detected, prepend warning to output
-	if warning := detectToolMisuse(params.Command); warning != "" {
-		metadata["tool_misuse_warning"] = warning
-		return &pb.ExecuteResponse{
-			Output:   fmt.Sprintf("⚠️ TOOL DISCIPLINE WARNING: %s\n\n%s", warning, result),
-			Metadata: metadata,
-		}, nil
-	}
-
 	return &pb.ExecuteResponse{
 		Output:   result,
 		Metadata: metadata,
