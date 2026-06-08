@@ -186,6 +186,7 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 			start := time.Now()
 			result, status := a.executeTool(ctx, toolUse.Name, toolUse.Input)
 			duration := time.Since(start)
+			endTime := time.Now().UTC()
 
 			if a.verbose {
 				truncated := result
@@ -195,18 +196,22 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 				log.Printf("[tool result] %s (%dms)", truncated, duration.Milliseconds())
 			}
 
-			// Record in Inkwell
+			// Record in Inkwell — full output, never truncated
 			isErr := status == types.ToolResultStatusError
 			a.inkwell = append(a.inkwell, session.InkEntry{
-				Timestamp:  time.Now().UTC(),
-				Turn:       a.turn,
-				ToolName:   toolUse.Name,
-				ToolUseID:  toolUse.ToolUseID,
-				Input:      toolUse.Input,
-				Output:     result,
-				DurationMs: duration.Milliseconds(),
-				IsError:    isErr,
-				ErrorType:  string(inkwell.Classify(toolUse.Name, result, isErr).Class),
+				Timestamp:        start.UTC(),
+				EndTime:          endTime,
+				Turn:             a.turn,
+				Step:             step,
+				ToolName:         toolUse.Name,
+				ToolUseID:        toolUse.ToolUseID,
+				Input:            toolUse.Input,
+				Output:           result, // Full output — NEVER truncate in Inkwell
+				DurationMs:       duration.Milliseconds(),
+				IsError:          isErr,
+				ErrorType:        string(inkwell.Classify(toolUse.Name, result, isErr).Class),
+				ReasoningContext: resp.Content, // Model's text reasoning this step
+				UserIntent:       userMessage,
 			})
 
 			toolResults = append(toolResults, bedrock.ToolResult{
@@ -343,6 +348,7 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 			start := time.Now()
 			result, status := a.executeTool(ctx, tc.name, tc.input)
 			duration := time.Since(start)
+			endTime := time.Now().UTC()
 
 			if a.verbose {
 				truncated := result
@@ -354,15 +360,19 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 
 			isErr := status == types.ToolResultStatusError
 			a.inkwell = append(a.inkwell, session.InkEntry{
-				Timestamp:  time.Now().UTC(),
-				Turn:       a.turn,
-				ToolName:   tc.name,
-				ToolUseID:  tc.id,
-				Input:      tc.input,
-				Output:     result,
-				DurationMs: duration.Milliseconds(),
-				IsError:    isErr,
-				ErrorType:  string(inkwell.Classify(tc.name, result, isErr).Class),
+				Timestamp:        start.UTC(),
+				EndTime:          endTime,
+				Turn:             a.turn,
+				Step:             step,
+				ToolName:         tc.name,
+				ToolUseID:        tc.id,
+				Input:            tc.input,
+				Output:           result, // Full output — NEVER truncate in Inkwell
+				DurationMs:       duration.Milliseconds(),
+				IsError:          isErr,
+				ErrorType:        string(inkwell.Classify(tc.name, result, isErr).Class),
+				ReasoningContext: textBuf.String(), // Model's reasoning text this round
+				UserIntent:       userMessage,
 			})
 
 			toolResults = append(toolResults, bedrock.ToolResult{

@@ -122,20 +122,37 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 		cmd.Dir = workDir
 	}
 
-	var output strings.Builder
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	// Capture stdout and stderr separately for telemetry.
+	// Combined output is still returned to the model, but the plugin response
+	// metadata carries separated stderr for Inkwell auditing.
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	err := cmd.Run()
 
-	result := output.String()
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
+	// Combined output for the model (same behavior as before)
+	result := stdout
+	if stderr != "" {
+		if result != "" {
+			result += "\n"
+		}
+		result += stderr
+	}
 	metadata := map[string]string{}
+
+	// Always include separated stderr in metadata for Inkwell capture
+	if stderr != "" {
+		metadata["stderr"] = stderr
+	}
 
 	if timeoutCtx.Err() == context.DeadlineExceeded {
 		return &pb.ExecuteResponse{
 			Output:   fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result),
 			IsError:  true,
-			Metadata: map[string]string{"timeout": "true"},
+			Metadata: map[string]string{"timeout": "true", "stderr": stderr},
 		}, nil
 	}
 

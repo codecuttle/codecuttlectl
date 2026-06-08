@@ -263,22 +263,43 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 	return nil
 }
 
+// ExecuteResult holds the full result of a plugin execution including metadata.
+type ExecuteResult struct {
+	Output   string
+	Metadata map[string]string
+	IsError  bool
+}
+
 // Execute invokes a tool by name with the given JSON input.
 // Applies a per-plugin execution timeout.
 // If the plugin has crashed, attempts to restart it before failing.
 func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessage, workDir string) (string, error) {
+	result, err := m.ExecuteFull(ctx, name, input, workDir)
+	if err != nil {
+		return result.Output, err
+	}
+	if result.IsError {
+		return result.Output, fmt.Errorf("tool error")
+	}
+	return result.Output, nil
+}
+
+// ExecuteFull invokes a tool and returns the full result including metadata.
+// Use this when you need access to stderr, exit codes, or other metadata
+// for telemetry/Inkwell recording.
+func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMessage, workDir string) (ExecuteResult, error) {
 	m.mu.RLock()
 	p, ok := m.plugins[name]
 	m.mu.RUnlock()
 
 	if !ok {
-		return "", fmt.Errorf("unknown plugin tool: %s", name)
+		return ExecuteResult{Output: fmt.Sprintf("unknown plugin tool: %s", name)}, fmt.Errorf("unknown plugin tool: %s", name)
 	}
 
 	// Check if the plugin process is still alive; restart if needed
 	if !p.healthy || p.client.Exited() {
 		if err := m.restartPlugin(ctx, p); err != nil {
-			return fmt.Sprintf("Plugin %s is unavailable: %s", name, err.Error()),
+			return ExecuteResult{Output: fmt.Sprintf("Plugin %s is unavailable: %s", name, err.Error()), IsError: true},
 				fmt.Errorf("plugin %s crashed and could not be restarted: %w", name, err)
 		}
 	}
@@ -288,7 +309,7 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 		if err := pluginschema.Validate(string(p.InputSchema), input); err != nil {
 			errMsg := fmt.Sprintf("Input validation failed for tool %s: %s", name, err.Error())
 			m.logger.Debug("input validation failed", "tool", name, "error", err)
-			return errMsg, fmt.Errorf("input validation: %w", err)
+			return ExecuteResult{Output: errMsg, IsError: true}, fmt.Errorf("input validation: %w", err)
 		}
 	}
 
@@ -316,18 +337,18 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 					WorkingDirectory: workDir,
 				})
 				if err != nil {
-					return fmt.Sprintf("Plugin %s failed after restart: %s", name, err.Error()),
+					return ExecuteResult{Output: fmt.Sprintf("Plugin %s failed after restart: %s", name, err.Error()), IsError: true},
 						fmt.Errorf("executing plugin %s after restart: %w", name, err)
 				}
 			} else {
-				return fmt.Sprintf("Plugin %s crashed and could not be restarted: %s", name, restartErr.Error()),
+				return ExecuteResult{Output: fmt.Sprintf("Plugin %s crashed and could not be restarted: %s", name, restartErr.Error()), IsError: true},
 					fmt.Errorf("plugin %s unavailable: %w", name, restartErr)
 			}
 		} else if execCtx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("Plugin %s timed out after %s", name, p.MaxTimeout),
+			return ExecuteResult{Output: fmt.Sprintf("Plugin %s timed out after %s", name, p.MaxTimeout), IsError: true},
 				fmt.Errorf("plugin %s execution timed out after %s", name, p.MaxTimeout)
 		} else {
-			return fmt.Sprintf("Plugin %s error: %s", name, err.Error()),
+			return ExecuteResult{Output: fmt.Sprintf("Plugin %s error: %s", name, err.Error()), IsError: true},
 				fmt.Errorf("executing plugin %s: %w", name, err)
 		}
 	}
@@ -338,10 +359,10 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 		if resp.Output != "" {
 			errMsg = resp.Output + "\n" + errMsg
 		}
-		return errMsg, fmt.Errorf("tool error: %s", resp.ErrorMessage)
+		return ExecuteResult{Output: errMsg, Metadata: resp.Metadata, IsError: true}, fmt.Errorf("tool error: %s", resp.ErrorMessage)
 	}
 
-	return resp.Output, nil
+	return ExecuteResult{Output: resp.Output, Metadata: resp.Metadata, IsError: false}, nil
 }
 
 // restartPlugin attempts to restart a crashed plugin subprocess.
