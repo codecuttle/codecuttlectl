@@ -90,6 +90,34 @@ type ContinueStreamMsg struct {
 	TodoInputs []json.RawMessage // Raw todo_manage inputs to apply in Update
 }
 
+// ApprovalRequestMsg signals that a tool requires user confirmation before execution.
+type ApprovalRequestMsg struct {
+	ToolIndex       int    // Index in the pending tools slice where approval is needed
+	ToolName        string // Tool name for display
+	ToolUseID       string
+	Input           json.RawMessage // Original tool input
+	Command         string          // Human-readable command description
+	Reason          string          // Why confirmation is needed
+	Risk            string          // Risk level string
+	CompletedResults []bedrock.ToolResult  // Results already collected before this tool
+	CompletedTodos   []json.RawMessage     // Todos collected before this tool
+	RemainingTools   []pendingToolForApproval // Tools after this one still to execute
+}
+
+// pendingToolForApproval holds serializable pending tool data for approval flow.
+type pendingToolForApproval struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
+}
+
+// ApprovalDecisionMsg carries the user's approval decision for a pending tool.
+type ApprovalDecisionMsg struct {
+	ToolIndex int
+	ToolUseID string
+	Approved  bool
+}
+
 // UserSubmitMsg carries a user's submitted message.
 type UserSubmitMsg struct {
 	Text string

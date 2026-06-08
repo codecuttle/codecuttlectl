@@ -281,7 +281,7 @@ Every session file contains enough to reconstruct:
 | 6 | TUI: live tool output preview block | ✅ Done |
 | 7 | AuditTrail in session + structured log output | ⬜ Future |
 | 8 | Other plugins streaming (git, grep, glob) | ⬜ Future |
-| 9 | User approval flow for destructive operations | ⬜ Future |
+| 9 | User approval flow for destructive operations | ✅ Done |
 | 10 | OpenTelemetry integration | ⬜ Future |
 
 ## TUI Preview Rendering

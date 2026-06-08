@@ -40,6 +40,9 @@ func main() {
 		listSessions  = flag.Bool("list-sessions", false, "Show recent sessions and exit")
 		sessionLimit  = flag.Int("session-limit", 20, "Number of sessions to show in list")
 		pruneSessions = flag.Int("prune-sessions", 0, "Delete sessions older than N days and exit")
+
+		// Safety
+		autoApprove = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
 	)
 	flag.Parse()
 
@@ -145,13 +148,13 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *oneShot)
+		runOneShot(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, *oneShot)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose)
+		runPlainREPL(ctx, client, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove)
 		return
 	}
 
@@ -163,6 +166,7 @@ func main() {
 		WorkDir:        *workDir,
 		Verbose:        *verbose,
 		EnableThinking: *thinking,
+		AutoApprove:    *autoApprove,
 		Store:          store,
 		SessionID:      *sessionID,
 	})
@@ -181,16 +185,17 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose bool, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, message string) {
 	agent, err := conversation.NewAgent(conversation.Config{
-		Client:    client,
-		PromptMgr: nil, // Not needed, system prompt already rendered
-		PluginMgr: pluginMgr,
-		WorkDir:   workDir,
-		MaxSteps:  maxSteps,
-		Verbose:   verbose,
-		Store:     store,
-		SessionID: sessionID,
+		Client:      client,
+		PromptMgr:   nil, // Not needed, system prompt already rendered
+		PluginMgr:   pluginMgr,
+		WorkDir:     workDir,
+		MaxSteps:    maxSteps,
+		Verbose:     verbose,
+		AutoApprove: autoApprove,
+		Store:       store,
+		SessionID:   sessionID,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
@@ -232,16 +237,31 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pluginMgr *pluginho
 }
 
 // runPlainREPL runs the old-style plain text REPL (fallback for non-TTY environments).
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose bool) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool) {
+	// In plain REPL mode, we can prompt the user for approval via stdin
+	approvalFunc := func(toolName, command, reason, risk string) bool {
+		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
+		fmt.Fprintf(os.Stderr, "   Tool: %s\n", toolName)
+		fmt.Fprintf(os.Stderr, "   Command: %s\n", command)
+		fmt.Fprintf(os.Stderr, "   Reason: %s\n", reason)
+		fmt.Fprintf(os.Stderr, "\n   Allow this operation? [y/N] ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		return answer == "y" || answer == "yes"
+	}
+
 	agent, err := conversation.NewAgent(conversation.Config{
-		Client:    client,
-		PromptMgr: nil,
-		PluginMgr: pluginMgr,
-		WorkDir:   workDir,
-		MaxSteps:  maxSteps,
-		Verbose:   verbose,
-		Store:     store,
-		SessionID: sessionID,
+		Client:       client,
+		PromptMgr:    nil,
+		PluginMgr:    pluginMgr,
+		WorkDir:      workDir,
+		MaxSteps:     maxSteps,
+		Verbose:      verbose,
+		AutoApprove:  autoApprove,
+		ApprovalFunc: approvalFunc,
+		Store:        store,
+		SessionID:    sessionID,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
