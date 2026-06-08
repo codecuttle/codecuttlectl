@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
+	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/scaffold"
@@ -34,6 +35,10 @@ type Agent struct {
 	maxSteps     int
 	verbose      bool
 
+	// Safety
+	autoApprove  bool
+	approvalFunc func(toolName, command, reason, risk string) bool
+
 	// Inkwell reconciliation loop
 	reconciler *inkwell.Reconciler
 
@@ -54,6 +59,10 @@ type Config struct {
 	PluginDir string // Plugin binary directory (for reload)
 	MaxSteps  int    // Maximum tool-use iterations per turn. Default: 25
 	Verbose   bool   // Print debug info
+
+	// Safety
+	AutoApprove    bool                       // When true, skip destructive op confirmation
+	ApprovalFunc   func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
 
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
@@ -97,6 +106,8 @@ func NewAgent(cfg Config) (*Agent, error) {
 		todos:        todo.NewList(),
 		maxSteps:     cfg.MaxSteps,
 		verbose:      cfg.Verbose,
+		autoApprove:  cfg.AutoApprove,
+		approvalFunc: cfg.ApprovalFunc,
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
@@ -444,6 +455,36 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 	if name == "reload_plugins" {
 		result, status := a.handleReloadPlugins(ctx)
 		return result, status
+	}
+
+	// Approval gate: check if this invocation is destructive
+	if req := approval.Check(name, string(input)); req != nil {
+		if !a.autoApprove {
+			if a.approvalFunc != nil {
+				allowed := a.approvalFunc(name, req.Command, req.Reason, req.Risk.String())
+				if !allowed {
+					// Record the denied operation in inkwell
+					a.inkwell = append(a.inkwell, session.InkEntry{
+						Timestamp:        time.Now().UTC(),
+						EndTime:          time.Now().UTC(),
+						Turn:             a.turn,
+						ToolName:         name,
+						Input:            input,
+						Output:           "Operation denied by user.",
+						IsError:          true,
+						RequiredApproval: true,
+						ApprovalDecision: "denied",
+					})
+					return "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.", types.ToolResultStatusError
+				}
+				// Approved: continue to execution below
+			} else {
+				// No approval function and not auto-approve: deny by default
+				return fmt.Sprintf("Operation requires user approval (risk: %s). Reason: %s. The command was NOT executed. Use --auto-approve for automated pipelines or provide an interactive approval handler.", req.Risk, req.Reason), types.ToolResultStatusError
+			}
+		} else if a.verbose {
+			log.Printf("[approval] auto-approved destructive op: %s (%s)", req.Command, req.Risk)
+		}
 	}
 
 	// Plugin tools

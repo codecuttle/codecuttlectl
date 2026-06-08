@@ -76,7 +76,9 @@ type InkEntry struct {
 	PluginVersion string       `json:"plugin_version,omitempty"`
 
 	// Governance / Safety
-	WasBlocked    bool         `json:"was_blocked,omitempty"`       // Tool discipline blocked execution
-	WasOverridden bool         `json:"was_overridden,omitempty"`    // Allowed through after N blocks
-	BlockReason   string       `json:"block_reason,omitempty"`
+	WasBlocked       bool         `json:"was_blocked,omitempty"`       // Tool discipline blocked execution
+	WasOverridden    bool         `json:"was_overridden,omitempty"`    // Allowed through after N blocks
+	BlockReason      string       `json:"block_reason,omitempty"`
+	RequiredApproval bool         `json:"required_approval,omitempty"` // User was prompted to approve
+	ApprovalDecision string       `json:"approval_decision,omitempty"` // "approved", "denied", "auto_approved"
 }

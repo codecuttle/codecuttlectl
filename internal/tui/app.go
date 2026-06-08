@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/session"
@@ -31,6 +32,7 @@ type Config struct {
 	Verbose        bool
 	EnableThinking bool // Enable extended thinking (model must support it)
 	ThinkingBudget int  // Token budget for thinking (default: 16000)
+	AutoApprove    bool // When true, skip destructive operation confirmations
 
 	// Session persistence
 	Store     session.Store
@@ -77,6 +79,12 @@ type Model struct {
 	// Active tool execution streaming state
 	activeToolName   string          // Name of currently executing tool
 	activeToolOutput *strings.Builder // Rolling output buffer for live preview
+
+	// Approval gate state
+	approvalPending  *approval.Request // Non-nil when awaiting user approval
+	approvalTool     *pendingTool      // The tool awaiting approval
+	approvalRemaining []pendingTool    // Tools queued behind the approval gate
+	autoApprove      bool              // When true, skip confirmation prompts
 
 	// Todo state
 	todos        *todo.List
@@ -162,6 +170,7 @@ func New(cfg Config) Model {
 		mouseEnabled:     true,
 		currentToolInput: &strings.Builder{},
 		activeToolOutput: &strings.Builder{},
+		autoApprove:      cfg.AutoApprove,
 		showThinking:     true,
 		mdRenderer:       renderer,
 		store:            cfg.Store,
@@ -245,6 +254,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Toggle mouse mode: on = scroll wheel works, off = text selection works
 			m.mouseEnabled = !m.mouseEnabled
 			return m, nil
+		case "y", "Y":
+			// Handle approval confirmation
+			if m.approvalPending != nil {
+				req := m.approvalPending
+				return m, func() tea.Msg {
+					return ApprovalDecisionMsg{
+						ToolUseID: req.ToolUseID,
+						Approved:  true,
+					}
+				}
+			}
+		case "n", "N":
+			// Handle approval denial
+			if m.approvalPending != nil {
+				req := m.approvalPending
+				return m, func() tea.Msg {
+					return ApprovalDecisionMsg{
+						ToolUseID: req.ToolUseID,
+						Approved:  false,
+					}
+				}
+			}
 		case "shift+enter", "alt+enter", "ctrl+j":
 			// Insert a newline in the textarea (multi-line input)
 			if !m.streaming {
@@ -495,6 +526,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		return m, nil
+
+	case ApprovalRequestMsg:
+		// A tool requires user confirmation before execution.
+		// Show the approval prompt and pause tool execution.
+		m.approvalPending = &approval.Request{
+			ToolName:  msg.ToolName,
+			ToolUseID: msg.ToolUseID,
+			Command:   msg.Command,
+			Reason:    msg.Reason,
+		}
+		// Store the tool awaiting approval
+		m.approvalTool = &pendingTool{
+			id:    msg.ToolUseID,
+			name:  msg.ToolName,
+			input: msg.Input,
+		}
+		// Convert remaining tools back to pendingTool for later execution
+		m.approvalRemaining = nil
+		for _, rt := range msg.RemainingTools {
+			m.approvalRemaining = append(m.approvalRemaining, pendingTool{
+				id:    rt.ID,
+				name:  rt.Name,
+				input: rt.Input,
+			})
+		}
+		m.messages = append(m.messages, chatMessage{
+			role:    "tool_call",
+			content: fmt.Sprintf("⚠️  APPROVAL REQUIRED (%s risk)\n   Tool: %s\n   Command: %s\n   Reason: %s\n\n   Press 'y' to approve, 'n' to deny", msg.Risk, msg.ToolName, msg.Command, msg.Reason),
+			name:    msg.ToolName,
+		})
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case ApprovalDecisionMsg:
+		// User made a decision on the pending approval.
+		m.approvalPending = nil
+		if msg.Approved {
+			// Execute the approved tool
+			m.messages = append(m.messages, chatMessage{
+				role:    "tool_result",
+				content: "✓ Approved — executing...",
+			})
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+			tool := m.approvalTool
+			m.approvalTool = nil
+			remaining := m.approvalRemaining
+			m.approvalRemaining = nil
+			return m, m.executeApprovedTool(tool, remaining)
+		}
+		// Denied — return a tool error to the model
+		m.messages = append(m.messages, chatMessage{
+			role:    "tool_result",
+			content: "✗ Denied by user — operation was not executed",
+			isError: true,
+		})
+		tool := m.approvalTool
+		m.approvalTool = nil
+		remaining := m.approvalRemaining
+		m.approvalRemaining = nil
+		// Build result for the denied tool and execute remaining tools normally
+		return m, m.executeDeniedToolAndRemaining(tool, remaining)
+
 
 	case ContinueStreamMsg:
 		// Process any todo updates safely in the Update handler (single-threaded)
@@ -775,13 +870,14 @@ func (m *Model) executePendingTools() tea.Cmd {
 	m.pendingToolCalls = nil
 	pluginMgr := m.pluginMgr
 	workDir := m.workDir
+	autoApprove := m.autoApprove
 
 	return func() tea.Msg {
 		var results []bedrock.ToolResult
 		var todoInputs []json.RawMessage
 		ctx := context.Background()
 
-		for _, tool := range tools {
+		for i, tool := range tools {
 			if tool.name == "todo_manage" {
 				// Defer todo mutation to the Update handler (thread-safe).
 				// Put a placeholder result; the Update handler will replace it.
@@ -792,6 +888,38 @@ func (m *Model) executePendingTools() tea.Cmd {
 					Status:    types.ToolResultStatusSuccess,
 				})
 				continue
+			}
+
+			// Check if this tool invocation requires user approval
+			if req := approval.Check(tool.name, string(tool.input)); req != nil {
+				req.ToolUseID = tool.id
+
+				if autoApprove {
+					// Auto-approve mode: proceed without prompting
+				} else {
+					// Build remaining tools list
+					var remaining []pendingToolForApproval
+					for _, rt := range tools[i+1:] {
+						remaining = append(remaining, pendingToolForApproval{
+							ID:    rt.id,
+							Name:  rt.name,
+							Input: rt.input,
+						})
+					}
+					// Return an approval request to the TUI — execution pauses here.
+					return ApprovalRequestMsg{
+						ToolIndex:        i,
+						ToolName:         tool.name,
+						ToolUseID:        tool.id,
+						Input:            tool.input,
+						Command:          req.Command,
+						Reason:           req.Reason,
+						Risk:             req.Risk.String(),
+						CompletedResults: results,
+						CompletedTodos:   todoInputs,
+						RemainingTools:   remaining,
+					}
+				}
 			}
 
 			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
@@ -807,6 +935,164 @@ func (m *Model) executePendingTools() tea.Cmd {
 				ToolUseID: tool.id,
 				Content:   output,
 				Status:    status,
+			})
+		}
+
+		return ContinueStreamMsg{Messages: results, TodoInputs: todoInputs}
+	}
+}
+
+// executeApprovedTool runs the approved tool and then continues with the remaining tools.
+func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) tea.Cmd {
+	pluginMgr := m.pluginMgr
+	workDir := m.workDir
+	autoApprove := m.autoApprove
+
+	return func() tea.Msg {
+		ctx := context.Background()
+		var results []bedrock.ToolResult
+		var todoInputs []json.RawMessage
+
+		// Execute the approved tool
+		output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
+		status := types.ToolResultStatusSuccess
+		if err != nil {
+			if output == "" {
+				output = fmt.Sprintf("Error: %s", err.Error())
+			}
+			status = types.ToolResultStatusError
+		}
+		results = append(results, bedrock.ToolResult{
+			ToolUseID: tool.id,
+			Content:   output,
+			Status:    status,
+		})
+
+		// Execute remaining tools (they may also need approval)
+		for i, rt := range remaining {
+			if rt.name == "todo_manage" {
+				todoInputs = append(todoInputs, rt.input)
+				results = append(results, bedrock.ToolResult{
+					ToolUseID: rt.id,
+					Content:   "",
+					Status:    types.ToolResultStatusSuccess,
+				})
+				continue
+			}
+
+			if req := approval.Check(rt.name, string(rt.input)); req != nil {
+				req.ToolUseID = rt.id
+				if !autoApprove {
+					var furtherRemaining []pendingToolForApproval
+					for _, fr := range remaining[i+1:] {
+						furtherRemaining = append(furtherRemaining, pendingToolForApproval{
+							ID:    fr.id,
+							Name:  fr.name,
+							Input: fr.input,
+						})
+					}
+					return ApprovalRequestMsg{
+						ToolIndex:        i,
+						ToolName:         rt.name,
+						ToolUseID:        rt.id,
+						Input:            rt.input,
+						Command:          req.Command,
+						Reason:           req.Reason,
+						Risk:             req.Risk.String(),
+						CompletedResults: results,
+						CompletedTodos:   todoInputs,
+						RemainingTools:   furtherRemaining,
+					}
+				}
+			}
+
+			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
+			rtStatus := types.ToolResultStatusSuccess
+			if rtErr != nil {
+				if rtOutput == "" {
+					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
+				}
+				rtStatus = types.ToolResultStatusError
+			}
+			results = append(results, bedrock.ToolResult{
+				ToolUseID: rt.id,
+				Content:   rtOutput,
+				Status:    rtStatus,
+			})
+		}
+
+		return ContinueStreamMsg{Messages: results, TodoInputs: todoInputs}
+	}
+}
+
+// executeDeniedToolAndRemaining returns a denial result for the tool and continues with remaining.
+func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pendingTool) tea.Cmd {
+	pluginMgr := m.pluginMgr
+	workDir := m.workDir
+	autoApprove := m.autoApprove
+
+	return func() tea.Msg {
+		ctx := context.Background()
+		var results []bedrock.ToolResult
+		var todoInputs []json.RawMessage
+
+		// Denied tool gets an error result
+		results = append(results, bedrock.ToolResult{
+			ToolUseID: tool.id,
+			Content:   "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.",
+			Status:    types.ToolResultStatusError,
+		})
+
+		// Execute remaining tools normally
+		for i, rt := range remaining {
+			if rt.name == "todo_manage" {
+				todoInputs = append(todoInputs, rt.input)
+				results = append(results, bedrock.ToolResult{
+					ToolUseID: rt.id,
+					Content:   "",
+					Status:    types.ToolResultStatusSuccess,
+				})
+				continue
+			}
+
+			if req := approval.Check(rt.name, string(rt.input)); req != nil {
+				req.ToolUseID = rt.id
+				if !autoApprove {
+					var furtherRemaining []pendingToolForApproval
+					for _, fr := range remaining[i+1:] {
+						furtherRemaining = append(furtherRemaining, pendingToolForApproval{
+							ID:    fr.id,
+							Name:  fr.name,
+							Input: fr.input,
+						})
+					}
+					return ApprovalRequestMsg{
+						ToolIndex:        i,
+						ToolName:         rt.name,
+						ToolUseID:        rt.id,
+						Input:            rt.input,
+						Command:          req.Command,
+						Reason:           req.Reason,
+						Risk:             req.Risk.String(),
+						CompletedResults: results,
+						CompletedTodos:   todoInputs,
+						RemainingTools:   furtherRemaining,
+					}
+				}
+			}
+
+			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
+			rtStatus := types.ToolResultStatusSuccess
+			if rtErr != nil {
+				if rtOutput == "" {
+					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
+				}
+				rtStatus = types.ToolResultStatusError
+			}
+			results = append(results, bedrock.ToolResult{
+				ToolUseID: rt.id,
+				Content:   rtOutput,
+				Status:    rtStatus,
 			})
 		}
 
