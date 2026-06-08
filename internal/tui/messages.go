@@ -63,6 +63,14 @@ type ToolExecStartMsg struct {
 	ToolUseID string
 }
 
+// ToolOutputDeltaMsg carries incremental output from a streaming tool execution.
+type ToolOutputDeltaMsg struct {
+	ToolUseID string
+	Name      string
+	Delta     string
+	IsStderr  bool
+}
+
 // ToolExecResultMsg carries the result of tool execution.
 type ToolExecResultMsg struct {
 	ToolUseID string
