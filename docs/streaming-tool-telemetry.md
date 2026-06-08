@@ -271,18 +271,18 @@ Every session file contains enough to reconstruct:
 
 ## Implementation Plan
 
-| Phase | What | Dependencies |
-|-------|------|-------------|
-| 1 | Enhanced InkEntry struct + capture reasoning context | None |
-| 2 | Separate stdout/stderr in bash_exec + full output (no truncation in Inkwell) | Phase 1 |
-| 3 | Proto: `ExecuteStream` RPC + `ExecuteStreamEvent` message | Phase 1 |
-| 4 | bash_exec streaming implementation | Phase 3 |
-| 5 | Plugin manager `ExecuteStream` + fallback to `Execute` | Phase 3 |
-| 6 | TUI: live tool output preview block | Phase 5 |
-| 7 | AuditTrail in session + structured log output | Phase 1 |
-| 8 | Other plugins streaming (git, grep, glob) | Phase 4 |
-| 9 | User approval flow for destructive operations | Phase 7 |
-| 10 | OpenTelemetry integration | Phase 7 |
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | Enhanced InkEntry struct + capture reasoning context | ✅ Done |
+| 2 | Separate stdout/stderr in bash_exec + full output (no truncation in Inkwell) | ✅ Done |
+| 3 | Proto: `ExecuteStream` RPC + `ExecuteStreamEvent` message | ✅ Done |
+| 4 | bash_exec streaming implementation | ✅ Done |
+| 5 | Plugin manager `ExecuteStream` + fallback to `Execute` | ✅ Done |
+| 6 | TUI: live tool output preview block | ✅ Done |
+| 7 | AuditTrail in session + structured log output | ⬜ Future |
+| 8 | Other plugins streaming (git, grep, glob) | ⬜ Future |
+| 9 | User approval flow for destructive operations | ⬜ Future |
+| 10 | OpenTelemetry integration | ⬜ Future |
 
 ## TUI Preview Rendering
 
