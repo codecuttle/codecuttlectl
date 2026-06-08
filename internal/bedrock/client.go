@@ -91,8 +91,8 @@ type Response struct {
 
 // Converse sends the full message history and returns the response.
 // The messages slice should contain proper types.Message values.
-// Applies prompt caching: cache checkpoints are placed after the system prompt
-// and within the message history to maximize cache hits across turns.
+// Applies prompt caching: cache checkpoint placed after stable system prompt,
+// dynamic injections (skills, reconciler) come after without a checkpoint.
 func (c *Client) Converse(ctx context.Context, system string, messages []types.Message, tools []ToolDefinition) (*Response, error) {
 	input := &bedrockruntime.ConverseInput{
 		ModelId:  aws.String(c.modelID),
@@ -100,13 +100,7 @@ func (c *Client) Converse(ctx context.Context, system string, messages []types.M
 	}
 
 	if system != "" {
-		input.System = []types.SystemContentBlock{
-			&types.SystemContentBlockMemberText{Value: system},
-			// Cache checkpoint after system prompt — this is stable across turns
-			&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
-				Type: types.CachePointTypeDefault,
-			}},
-		}
+		input.System = buildSystemBlocks(system)
 	}
 
 	if len(tools) > 0 {

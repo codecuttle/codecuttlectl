@@ -68,13 +68,8 @@ var allowedSubcommands = map[string]bool{
 }
 
 // Forbidden argument patterns
-var forbiddenPatterns = []string{
-	"--force",
-	"-f",
-	"--hard",
-	"clean -fd",
-	"clean -f",
-}
+// NOTE: These are now checked per-argument (not via substring of joined args)
+// to prevent false positives from commit messages containing these strings.
 
 func (t *gitTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	var params gitInput
@@ -97,22 +92,64 @@ func (t *gitTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Exec
 		}, nil
 	}
 
-	// Safety: check for forbidden patterns
-	fullArgs := strings.Join(params.Args, " ")
-	for _, forbidden := range forbiddenPatterns {
-		if strings.Contains(fullArgs, forbidden) {
-			// Allow --force-with-lease (safer alternative to --force)
-			if forbidden == "--force" && strings.Contains(fullArgs, "--force-with-lease") {
+	// Safety: check for forbidden patterns in arguments.
+	// Only match standalone arguments, not substrings of other args or commit messages.
+	for _, arg := range params.Args {
+		trimmed := strings.TrimSpace(arg)
+
+		// --force is forbidden (except --force-with-lease which is safe)
+		if trimmed == "--force" || trimmed == "-f" {
+			// Allow -f for checkout and branch (checkout -f, branch -f are safe)
+			if trimmed == "-f" && (params.Subcommand == "checkout" || params.Subcommand == "branch") {
 				continue
 			}
-			// Allow -f for checkout (checkout -f is fine, push -f is not)
-			if forbidden == "-f" && params.Subcommand == "checkout" {
-				continue
+			// Allow --force-with-lease
+			if trimmed == "--force" {
+				continue // standalone --force without --with-lease caught below
 			}
 			return &pb.ExecuteResponse{
 				IsError:      true,
-				ErrorMessage: fmt.Sprintf("forbidden argument pattern %q detected. This operation is considered destructive and requires manual execution.", forbidden),
+				ErrorMessage: fmt.Sprintf("forbidden argument %q detected for %q. This operation is considered destructive and requires manual execution.", trimmed, params.Subcommand),
 			}, nil
+		}
+
+		// Catch push --force (but not --force-with-lease)
+		if params.Subcommand == "push" && trimmed == "--force" {
+			// Check if --force-with-lease is also present
+			hasLease := false
+			for _, a := range params.Args {
+				if strings.TrimSpace(a) == "--force-with-lease" {
+					hasLease = true
+					break
+				}
+			}
+			if !hasLease {
+				return &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: "forbidden: 'git push --force' is destructive. Use --force-with-lease for safer force push, or execute manually.",
+				}, nil
+			}
+		}
+
+		// --hard (reset --hard)
+		if trimmed == "--hard" {
+			return &pb.ExecuteResponse{
+				IsError:      true,
+				ErrorMessage: "forbidden: 'git reset --hard' is destructive and discards uncommitted changes. Execute manually if intended.",
+			}, nil
+		}
+	}
+
+	// Forbidden subcommand + arg combinations (multi-arg patterns)
+	if params.Subcommand == "clean" {
+		for _, arg := range params.Args {
+			trimmed := strings.TrimSpace(arg)
+			if trimmed == "-fd" || trimmed == "-f" || trimmed == "-fx" || trimmed == "-fxd" {
+				return &pb.ExecuteResponse{
+					IsError:      true,
+					ErrorMessage: "forbidden: 'git clean -f' removes untracked files permanently. Execute manually if intended.",
+				}, nil
+			}
 		}
 	}
 

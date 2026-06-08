@@ -1,6 +1,77 @@
 package bedrock
 
-import "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+import (
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+)
+
+// systemPromptSeparator is the marker between the stable base prompt and
+// dynamic injections (skills, reconciler advice). The cache checkpoint is
+// placed between them so the base prompt is always cached regardless of
+// what dynamic content is appended.
+const systemPromptSeparator = "\n\n## Additional Tool Guidance\n"
+
+// buildSystemBlocks splits the system prompt into stable (cacheable) and
+// dynamic (variable per turn) portions. The cache checkpoint goes after
+// the stable part so it always hits cache. Dynamic injections (skills,
+// reconciler) come after and are processed fresh each turn.
+//
+// Layout:
+//   [stable base prompt] [CACHE_POINT] [dynamic injections]
+//
+// This means:
+//   - Base system prompt + tool hints: cached (stable across all turns)
+//   - Skills/reconciler injections: fresh (vary by context)
+//   - Net effect: ~5-6k tokens cached, ~0.5-2k tokens fresh per turn
+func buildSystemBlocks(system string) []types.SystemContentBlock {
+	// Split at the dynamic injection boundary
+	// The system prompt is constructed as: base + "\n\n## Additional Tool Guidance\n" + hints + skills + reconciler
+	// We want to cache everything up to and including the tool guidance (stable per session)
+	// and leave skills/reconciler uncached (vary per turn).
+	
+	// Find the LAST occurrence of a skill/reconciler injection marker
+	// Skills are appended as "\n\n## Active Skills\n" 
+	// Reconciler is appended as "\n\n## Inkwell Diagnostic Alert\n" or similar
+	
+	skillMarker := "\n\n## Active Skills\n"
+	inkwellMarker := "\n\n## Inkwell"
+	
+	// Find where dynamic content begins (first skill or inkwell injection)
+	splitIdx := -1
+	if idx := strings.Index(system, skillMarker); idx != -1 {
+		splitIdx = idx
+	}
+	if idx := strings.Index(system, inkwellMarker); idx != -1 {
+		if splitIdx == -1 || idx < splitIdx {
+			splitIdx = idx
+		}
+	}
+	
+	if splitIdx == -1 {
+		// No dynamic injections — cache the entire system prompt
+		return []types.SystemContentBlock{
+			&types.SystemContentBlockMemberText{Value: system},
+			&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
+				Type: types.CachePointTypeDefault,
+			}},
+		}
+	}
+	
+	// Split into stable (cached) and dynamic (fresh) portions
+	stablePrompt := system[:splitIdx]
+	dynamicPrompt := system[splitIdx:]
+	
+	return []types.SystemContentBlock{
+		&types.SystemContentBlockMemberText{Value: stablePrompt},
+		// Cache checkpoint: everything above this is stable per session
+		&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
+			Type: types.CachePointTypeDefault,
+		}},
+		// Dynamic injections below — NOT cached (vary per turn based on context)
+		&types.SystemContentBlockMemberText{Value: dynamicPrompt},
+	}
+}
 
 // applyCachePoints inserts cache checkpoints into a message slice to maximize
 // cache hits across multi-turn conversations. The strategy:

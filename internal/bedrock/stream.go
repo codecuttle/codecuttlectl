@@ -106,13 +106,7 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 		}
 
 		if system != "" {
-			input.System = []types.SystemContentBlock{
-				&types.SystemContentBlockMemberText{Value: system},
-				// Cache checkpoint after system prompt — stable across turns
-				&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
-					Type: types.CachePointTypeDefault,
-				}},
-			}
+			input.System = buildSystemBlocks(system)
 		}
 
 		if len(tools) > 0 {
