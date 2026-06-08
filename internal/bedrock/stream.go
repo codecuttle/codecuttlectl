@@ -102,7 +102,7 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 
 		input := &bedrockruntime.ConverseStreamInput{
 			ModelId:  aws.String(c.modelID),
-			Messages: messages,
+			Messages: applyCachePoints(messages),
 		}
 
 		if system != "" {
