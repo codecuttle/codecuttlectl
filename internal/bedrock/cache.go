@@ -1,16 +1,60 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
-// systemPromptSeparator is the marker between the stable base prompt and
-// dynamic injections (skills, reconciler advice). The cache checkpoint is
-// placed between them so the base prompt is always cached regardless of
-// what dynamic content is appended.
-const systemPromptSeparator = "\n\n## Additional Tool Guidance\n"
+// Cache Strategy: 3-tier incremental extension
+//
+// Bedrock evaluates payload in order: tools → system → messages.
+// Any change in an earlier section invalidates all subsequent cached sections.
+// Cache checkpoints require exact byte-for-byte prefix match to hit.
+//
+// Tier 1: Tools (~12k tokens, 100% stable per session)
+//   - Cache checkpoint at end of tools array
+//   - Never changes during a session → always hits
+//
+// Tier 2: System prompt (stable base, ~6k tokens)
+//   - Cache checkpoint after the stable base portion
+//   - Dynamic injections (skills, reconciler) placed AFTER the checkpoint
+//   - Dynamic content changes don't invalidate the cached prefix
+//
+// Tier 3: Messages (incremental extension)
+//   - Cache checkpoint on the LAST message (most recent user/tool_result)
+//   - On each call, Bedrock reads the existing prefix from cache and only
+//     computes the marginal delta (new content since last checkpoint)
+//   - The key insight: the checkpoint extends forward, never shifts backward
+//
+// This uses 3 of the 4 available checkpoints per request.
+// Minimum 4,096 tokens per checkpoint for Claude Opus 4.x.
+
+// buildToolsWithCache wraps the tool configuration with a cache checkpoint
+// at the end. Tool definitions are 100% stable per session (~12k tokens),
+// making this the highest-value cache target.
+//
+// Bedrock evaluates tools FIRST in the hierarchy, so this cached prefix
+// is the foundation that all subsequent sections build upon.
+func buildToolsWithCache(tools []ToolDefinition) *types.ToolConfiguration {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	bedrockTools := toBedrockTools(tools)
+
+	// Append cache checkpoint as the last element in the tools array
+	bedrockTools = append(bedrockTools, &types.ToolMemberCachePoint{
+		Value: types.CachePointBlock{
+			Type: types.CachePointTypeDefault,
+		},
+	})
+
+	return &types.ToolConfiguration{
+		Tools: bedrockTools,
+	}
+}
 
 // buildSystemBlocks splits the system prompt into stable (cacheable) and
 // dynamic (variable per turn) portions. The cache checkpoint goes after
@@ -18,26 +62,16 @@ const systemPromptSeparator = "\n\n## Additional Tool Guidance\n"
 // reconciler) come after and are processed fresh each turn.
 //
 // Layout:
-//   [stable base prompt] [CACHE_POINT] [dynamic injections]
 //
-// This means:
-//   - Base system prompt + tool hints: cached (stable across all turns)
-//   - Skills/reconciler injections: fresh (vary by context)
-//   - Net effect: ~5-6k tokens cached, ~0.5-2k tokens fresh per turn
+//	[stable base prompt + tool guidance] [CACHE_POINT] [dynamic injections]
+//
+// The stable portion includes everything up to the first dynamic marker.
+// Dynamic markers: "## Active Skills", "## Inkwell"
 func buildSystemBlocks(system string) []types.SystemContentBlock {
-	// Split at the dynamic injection boundary
-	// The system prompt is constructed as: base + "\n\n## Additional Tool Guidance\n" + hints + skills + reconciler
-	// We want to cache everything up to and including the tool guidance (stable per session)
-	// and leave skills/reconciler uncached (vary per turn).
-	
-	// Find the LAST occurrence of a skill/reconciler injection marker
-	// Skills are appended as "\n\n## Active Skills\n" 
-	// Reconciler is appended as "\n\n## Inkwell Diagnostic Alert\n" or similar
-	
+	// Find where dynamic content begins (first skill or inkwell injection)
 	skillMarker := "\n\n## Active Skills\n"
 	inkwellMarker := "\n\n## Inkwell"
-	
-	// Find where dynamic content begins (first skill or inkwell injection)
+
 	splitIdx := -1
 	if idx := strings.Index(system, skillMarker); idx != -1 {
 		splitIdx = idx
@@ -47,7 +81,7 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 			splitIdx = idx
 		}
 	}
-	
+
 	if splitIdx == -1 {
 		// No dynamic injections — cache the entire system prompt
 		return []types.SystemContentBlock{
@@ -57,40 +91,39 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 			}},
 		}
 	}
-	
+
 	// Split into stable (cached) and dynamic (fresh) portions
 	stablePrompt := system[:splitIdx]
 	dynamicPrompt := system[splitIdx:]
-	
+
 	return []types.SystemContentBlock{
 		&types.SystemContentBlockMemberText{Value: stablePrompt},
-		// Cache checkpoint: everything above this is stable per session
+		// Cache checkpoint: everything above (including tool cache) is stable
 		&types.SystemContentBlockMemberCachePoint{Value: types.CachePointBlock{
 			Type: types.CachePointTypeDefault,
 		}},
-		// Dynamic injections below — NOT cached (vary per turn based on context)
+		// Dynamic injections below — NOT cached (vary per turn)
 		&types.SystemContentBlockMemberText{Value: dynamicPrompt},
 	}
 }
 
-// applyCachePoints inserts cache checkpoints into a message slice to maximize
-// cache hits across multi-turn conversations. The strategy:
+// applyCachePoints implements Incremental Extension Caching.
 //
-//   - Place a checkpoint after the second-to-last message. This means on
-//     turn N, messages 1..N-2 (which are identical to turn N-1) get read
-//     from cache rather than reprocessed. Only the latest user message is
-//     fresh input.
+// Instead of shifting a checkpoint backward (which invalidates the cache),
+// we place the checkpoint on the LAST message in the array. This means:
 //
-//   - Only place the checkpoint if there are enough messages to benefit
-//     (at least 3 messages — otherwise the history is too small to cache).
+//   - Turn 1: Bedrock writes tools+system+messages[0..N] to cache
+//   - Turn 2: Bedrock reads the prefix from cache (tools+system+messages[0..N]),
+//     processes only the new delta (messages[N+1..M]), and writes the extended
+//     prefix to cache
+//   - Turn 3+: Same pattern — read old prefix, compute delta, write extended
 //
-//   - The checkpoint is a content block appended to an existing message's
-//     content. Per Bedrock docs, cache checkpoints within messages must be
-//     ContentBlock items inside a message's Content slice.
+// The prefix grows monotonically. Since messages are only ever appended (never
+// modified or reordered), the byte-for-byte prefix match is guaranteed.
 //
-// This uses 1 of the remaining 3 cache checkpoints (system uses 1, max is 4).
+// This uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
 func applyCachePoints(messages []types.Message) []types.Message {
-	if len(messages) < 3 {
+	if len(messages) < 2 {
 		return messages
 	}
 
@@ -98,10 +131,10 @@ func applyCachePoints(messages []types.Message) []types.Message {
 	result := make([]types.Message, len(messages))
 	copy(result, messages)
 
-	// Place cache point on the second-to-last message.
-	// This means everything up to and including that message gets cached.
-	// The last message (newest user input) is the only uncached portion.
-	idx := len(result) - 2
+	// Place cache point on the LAST message (the most recent content).
+	// Bedrock will read the cached prefix of all prior messages and only
+	// process the delta since the last cache write.
+	idx := len(result) - 1
 
 	// Copy the message's content slice so we don't mutate the original
 	origContent := result[idx].Content
@@ -118,5 +151,40 @@ func applyCachePoints(messages []types.Message) []types.Message {
 		Content: newContent,
 	}
 
+	return result
+}
+
+// toBedrockToolsSorted converts tool definitions to Bedrock tools with
+// deterministic JSON serialization. This is critical for cache stability:
+// if the JSON byte order changes between calls, the cache prefix won't match.
+//
+// Go's map iteration order is non-deterministic, so we use json.Marshal
+// (which sorts map keys) to ensure consistent serialization.
+func toBedrockToolsSorted(tools []ToolDefinition) []types.Tool {
+	var result []types.Tool
+	for _, t := range tools {
+		// Use ordered JSON to ensure byte-stable schema serialization
+		var orderedSchema interface{}
+		if len(t.InputSchema) > 0 {
+			// json.Unmarshal into interface{} then json.Marshal produces
+			// sorted keys, but we need to go through a map for the document.
+			// The key insight: we unmarshal to get the structure, but the
+			// document.NewLazyDocument will serialize deterministically from
+			// the same input structure.
+			var schema map[string]interface{}
+			_ = json.Unmarshal(t.InputSchema, &schema)
+			orderedSchema = schema
+		}
+
+		result = append(result, &types.ToolMemberToolSpec{
+			Value: types.ToolSpecification{
+				Name:        strPtr(t.Name),
+				Description: strPtr(t.Description),
+				InputSchema: &types.ToolInputSchemaMemberJson{
+					Value: lazyDoc(orderedSchema),
+				},
+			},
+		})
+	}
 	return result
 }

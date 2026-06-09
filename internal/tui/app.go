@@ -1258,17 +1258,17 @@ func formatTokenCount(tokens int32) string {
 }
 
 // estimateCost calculates an estimated dollar cost for the session's token usage.
-// Uses Claude Opus 4 pricing on Bedrock (us-west-2, as of 2026):
-//   - Input tokens: $15.00 / 1M tokens
-//   - Output tokens: $75.00 / 1M tokens
-//   - Cache write: $18.75 / 1M tokens (1.25x input)
-//   - Cache read: $1.50 / 1M tokens (0.1x input)
+// Uses Claude Opus 4.x pricing on Bedrock (as of 2026):
+//   - Input tokens (uncached): $5.00 / 1M tokens
+//   - Output tokens: $25.00 / 1M tokens
+//   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
+//   - Cache read: $0.50 / 1M tokens (0.1x input)
 func (m *Model) estimateCost() float64 {
 	const (
-		inputPer1M      = 15.00
-		outputPer1M     = 75.00
-		cacheWritePer1M = 18.75
-		cacheReadPer1M  = 1.50
+		inputPer1M      = 5.00
+		outputPer1M     = 25.00
+		cacheWritePer1M = 6.25
+		cacheReadPer1M  = 0.50
 	)
 
 	input := float64(m.totalInputTokens) / 1_000_000 * inputPer1M
