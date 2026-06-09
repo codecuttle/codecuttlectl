@@ -840,7 +840,7 @@ func (m *Model) maybeCompact() {
 	// If context usage is high, compact more aggressively (preserve fewer turns)
 	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
 	if compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
-		cfg.PreserveRecentTurns = 1 // Aggressive: only keep current turn
+		cfg.PreserveRecentTurns = 3 // Aggressive: reduce from 7 to 3
 	}
 
 	// Count user text messages to determine current turn
