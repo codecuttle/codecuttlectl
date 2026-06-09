@@ -95,8 +95,10 @@ type Model struct {
 	sessionID string
 
 	// Stats
-	totalInputTokens  int32
-	totalOutputTokens int32
+	totalInputTokens          int32
+	totalOutputTokens         int32
+	totalCacheReadInputTokens int32
+	totalCacheWriteInputTokens int32
 	spinnerColorIdx   int
 	spinnerTickCount  int
 
@@ -488,8 +490,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StreamUsageMsg:
 		m.totalInputTokens += msg.InputTokens
 		m.totalOutputTokens += msg.OutputTokens
-		m.streaming = false
-		m.streamCh = nil
+		m.totalCacheReadInputTokens += msg.CacheReadInputTokens
+		m.totalCacheWriteInputTokens += msg.CacheWriteInputTokens
+		// Don't reset streaming state here — StreamDoneMsg handles that.
+		// UsageEvent arrives after MessageStop but before the channel closes;
+		// the stream is already logically done by the time we get usage.
 		m.viewport.SetContent(m.renderMessages())
 		return m, nil
 
@@ -773,7 +778,12 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 		case bedrock.MessageStopEvent:
 			return StreamDoneMsg{StopReason: e.StopReason}
 		case bedrock.UsageEvent:
-			return StreamUsageMsg{InputTokens: e.InputTokens, OutputTokens: e.OutputTokens}
+			return StreamUsageMsg{
+				InputTokens:           e.InputTokens,
+				OutputTokens:          e.OutputTokens,
+				CacheReadInputTokens:  e.CacheReadInputTokens,
+				CacheWriteInputTokens: e.CacheWriteInputTokens,
+			}
 		case bedrock.StreamErrorEvent:
 			return StreamErrorMsg{Err: e.Err}
 		default:
@@ -1120,6 +1130,12 @@ func (m *Model) restoreSession() {
 	}
 	m.history = messages
 
+	// Restore token stats (so resumed sessions accumulate correctly)
+	m.totalInputTokens = state.Meta.Stats.InputTokens
+	m.totalOutputTokens = state.Meta.Stats.OutputTokens
+	m.totalCacheReadInputTokens = state.Meta.Stats.CacheReadInputTokens
+	m.totalCacheWriteInputTokens = state.Meta.Stats.CacheWriteInputTokens
+
 	// Restore todos
 	if len(state.Todos) > 0 {
 		m.todos.Replace(state.Todos)
@@ -1174,6 +1190,9 @@ func (m *Model) saveSession() {
 
 	meta.Stats.InputTokens = m.totalInputTokens
 	meta.Stats.OutputTokens = m.totalOutputTokens
+	meta.Stats.CacheReadInputTokens = m.totalCacheReadInputTokens
+	meta.Stats.CacheWriteInputTokens = m.totalCacheWriteInputTokens
+	meta.Stats.EstimatedCostUSD = m.estimateCost()
 
 	state := &session.SessionState{
 		Meta:     meta,
@@ -1192,7 +1211,17 @@ func (m *Model) renderStatusBar() string {
 	model := StatusModelStyle.Render(m.client.ModelID())
 	region := StatusDimStyle.Render(m.client.Region())
 	plugins := StatusDimStyle.Render(fmt.Sprintf("%dp", m.pluginMgr.Count()))
-	tokens := StatusTokenStyle.Render(fmt.Sprintf("%d/%d tok", m.totalInputTokens, m.totalOutputTokens))
+
+	// Token display: show total input (including cache), output, cache hit rate, and estimated cost
+	totalIn := m.totalInputTokens + m.totalCacheReadInputTokens + m.totalCacheWriteInputTokens
+	cacheHitPct := 0
+	if totalIn > 0 {
+		cacheHitPct = int(float64(m.totalCacheReadInputTokens) / float64(totalIn) * 100)
+	}
+	cost := m.estimateCost()
+	tokenStr := fmt.Sprintf("%s in %s out %d%% cache ~$%.2f",
+		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct, cost)
+	tokens := StatusTokenStyle.Render(tokenStr)
 
 	left := " " + label + "  " + model + "  " + region + "  " + plugins
 	right := tokens + " "
@@ -1211,6 +1240,39 @@ func (m *Model) renderStatusBar() string {
 	}
 
 	return StatusBarStyle.Width(m.width).Render(left + strings.Repeat(" ", gap) + right)
+}
+
+// formatTokenCount formats a token count as a human-readable string (e.g., "12.5k", "1.2M").
+func formatTokenCount(tokens int32) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("%d", tokens)
+	}
+	if tokens < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+}
+
+// estimateCost calculates an estimated dollar cost for the session's token usage.
+// Uses Claude Opus 4 pricing on Bedrock (us-west-2, as of 2026):
+//   - Input tokens: $15.00 / 1M tokens
+//   - Output tokens: $75.00 / 1M tokens
+//   - Cache write: $18.75 / 1M tokens (1.25x input)
+//   - Cache read: $1.50 / 1M tokens (0.1x input)
+func (m *Model) estimateCost() float64 {
+	const (
+		inputPer1M      = 15.00
+		outputPer1M     = 75.00
+		cacheWritePer1M = 18.75
+		cacheReadPer1M  = 1.50
+	)
+
+	input := float64(m.totalInputTokens) / 1_000_000 * inputPer1M
+	output := float64(m.totalOutputTokens) / 1_000_000 * outputPer1M
+	cacheWrite := float64(m.totalCacheWriteInputTokens) / 1_000_000 * cacheWritePer1M
+	cacheRead := float64(m.totalCacheReadInputTokens) / 1_000_000 * cacheReadPer1M
+
+	return input + output + cacheWrite + cacheRead
 }
 
 func (m *Model) renderInput() string {

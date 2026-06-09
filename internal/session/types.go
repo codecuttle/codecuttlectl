@@ -25,10 +25,13 @@ type SessionMeta struct {
 
 // Stats tracks aggregate metrics for a session.
 type Stats struct {
-	InputTokens  int32 `json:"input_tokens"`
-	OutputTokens int32 `json:"output_tokens"`
-	ToolCalls    int   `json:"tool_calls"`
-	Turns        int   `json:"turns"`
+	InputTokens            int32   `json:"input_tokens"`
+	OutputTokens           int32   `json:"output_tokens"`
+	CacheReadInputTokens   int32   `json:"cache_read_input_tokens"`
+	CacheWriteInputTokens  int32   `json:"cache_write_input_tokens"`
+	ToolCalls              int     `json:"tool_calls"`
+	Turns                  int     `json:"turns"`
+	EstimatedCostUSD       float64 `json:"estimated_cost_usd"`
 }
 
 // SessionState is the full persisted state of a session.

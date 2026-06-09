@@ -66,8 +66,10 @@ func (MessageStopEvent) streamEvent() {}
 
 // UsageEvent reports token consumption.
 type UsageEvent struct {
-	InputTokens  int32
-	OutputTokens int32
+	InputTokens          int32
+	OutputTokens         int32
+	CacheReadInputTokens int32
+	CacheWriteInputTokens int32
 }
 
 func (UsageEvent) streamEvent() {}
@@ -195,8 +197,10 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 			case *types.ConverseStreamOutputMemberMetadata:
 				if e.Value.Usage != nil {
 					events <- UsageEvent{
-						InputTokens:  aws.ToInt32(e.Value.Usage.InputTokens),
-						OutputTokens: aws.ToInt32(e.Value.Usage.OutputTokens),
+						InputTokens:           aws.ToInt32(e.Value.Usage.InputTokens),
+						OutputTokens:          aws.ToInt32(e.Value.Usage.OutputTokens),
+						CacheReadInputTokens:  aws.ToInt32(e.Value.Usage.CacheReadInputTokens),
+						CacheWriteInputTokens: aws.ToInt32(e.Value.Usage.CacheWriteInputTokens),
 					}
 				}
 			}

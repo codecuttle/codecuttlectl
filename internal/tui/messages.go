@@ -48,8 +48,10 @@ type StreamDoneMsg struct {
 
 // StreamUsageMsg reports token usage.
 type StreamUsageMsg struct {
-	InputTokens  int32
-	OutputTokens int32
+	InputTokens           int32
+	OutputTokens          int32
+	CacheReadInputTokens  int32
+	CacheWriteInputTokens int32
 }
 
 // StreamErrorMsg reports a streaming error.

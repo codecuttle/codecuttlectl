@@ -360,9 +360,9 @@ func runListSessions(store session.Store, limit int) {
 		return
 	}
 
-	fmt.Printf("%-14s %-30s %-20s %6s %8s %s\n",
-		"ID", "TITLE", "MODEL", "TURNS", "TOKENS", "AGE")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Printf("%-14s %-30s %-20s %6s %8s %7s %s\n",
+		"ID", "TITLE", "MODEL", "TURNS", "TOKENS", "COST", "AGE")
+	fmt.Println(strings.Repeat("-", 110))
 
 	for _, m := range metas {
 		title := m.Title
@@ -379,10 +379,12 @@ func runListSessions(store session.Store, limit int) {
 		}
 
 		age := formatAge(m.UpdatedAt)
-		tokens := m.Stats.InputTokens + m.Stats.OutputTokens
+		totalIn := m.Stats.InputTokens + m.Stats.CacheReadInputTokens + m.Stats.CacheWriteInputTokens
+		tokens := totalIn + m.Stats.OutputTokens
+		cost := fmt.Sprintf("$%.2f", m.Stats.EstimatedCostUSD)
 
-		fmt.Printf("%-14s %-30s %-20s %6d %8d %s\n",
-			m.ID, title, model, m.Stats.Turns, tokens, age)
+		fmt.Printf("%-14s %-30s %-20s %6d %8d %7s %s\n",
+			m.ID, title, model, m.Stats.Turns, tokens, cost, age)
 	}
 }
 
