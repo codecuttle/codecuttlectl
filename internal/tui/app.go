@@ -99,6 +99,12 @@ type Model struct {
 	totalOutputTokens         int32
 	totalCacheReadInputTokens int32
 	totalCacheWriteInputTokens int32
+
+	// Per-call stats (most recent API call — used for context window %)
+	lastCallInputTokens          int32
+	lastCallCacheReadInputTokens int32
+	lastCallCacheWriteInputTokens int32
+
 	spinnerColorIdx   int
 	spinnerTickCount  int
 
@@ -121,6 +127,9 @@ type chatMessage struct {
 	name    string
 	isError bool
 }
+
+// contextWindowSize is the maximum input context window for Claude Opus 4.x (200k tokens).
+const contextWindowSize = 200_000
 
 type pendingTool struct {
 	id    string
@@ -492,6 +501,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalOutputTokens += msg.OutputTokens
 		m.totalCacheReadInputTokens += msg.CacheReadInputTokens
 		m.totalCacheWriteInputTokens += msg.CacheWriteInputTokens
+		// Track per-call stats for context window % calculation
+		m.lastCallInputTokens = msg.InputTokens
+		m.lastCallCacheReadInputTokens = msg.CacheReadInputTokens
+		m.lastCallCacheWriteInputTokens = msg.CacheWriteInputTokens
 		// Usage arrives after MessageStop. Continue reading for the channel close
 		// which will emit StreamDoneMsg to finalize the turn.
 		m.viewport.SetContent(m.renderMessages())
@@ -1223,9 +1236,31 @@ func (m *Model) renderStatusBar() string {
 		cacheHitPct = int(float64(m.totalCacheReadInputTokens) / float64(totalIn) * 100)
 	}
 	cost := m.estimateCost()
-	tokenStr := fmt.Sprintf("%s in %s out %d%% cache ~$%.2f",
-		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct, cost)
-	tokens := StatusTokenStyle.Render(tokenStr)
+
+	// Context window usage: based on the most recent API call's total input tokens.
+	// This represents how full the context window is RIGHT NOW (not cumulative).
+	// Claude Opus 4.x on Bedrock: 200k input context window.
+	ctxUsed := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+	ctxPct := 0
+	if ctxUsed > 0 {
+		ctxPct = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+	}
+
+	// Color the ctx% indicator based on usage level
+	ctxStr := fmt.Sprintf("%d%% ctx", ctxPct)
+	var ctxStyled string
+	switch {
+	case ctxPct >= 90:
+		ctxStyled = ErrorStyle.Render(ctxStr)
+	case ctxPct >= 75:
+		ctxStyled = lipgloss.NewStyle().Foreground(colorHoney).Render(ctxStr)
+	default:
+		ctxStyled = StatusDimStyle.Render(ctxStr)
+	}
+
+	tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
+		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
+	tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
 
 	left := " " + label + "  " + model + "  " + region + "  " + plugins
 	right := tokens + " "
