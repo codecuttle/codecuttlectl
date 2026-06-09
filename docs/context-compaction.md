@@ -103,7 +103,7 @@ These defaults are currently hardcoded. Future: expose via CLI flags or config f
 
 ### Phase 2: LLM-Generated Summaries
 
-Replace the heuristic head/tail truncation with model-generated summaries. A lightweight API call (Haiku or a small local model) produces richer summaries:
+Replace the heuristic head/tail truncation with model-generated summaries. A Converse API call (same model, `max_tokens=200`) produces richer summaries:
 
 ```
 [read_file: internal/tui/app.go — 1614 lines, Bubble Tea TUI]
@@ -114,7 +114,12 @@ launchStream() at line 745 calls maybeCompact() then ConverseStream.
 Tool execution in executePendingTools() at line 895.
 ```
 
-This costs ~$0.001 per summarization (Haiku) but produces much better context for the model to decide whether it needs to re-read.
+This costs ~$0.08 per summarization (Opus 4.6) — expensive, so it's triggered conditionally:
+- Only for results >5000 chars that are >3 turns stale
+- Capped by a per-session budget (default $1.00)
+- Falls back to heuristic compaction when budget is exhausted or summarization is slow
+
+**Full design**: [`docs/llm-compaction-design.md`](docs/llm-compaction-design.md)
 
 ### Phase 3: Optic Lobe Integration (pgvector)
 
