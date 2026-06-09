@@ -770,18 +770,25 @@ func (m *Model) launchStream() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, m.readNextStreamEvent())
 }
 
-// maybeCompact applies heuristic compaction to the conversation history if the
-// context window usage exceeds the threshold. This replaces old verbose tool
-// results (read_file, grep, etc.) with concise summaries, freeing context space
-// while preserving enough info for the model to know what was there.
+// maybeCompact applies heuristic compaction to the conversation history.
+// This replaces old verbose tool results (read_file, grep, etc.) with concise
+// summaries, freeing context space while preserving enough info for the model
+// to know what was there.
+//
+// Compaction always runs for results older than PreserveRecentTurns — there's
+// no reason to keep 8k tokens of a file read from 5 turns ago when a 200-byte
+// summary suffices. The MaxContextPercent threshold controls *aggressive*
+// compaction (reducing PreserveRecentTurns to 1), not whether compaction
+// happens at all.
 //
 // The full content is always preserved in the Inkwell and session file.
 func (m *Model) maybeCompact() {
-	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
 	cfg := compact.DefaultConfig()
 
-	if !compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
-		return
+	// If context usage is high, compact more aggressively (preserve fewer turns)
+	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+	if compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
+		cfg.PreserveRecentTurns = 1 // Aggressive: only keep current turn
 	}
 
 	// Count user text messages to determine current turn
@@ -797,6 +804,7 @@ func (m *Model) maybeCompact() {
 		}
 	}
 
+	// Always compact stale results (older than PreserveRecentTurns)
 	result := compact.Compact(m.history, turn, cfg)
 	if result.Compacted > 0 {
 		m.history = result.Messages

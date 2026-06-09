@@ -20,8 +20,9 @@ After 10+ turns with file reads, 100-200k tokens of stale tool results sit in th
 
 ### When It Triggers
 
-Compaction runs automatically before each `ConverseStream` call when:
-- The most recent API call's total input tokens exceed **50%** of the context window (500k of 1M for Opus 4.6)
+Compaction runs **on every API call** for tool results older than the last 2 user turns. There is no minimum context usage threshold for basic compaction — if you read a file 3 turns ago, it gets summarized on the next call regardless of how full the context window is. This saves tokens from the start of the session.
+
+When context usage exceeds **50%** of the window, compaction becomes more aggressive: `PreserveRecentTurns` drops from 2 to 1, meaning only the current turn's results are preserved in full.
 
 ### What It Does
 
