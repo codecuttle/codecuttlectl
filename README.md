@@ -82,23 +82,39 @@ Conversations persist to `~/.local/share/codecuttlectl/sessions/`. Every tool ex
 
 See [`docs/sessions-and-inkwell.md`](docs/sessions-and-inkwell.md).
 
+## Prompt Caching & Cost Tracking
+
+3-tier incremental extension caching for Bedrock minimizes API costs:
+
+1. **Tools** (~12k tokens) — cached at end of `toolConfig` (never changes)
+2. **System prompt** (~6k tokens) — cached after stable base, dynamic injections after
+3. **Messages** — checkpoint on most recent message; prefix extends forward monotonically
+
+The TUI status bar shows live metrics: `45.2k in  8.1k out  87% cache  ~$0.42`
+
+Session cost tracking persists across resumes. `--list-sessions` shows per-session cost estimates. `--audit-log` emits structured JSON events for external cost monitoring.
+
+See [`docs/caching.md`](docs/caching.md).
+
 ## Not yet implemented
 
 - Chomsky routing (dynamic complexity classification)
 - Optic Lobe (cross-session semantic memory)
-- Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md))
-- Fleet telemetry (OpenTelemetry)
+- Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)
+- Fleet telemetry (OpenTelemetry — Phase 10 of [streaming doc](docs/streaming-tool-telemetry.md))
 - Swarm orchestration
 - Self-evolving harness (outer loop from execution traces)
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
 - Hot-reload plugins (fsnotify-based auto-discovery)
+- Cache keepalive pings (prevent 5-minute TTL expiration during idle)
+- Conversation compaction (summarize old history at 80% context usage)
 
 ## Development
 
 ```bash
 make all     # Build orchestrator + 12 plugins
-make test    # 76 tests, 7 packages
+make test    # Unit tests, all packages
 make proto   # Regenerate protobuf
 ```
 
