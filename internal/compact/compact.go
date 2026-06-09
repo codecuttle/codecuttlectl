@@ -28,7 +28,8 @@ type Config struct {
 	MaxContextPercent float64
 
 	// PreserveRecentTurns is the number of recent user turns whose tool results
-	// are never compacted. Default: 2 (current turn + previous turn).
+	// are never compacted. Default: 7 (keeps a generous working window of recent
+	// context intact; with 1M context window we can afford the space).
 	PreserveRecentTurns int
 
 	// SummaryMaxLines is the maximum number of lines to include in a compacted
@@ -44,7 +45,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		MaxContextPercent:   0.50,
-		PreserveRecentTurns: 2,
+		PreserveRecentTurns: 7,
 		SummaryMaxLines:     8,
 		MinResultSize:       1000,
 	}
