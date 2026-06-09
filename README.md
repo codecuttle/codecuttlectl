@@ -101,7 +101,8 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 
 ## Not yet implemented
 
-- Chomsky routing (dynamic complexity classification)
+- Multi-model support (Haiku/Sonnet for auxiliary tasks — [design doc](docs/multi-model-design.md))
+- Chomsky routing (dynamic complexity classification — depends on multi-model)
 - Optic Lobe (cross-session semantic memory)
 - Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)
 - Fleet telemetry (OpenTelemetry — Phase 10 of [streaming doc](docs/streaming-tool-telemetry.md))
@@ -110,7 +111,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
 - Hot-reload plugins (fsnotify-based auto-discovery)
-- LLM-generated compaction summaries (Phase 2 — [design doc](docs/llm-compaction-design.md))
+- LLM-generated compaction summaries (Phase 2 — [design doc](docs/llm-compaction-design.md), depends on multi-model)
 - Optic Lobe retrieval for compacted content (Phase 3 of [compaction doc](docs/context-compaction.md))
 
 ## Development
