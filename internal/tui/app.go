@@ -28,6 +28,7 @@ import (
 // Config holds the configuration needed to create the TUI app.
 type Config struct {
 	Client         *bedrock.Client
+	Pool           *bedrock.ModelPool // Multi-model pool (if set, Client is ignored for primary)
 	PluginMgr      *pluginhost.Manager
 	System         string // Rendered system prompt
 	WorkDir        string
@@ -50,6 +51,7 @@ type Model struct {
 
 	// Configuration
 	client         *bedrock.Client
+	pool           *bedrock.ModelPool
 	pluginMgr      *pluginhost.Manager
 	system         string
 	workDir        string
@@ -182,6 +184,7 @@ func New(cfg Config) Model {
 		input:            ta,
 		spinner:          sp,
 		client:           cfg.Client,
+		pool:             cfg.Pool,
 		pluginMgr:        cfg.PluginMgr,
 		system:           cfg.System,
 		workDir:          cfg.WorkDir,
@@ -199,6 +202,11 @@ func New(cfg Config) Model {
 		mdRenderer:       renderer,
 		store:            cfg.Store,
 		sessionID:        cfg.SessionID,
+	}
+
+	// If pool is provided, use its primary client
+	if m.pool != nil && m.client == nil {
+		m.client = m.pool.Primary()
 	}
 
 	// If resuming a session, restore conversation history
@@ -223,6 +231,11 @@ func New(cfg Config) Model {
 // SessionID returns the current session ID for display on exit.
 func (m Model) SessionID() string {
 	return m.sessionID
+}
+
+// Pool returns the model pool (may be nil if constructed without one).
+func (m Model) Pool() *bedrock.ModelPool {
+	return m.pool
 }
 
 func (m Model) Init() tea.Cmd {
@@ -1325,8 +1338,23 @@ func (m *Model) saveSession() {
 
 func (m *Model) renderStatusBar() string {
 	label := StatusLabelStyle.Render("codecuttlectl")
-	model := StatusModelStyle.Render(m.client.ModelID())
-	region := StatusDimStyle.Render(m.client.Region())
+
+	// Show primary model display name from pool if available
+	var modelDisplay string
+	if m.pool != nil {
+		modelDisplay = m.pool.Info(bedrock.RolePrimary).DisplayName
+	} else {
+		modelDisplay = m.client.ModelID()
+	}
+	model := StatusModelStyle.Render(modelDisplay)
+
+	var regionStr string
+	if m.pool != nil {
+		regionStr = m.pool.Region()
+	} else {
+		regionStr = m.client.Region()
+	}
+	region := StatusDimStyle.Render(regionStr)
 	plugins := StatusDimStyle.Render(fmt.Sprintf("%dp", m.pluginMgr.Count()))
 
 	// Token display: show total input (including cache), output, cache hit rate, and estimated cost
@@ -1393,12 +1421,19 @@ func formatTokenCount(tokens int32) string {
 }
 
 // estimateCost calculates an estimated dollar cost for the session's token usage.
-// Uses Claude Opus 4.x pricing on Bedrock (as of 2026):
-//   - Input tokens (uncached): $5.00 / 1M tokens
-//   - Output tokens: $25.00 / 1M tokens
-//   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
-//   - Cache read: $0.50 / 1M tokens (0.1x input)
+// If a ModelPool is available, uses per-model pricing from the registry.
+// Otherwise falls back to Opus 4.x pricing.
 func (m *Model) estimateCost() float64 {
+	if m.pool != nil {
+		return m.pool.EstimateCost(
+			bedrock.RolePrimary,
+			int64(m.totalInputTokens),
+			int64(m.totalOutputTokens),
+			int64(m.totalCacheReadInputTokens),
+			int64(m.totalCacheWriteInputTokens),
+		)
+	}
+	// Fallback: hardcoded Opus pricing
 	const (
 		inputPer1M      = 5.00
 		outputPer1M     = 25.00

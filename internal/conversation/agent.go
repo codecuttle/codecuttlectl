@@ -26,6 +26,7 @@ import (
 // Agent orchestrates the conversation between the user, the LLM, and the tool system.
 type Agent struct {
 	client       *bedrock.Client
+	pool         *bedrock.ModelPool
 	promptMgr    *prompt.Manager
 	pluginMgr    *pluginhost.Manager
 	systemPrompt string
@@ -58,6 +59,7 @@ type Agent struct {
 // Config holds configuration for creating an Agent.
 type Config struct {
 	Client    *bedrock.Client
+	Pool      *bedrock.ModelPool // Multi-model pool (if set, Client is ignored)
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
 	WorkDir   string
@@ -83,6 +85,11 @@ func NewAgent(cfg Config) (*Agent, error) {
 		cfg.MaxSteps = 25
 	}
 
+	// Resolve client from pool if not provided directly
+	if cfg.Client == nil && cfg.Pool != nil {
+		cfg.Client = cfg.Pool.Primary()
+	}
+
 	var systemPrompt string
 	if cfg.PromptMgr != nil {
 		var promptTools []prompt.ToolDef
@@ -106,6 +113,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 	agent := &Agent{
 		client:       cfg.Client,
+		pool:         cfg.Pool,
 		promptMgr:    cfg.PromptMgr,
 		pluginMgr:    cfg.PluginMgr,
 		systemPrompt: systemPrompt,
@@ -120,6 +128,11 @@ func NewAgent(cfg Config) (*Agent, error) {
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
+	}
+
+	// If Pool is provided, use its primary client
+	if agent.pool != nil && agent.client == nil {
+		agent.client = agent.pool.Primary()
 	}
 
 	// Initialize audit trail with model info and session start time

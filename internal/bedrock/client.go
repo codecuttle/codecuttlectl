@@ -233,3 +233,24 @@ func (c *Client) ModelID() string {
 func (c *Client) Region() string {
 	return c.region
 }
+
+// probeAccess sends a minimal Converse request to verify the model is accessible.
+// Returns nil if the model is reachable, or an error if access is denied.
+func (c *Client) probeAccess(ctx context.Context) error {
+	input := &bedrockruntime.ConverseInput{
+		ModelId: aws.String(c.modelID),
+		Messages: []types.Message{
+			{
+				Role: types.ConversationRoleUser,
+				Content: []types.ContentBlock{
+					&types.ContentBlockMemberText{Value: "hi"},
+				},
+			},
+		},
+		InferenceConfig: &types.InferenceConfiguration{
+			MaxTokens: aws.Int32(1),
+		},
+	}
+	_, err := c.runtime.Converse(ctx, input)
+	return err
+}
