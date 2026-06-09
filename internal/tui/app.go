@@ -128,8 +128,9 @@ type chatMessage struct {
 	isError bool
 }
 
-// contextWindowSize is the maximum input context window for Claude Opus 4.x (200k tokens).
-const contextWindowSize = 200_000
+// contextWindowSize is the maximum input context window for Claude Opus 4.6 on Bedrock (1M tokens).
+// This went GA in March 2026 — no beta header required.
+const contextWindowSize = 1_000_000
 
 type pendingTool struct {
 	id    string
