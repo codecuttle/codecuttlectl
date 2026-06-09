@@ -37,12 +37,16 @@ import (
 //
 // Bedrock evaluates tools FIRST in the hierarchy, so this cached prefix
 // is the foundation that all subsequent sections build upon.
+//
+// Note: We use toBedrockToolsSorted here for explicit determinism, even though
+// the smithy-go JSON encoder sorts map keys internally. Belt-and-suspenders
+// for cache stability — any byte-level change invalidates the entire tool prefix.
 func buildToolsWithCache(tools []ToolDefinition) *types.ToolConfiguration {
 	if len(tools) == 0 {
 		return nil
 	}
 
-	bedrockTools := toBedrockTools(tools)
+	bedrockTools := toBedrockToolsSorted(tools)
 
 	// Append cache checkpoint as the last element in the tools array
 	bedrockTools = append(bedrockTools, &types.ToolMemberCachePoint{

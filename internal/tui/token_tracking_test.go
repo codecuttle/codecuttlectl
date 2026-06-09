@@ -115,3 +115,32 @@ func TestCacheHitPercentage(t *testing.T) {
 		})
 	}
 }
+
+func TestContextWindowPercentage(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      int32
+		cacheRead  int32
+		cacheWrite int32
+		wantPct    int
+	}{
+		{"no tokens", 0, 0, 0, 0},
+		{"25% used (50k)", 10000, 35000, 5000, 25},
+		{"50% used (100k)", 20000, 70000, 10000, 50},
+		{"100% used (200k)", 40000, 140000, 20000, 100},
+		{"small session", 5000, 0, 13000, 9}, // 18000/200000 = 9%
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctxUsed := tt.input + tt.cacheRead + tt.cacheWrite
+			got := 0
+			if ctxUsed > 0 {
+				got = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+			}
+			if got != tt.wantPct {
+				t.Errorf("context window %% = %d, want %d", got, tt.wantPct)
+			}
+		})
+	}
+}
