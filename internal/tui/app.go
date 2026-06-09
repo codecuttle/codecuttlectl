@@ -492,11 +492,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalOutputTokens += msg.OutputTokens
 		m.totalCacheReadInputTokens += msg.CacheReadInputTokens
 		m.totalCacheWriteInputTokens += msg.CacheWriteInputTokens
-		// Don't reset streaming state here — StreamDoneMsg handles that.
-		// UsageEvent arrives after MessageStop but before the channel closes;
-		// the stream is already logically done by the time we get usage.
+		// Usage arrives after MessageStop. Continue reading for the channel close
+		// which will emit StreamDoneMsg to finalize the turn.
 		m.viewport.SetContent(m.renderMessages())
-		return m, nil
+		return m, m.readNextStreamEvent()
 
 	case StreamErrorMsg:
 		m.streaming = false
@@ -758,36 +757,41 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 		return func() tea.Msg { return StreamDoneMsg{StopReason: "no_channel"} }
 	}
 	return func() tea.Msg {
-		event, ok := <-ch
-		if !ok {
-			return StreamDoneMsg{StopReason: "end_turn"}
-		}
-		switch e := event.(type) {
-		case bedrock.TextDeltaEvent:
-			return StreamTextMsg{Text: e.Text}
-		case bedrock.ReasoningDeltaEvent:
-			return StreamReasoningMsg{Text: e.Text}
-		case bedrock.ReasoningSignatureEvent:
-			return StreamReasoningDoneMsg{Signature: e.Signature}
-		case bedrock.ToolUseStartEvent:
-			return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
-		case bedrock.ToolInputDeltaEvent:
-			return StreamToolInputMsg{Delta: e.Delta}
-		case bedrock.ToolUseStopEvent:
-			return StreamToolStopMsg{}
-		case bedrock.MessageStopEvent:
-			return StreamDoneMsg{StopReason: e.StopReason}
-		case bedrock.UsageEvent:
-			return StreamUsageMsg{
-				InputTokens:           e.InputTokens,
-				OutputTokens:          e.OutputTokens,
-				CacheReadInputTokens:  e.CacheReadInputTokens,
-				CacheWriteInputTokens: e.CacheWriteInputTokens,
+		for {
+			event, ok := <-ch
+			if !ok {
+				return StreamDoneMsg{StopReason: "end_turn"}
 			}
-		case bedrock.StreamErrorEvent:
-			return StreamErrorMsg{Err: e.Err}
-		default:
-			return StreamDoneMsg{StopReason: "unknown"}
+			switch e := event.(type) {
+			case bedrock.TextDeltaEvent:
+				return StreamTextMsg{Text: e.Text}
+			case bedrock.ReasoningDeltaEvent:
+				return StreamReasoningMsg{Text: e.Text}
+			case bedrock.ReasoningSignatureEvent:
+				return StreamReasoningDoneMsg{Signature: e.Signature}
+			case bedrock.ToolUseStartEvent:
+				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
+			case bedrock.ToolInputDeltaEvent:
+				return StreamToolInputMsg{Delta: e.Delta}
+			case bedrock.ToolUseStopEvent:
+				return StreamToolStopMsg{}
+			case bedrock.MessageStopEvent:
+				// Don't return yet — keep reading to consume the UsageEvent
+				// that Bedrock emits after MessageStop. StreamDoneMsg will be
+				// emitted when the channel closes (handled by !ok above).
+				continue
+			case bedrock.UsageEvent:
+				return StreamUsageMsg{
+					InputTokens:           e.InputTokens,
+					OutputTokens:          e.OutputTokens,
+					CacheReadInputTokens:  e.CacheReadInputTokens,
+					CacheWriteInputTokens: e.CacheWriteInputTokens,
+				}
+			case bedrock.StreamErrorEvent:
+				return StreamErrorMsg{Err: e.Err}
+			default:
+				return StreamDoneMsg{StopReason: "unknown"}
+			}
 		}
 	}
 }
