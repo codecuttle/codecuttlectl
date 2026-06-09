@@ -148,7 +148,12 @@ Consider enabling for CDE environments where human review causes >5-minute gaps 
 
 ## Future: Keepalive Pings
 
-If cache expiration becomes a problem (e.g., sessions that idle while builds run), a background keepalive ping at 4.5-minute intervals can refresh the TTL. A minimal cache-read request costs ~$0.01 and prevents the ~$0.12 cache rebuild penalty.
+The TUI includes a background cache keepalive mechanism. A Bubble Tea `Tick` fires every 4 minutes. If no real API call has been made in that interval, a minimal `PingCache` request (Converse with `max_tokens=1`) refreshes the Bedrock cache TTL. Cost: ~$0.01 per ping vs ~$0.12 for a full cache rebuild.
+
+The keepalive is suppressed when:
+- No conversation history exists yet (nothing worth caching)
+- A stream is currently active (the stream itself refreshes the cache)
+- A real API call was made within the last 4 minutes (cache is already fresh)
 
 ## References
 

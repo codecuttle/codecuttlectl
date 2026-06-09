@@ -97,6 +97,8 @@ Session cost tracking persists across resumes. `--list-sessions` shows per-sessi
 
 See [`docs/caching.md`](docs/caching.md).
 
+A background keepalive ping fires every 4 minutes during idle to prevent the 5-minute cache TTL from expiring. See [caching docs](docs/caching.md) for details.
+
 ## Not yet implemented
 
 - Chomsky routing (dynamic complexity classification)
@@ -108,7 +110,6 @@ See [`docs/caching.md`](docs/caching.md).
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
 - Hot-reload plugins (fsnotify-based auto-discovery)
-- Cache keepalive pings (prevent 5-minute TTL expiration during idle)
 - LLM-generated compaction summaries (Phase 2 of [compaction doc](docs/context-compaction.md))
 - Optic Lobe retrieval for compacted content (Phase 3 of [compaction doc](docs/context-compaction.md))
 
