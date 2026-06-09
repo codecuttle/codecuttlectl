@@ -336,7 +336,7 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 
 			case bedrock.UsageEvent:
 				// Track token usage in audit trail
-				a.recordTokenUsage(e.InputTokens, e.OutputTokens, 0, 0, step)
+				a.recordTokenUsage(e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheWriteInputTokens, step)
 
 			case bedrock.StreamErrorEvent:
 				if cb != nil {
