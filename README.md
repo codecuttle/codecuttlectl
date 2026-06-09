@@ -110,7 +110,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
 - Hot-reload plugins (fsnotify-based auto-discovery)
-- LLM-generated compaction summaries (Phase 2 of [compaction doc](docs/context-compaction.md))
+- LLM-generated compaction summaries (Phase 2 — [design doc](docs/llm-compaction-design.md))
 - Optic Lobe retrieval for compacted content (Phase 3 of [compaction doc](docs/context-compaction.md))
 
 ## Development
