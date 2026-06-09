@@ -81,19 +81,17 @@ type PoolConfig struct {
     Region  string
     Profile string
 
-    // Primary model (required) — used for main agent conversation.
+    // Primary model — used for main agent conversation.
     Primary string // Model ID, e.g. "us.anthropic.claude-opus-4-6-v1"
 
-    // Auxiliary model (optional) — used for summaries, titles, etc.
-    // If empty, falls back to Primary for everything.
+    // Auxiliary model — used for summaries, titles, classification.
     Auxiliary string // Model ID, e.g. "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
-    // Planning model (optional) — mid-tier for complex auxiliary tasks.
-    // If empty, falls back to Primary.
+    // Planning model — mid-tier for complex auxiliary tasks.
     Planning string // Model ID, e.g. "us.anthropic.claude-sonnet-4-6"
 }
 
-// NewPool creates a ModelPool with clients for each configured role.
+// NewPool creates a ModelPool with clients for all three roles.
 // All clients share the same AWS credentials and region.
 func NewPool(ctx context.Context, cfg PoolConfig) (*ModelPool, error) {
     // Single AWS config load, shared across all clients
@@ -107,21 +105,15 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*ModelPool, error) {
         configs: make(map[ModelRole]ModelConfig),
     }
 
-    // Primary is required
+    // Initialize all three roles
     pool.clients[RolePrimary] = newClientFromAWSConfig(awsCfg, cfg.Primary)
     pool.configs[RolePrimary] = lookupModelConfig(cfg.Primary)
 
-    // Auxiliary — fallback to primary if not specified
-    if cfg.Auxiliary != "" {
-        pool.clients[RoleAuxiliary] = newClientFromAWSConfig(awsCfg, cfg.Auxiliary)
-        pool.configs[RoleAuxiliary] = lookupModelConfig(cfg.Auxiliary)
-    }
+    pool.clients[RoleAuxiliary] = newClientFromAWSConfig(awsCfg, cfg.Auxiliary)
+    pool.configs[RoleAuxiliary] = lookupModelConfig(cfg.Auxiliary)
 
-    // Planning — fallback to primary if not specified
-    if cfg.Planning != "" {
-        pool.clients[RolePlanning] = newClientFromAWSConfig(awsCfg, cfg.Planning)
-        pool.configs[RolePlanning] = lookupModelConfig(cfg.Planning)
-    }
+    pool.clients[RolePlanning] = newClientFromAWSConfig(awsCfg, cfg.Planning)
+    pool.configs[RolePlanning] = lookupModelConfig(cfg.Planning)
 
     return pool, nil
 }
@@ -305,28 +297,57 @@ func (s *RelevanceScorer) Score(ctx context.Context, toolResult string, recentCo
 
 ## CLI Interface
 
+The pool is **always active** with all three roles populated by default. The `--model` flag continues to control the primary model; auxiliary and planning models are automatically selected based on the primary model's family:
+
 ```bash
-# Default: Opus primary, no auxiliary (current behavior, backward compatible)
+# Default: Opus 4.6 primary, Haiku 4.5 auxiliary, Sonnet 4.6 planning
 codecuttlectl
 
-# Specify auxiliary model for cheap background tasks
-codecuttlectl --aux-model us.anthropic.claude-haiku-4-5-20251001-v1:0
+# Override primary — auxiliary/planning auto-selected from same family
+codecuttlectl --model us.anthropic.claude-opus-4-8
 
-# Specify both auxiliary and planning models
-codecuttlectl --aux-model us.anthropic.claude-haiku-4-5-20251001-v1:0 \
-              --plan-model us.anthropic.claude-sonnet-4-6
-
-# Override primary model too
-codecuttlectl --model us.anthropic.claude-opus-4-8 \
-              --aux-model us.anthropic.claude-haiku-4-5-20251001-v1:0
-
-# Shorthand aliases for common configurations
-codecuttlectl --cost-optimized
-# Equivalent to: --model opus-4-6 --aux-model haiku-4-5 --plan-model sonnet-4-6
-
-codecuttlectl --max-quality
-# Equivalent to: --model opus-4-8 (no auxiliary, everything on Opus 4.8)
+# Override everything (rare, for testing/experimentation)
+codecuttlectl --model opus-4-8 --aux-model haiku-4-5 --plan-model sonnet-4-6
 ```
+
+### Automatic Role Assignment
+
+Given a primary model, the pool auto-populates auxiliary and planning:
+
+```go
+// DefaultRoles returns the standard role assignment for a given primary model.
+// The system always initializes all three roles — no opt-in required.
+func DefaultRoles(primaryID string) PoolConfig {
+    switch {
+    case strings.Contains(primaryID, "opus"):
+        return PoolConfig{
+            Primary:   primaryID,
+            Auxiliary: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            Planning:  "us.anthropic.claude-sonnet-4-6",
+        }
+    case strings.Contains(primaryID, "sonnet"):
+        return PoolConfig{
+            Primary:   primaryID,
+            Auxiliary: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            Planning:  primaryID, // Sonnet IS the planning tier
+        }
+    case strings.Contains(primaryID, "haiku"):
+        return PoolConfig{
+            Primary:   primaryID,
+            Auxiliary: primaryID, // Haiku IS the auxiliary tier
+            Planning:  primaryID, // Single-model mode
+        }
+    default:
+        return PoolConfig{
+            Primary:   primaryID,
+            Auxiliary: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            Planning:  "us.anthropic.claude-sonnet-4-6",
+        }
+    }
+}
+```
+
+This means `codecuttlectl` with zero flags already runs cost-optimized — Haiku handles summaries, titles, and classification; Sonnet handles planning tasks; Opus handles the agent conversation.
 
 ### Model Aliases
 
@@ -399,32 +420,37 @@ This means multi-model doesn't affect our existing caching strategy at all. The 
 
 ## Error Handling & Fallback
 
-If the auxiliary model is unavailable (throttled, region outage, etc.), fall back to primary:
+If an auxiliary or planning model is unavailable (throttled, region outage, etc.), fall back to primary:
 
 ```go
+// GetWithFallback tries the requested role, then falls back to primary.
 func (p *ModelPool) GetWithFallback(role ModelRole) *Client {
-    if c := p.Get(role); c != nil {
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+    if c, ok := p.clients[role]; ok {
         return c
     }
-    return p.Get(RolePrimary)
+    return p.clients[RolePrimary]
 }
 
-// Summarizer with fallback
+// Example: Summarizer with automatic fallback
 func (s *HaikuSummarizer) Summarize(ctx context.Context, req SummarizeRequest) (*SummarizeResult, error) {
     client := s.pool.Get(RoleAuxiliary)
     resp, err := client.Converse(ctx, ...)
     if err != nil {
-        // Log the failure, try primary as fallback
-        s.logger.Warn("auxiliary model failed, falling back to primary", "err", err)
+        // Auxiliary failed — fall back to primary (more expensive but available)
+        s.logger.Warn("auxiliary model unavailable, falling back to primary", "err", err)
         client = s.pool.Get(RolePrimary)
         resp, err = client.Converse(ctx, ...)
         if err != nil {
-            return nil, err
+            return nil, err // Both failed — propagate error
         }
     }
     return ...
 }
 ```
+
+Fallback is always silent from the user's perspective. The audit log records which model actually served each request.
 
 ## Audit & Observability
 
@@ -486,28 +512,34 @@ Session persistence includes per-model cost breakdowns:
 
 ## Migration Path
 
-The change is **fully backward compatible**:
+The change is **transparent to the user**:
 
-1. If no `--aux-model` is specified, the pool contains only the primary client
-2. `pool.Get(RoleAuxiliary)` falls back to primary
-3. All existing behavior is preserved
-4. Cost tracking defaults to single-model display unless auxiliary is configured
+1. `codecuttlectl` with default flags now initializes all three model roles automatically
+2. The primary model is still controlled by `--model` (default: Opus 4.6)
+3. Auxiliary (Haiku 4.5) and planning (Sonnet 4.6) are auto-selected based on the primary
+4. `--aux-model` and `--plan-model` exist as overrides for testing/experimentation, not normal use
+5. Cost tracking in the status bar now reflects the blended cost across all models
+6. All internal operations (title gen, summaries, keepalive) automatically use the cheapest appropriate model
 
-Users opt in to multi-model explicitly. No behavior changes for `codecuttlectl` with default flags.
+Users see lower costs immediately with no configuration changes.
 
 ## Design Decisions
 
-1. **Role-based, not task-based routing** — Models are assigned roles (primary/auxiliary/planning), and tasks are mapped to roles. This is simpler than a per-task model config and makes the mental model clear: "Haiku does background work, Opus does the real thinking."
+1. **Always-on by default** — Multi-model is not opt-in. Every session initializes all three roles automatically. The cost savings are universally beneficial and there's no downside (fallback to primary handles failures gracefully).
 
-2. **Shared AWS credentials** — All models use the same AWS config (region, profile, credentials). No need for separate auth per model.
+2. **Role-based, not task-based routing** — Models are assigned roles (primary/auxiliary/planning), and tasks are mapped to roles. This is simpler than a per-task model config and makes the mental model clear: "Haiku does background work, Sonnet does planning, Opus does the real thinking."
 
-3. **No runtime model switching for the primary loop** — The agent conversation always uses the primary model. Chomsky routing (dynamic switching based on complexity) is future work that builds on this foundation but doesn't change the architecture.
+3. **Automatic role assignment from primary** — Given a primary model, the system auto-selects appropriate auxiliary and planning models from the same family. No manual configuration needed.
 
-4. **Haiku for summarization, not Sonnet** — At $1/MTok vs $3/MTok, Haiku is 3x cheaper than Sonnet for the same task. Quality is sufficient for structural summaries. Sonnet is reserved for tasks that genuinely need more reasoning (planning tier).
+4. **Shared AWS credentials** — All models use the same AWS config (region, profile, credentials). No need for separate auth per model.
 
-5. **Registry is static** — Model capabilities and pricing are compiled in. We're not querying Bedrock for model metadata at runtime. This keeps startup fast and avoids API dependencies. The registry is updated when we update the codebase.
+5. **No runtime model switching for the primary loop** — The agent conversation always uses the primary model. Chomsky routing (dynamic switching based on complexity) is future work that builds on this foundation but doesn't change the architecture.
 
-6. **Graceful degradation** — Auxiliary model failures never break the session. Everything falls back to primary.
+6. **Haiku for summarization, not Sonnet** — At $1/MTok vs $3/MTok, Haiku is 3x cheaper than Sonnet for the same task. Quality is sufficient for structural summaries. Sonnet is reserved for tasks that genuinely need more reasoning (planning tier).
+
+7. **Registry is static** — Model capabilities and pricing are compiled in. We're not querying Bedrock for model metadata at runtime. This keeps startup fast and avoids API dependencies. The registry is updated when we update the codebase.
+
+8. **Graceful degradation** — Auxiliary/planning model failures never break the session. Everything falls back to primary silently.
 
 ## References
 
