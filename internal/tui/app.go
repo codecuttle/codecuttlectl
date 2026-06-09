@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
@@ -120,6 +121,11 @@ type Model struct {
 
 	// Markdown renderer
 	mdRenderer *glamour.TermRenderer
+
+	// Cache keepalive: track when the last API call was made so we can
+	// decide whether a keepalive ping is needed. Pings fire every 4 minutes
+	// but only send a request if we've been idle > 4 minutes since the last call.
+	lastAPICallTime time.Time
 }
 
 type chatMessage struct {
@@ -132,6 +138,11 @@ type chatMessage struct {
 // contextWindowSize is the maximum input context window for Claude Opus 4.6 on Bedrock (1M tokens).
 // This went GA in March 2026 — no beta header required.
 const contextWindowSize = 1_000_000
+
+// cacheKeepaliveInterval is how often the keepalive ticker fires. Set to 4 minutes
+// to stay well within the 5-minute Bedrock cache TTL. If no real API call has been
+// made in this interval, a minimal PingCache request refreshes the TTL.
+const cacheKeepaliveInterval = 4 * time.Minute
 
 type pendingTool struct {
 	id    string
@@ -215,7 +226,14 @@ func (m Model) SessionID() string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, textarea.Blink)
+	return tea.Batch(m.spinner.Tick, textarea.Blink, m.cacheKeepaliveTick())
+}
+
+// cacheKeepaliveTick returns a Cmd that fires CacheKeepaliveTickMsg after the keepalive interval.
+func (m *Model) cacheKeepaliveTick() tea.Cmd {
+	return tea.Tick(cacheKeepaliveInterval, func(t time.Time) tea.Msg {
+		return CacheKeepaliveTickMsg{}
+	})
 }
 
 // spinnerGradient is a smooth color transition: honey → green → teal → green → honey
@@ -651,6 +669,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.todos.Replace(msg.Items)
 		return m, nil
 
+	case CacheKeepaliveTickMsg:
+		// Only ping if we have history (something worth caching) and we're
+		// not currently streaming (a stream already refreshes the cache).
+		if !m.streaming && len(m.history) > 0 {
+			elapsed := time.Since(m.lastAPICallTime)
+			if elapsed >= cacheKeepaliveInterval {
+				// Time to refresh — fire a ping in the background.
+				client := m.client
+				system := m.system
+				history := m.history
+				tools := m.pluginMgr.Definitions()
+				cmd := func() tea.Msg {
+					err := client.PingCache(context.Background(), system, history, tools)
+					return CacheKeepaliveDoneMsg{Err: err}
+				}
+				return m, tea.Batch(cmd, m.cacheKeepaliveTick())
+			}
+		}
+		// Reschedule the next tick regardless.
+		return m, m.cacheKeepaliveTick()
+
+	case CacheKeepaliveDoneMsg:
+		// Keepalive completed. If it succeeded, update lastAPICallTime so we
+		// don't send another ping until the next interval elapses.
+		if msg.Err == nil {
+			m.lastAPICallTime = time.Now()
+		}
+		// Errors are silently ignored — the worst case is a cache miss on the
+		// next real call, which isn't worth surfacing to the user.
+		return m, nil
+
 	case spinner.TickMsg:
 		if m.streaming {
 			// Smooth color transition: cycle every 4th tick, interpolate between colors
@@ -751,6 +800,9 @@ func (m *Model) launchStream() tea.Cmd {
 	m.inReasoning = false
 	m.currentToolInput.Reset()
 	m.pendingToolCalls = nil
+
+	// Record that a real API call is happening — resets the keepalive timer.
+	m.lastAPICallTime = time.Now()
 
 	// Apply context compaction if needed: replace old verbose tool results
 	// with summaries to keep the context window lean. The full content remains

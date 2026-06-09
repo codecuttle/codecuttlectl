@@ -124,3 +124,11 @@ type ApprovalDecisionMsg struct {
 type UserSubmitMsg struct {
 	Text string
 }
+
+// CacheKeepaliveTickMsg fires periodically to trigger a cache TTL refresh.
+type CacheKeepaliveTickMsg struct{}
+
+// CacheKeepaliveDoneMsg signals that a keepalive ping completed (success or failure).
+type CacheKeepaliveDoneMsg struct {
+	Err error
+}
