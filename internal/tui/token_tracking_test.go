@@ -41,35 +41,35 @@ func TestEstimateCost(t *testing.T) {
 		t.Errorf("expected 0 cost for zero tokens, got %f", cost)
 	}
 
-	// 1M input tokens = $15.00
+	// 1M input tokens = $5.00 (Claude Opus 4.x Bedrock pricing)
 	m.totalInputTokens = 1_000_000
 	cost = m.estimateCost()
-	if cost < 14.99 || cost > 15.01 {
-		t.Errorf("expected ~$15.00 for 1M input tokens, got $%.4f", cost)
+	if cost < 4.99 || cost > 5.01 {
+		t.Errorf("expected ~$5.00 for 1M input tokens, got $%.4f", cost)
 	}
 
-	// 1M output tokens = $75.00
+	// 1M output tokens = $25.00
 	m.totalInputTokens = 0
 	m.totalOutputTokens = 1_000_000
 	cost = m.estimateCost()
-	if cost < 74.99 || cost > 75.01 {
-		t.Errorf("expected ~$75.00 for 1M output tokens, got $%.4f", cost)
+	if cost < 24.99 || cost > 25.01 {
+		t.Errorf("expected ~$25.00 for 1M output tokens, got $%.4f", cost)
 	}
 
-	// 1M cache read tokens = $1.50
+	// 1M cache read tokens = $0.50
 	m.totalOutputTokens = 0
 	m.totalCacheReadInputTokens = 1_000_000
 	cost = m.estimateCost()
-	if cost < 1.49 || cost > 1.51 {
-		t.Errorf("expected ~$1.50 for 1M cache read tokens, got $%.4f", cost)
+	if cost < 0.49 || cost > 0.51 {
+		t.Errorf("expected ~$0.50 for 1M cache read tokens, got $%.4f", cost)
 	}
 
-	// 1M cache write tokens = $18.75
+	// 1M cache write tokens = $6.25
 	m.totalCacheReadInputTokens = 0
 	m.totalCacheWriteInputTokens = 1_000_000
 	cost = m.estimateCost()
-	if cost < 18.74 || cost > 18.76 {
-		t.Errorf("expected ~$18.75 for 1M cache write tokens, got $%.4f", cost)
+	if cost < 6.24 || cost > 6.26 {
+		t.Errorf("expected ~$6.25 for 1M cache write tokens, got $%.4f", cost)
 	}
 
 	// Combined: typical session
@@ -79,10 +79,10 @@ func TestEstimateCost(t *testing.T) {
 	m.totalCacheReadInputTokens = 200_000
 	m.totalCacheWriteInputTokens = 10_000
 	cost = m.estimateCost()
-	// Expected: (50k/1M * 15) + (20k/1M * 75) + (200k/1M * 1.5) + (10k/1M * 18.75)
-	//         = 0.75 + 1.50 + 0.30 + 0.1875 = 2.7375
-	if cost < 2.73 || cost > 2.75 {
-		t.Errorf("expected ~$2.74 for combined tokens, got $%.4f", cost)
+	// Expected: (50k/1M * 5) + (20k/1M * 25) + (200k/1M * 0.50) + (10k/1M * 6.25)
+	//         = 0.25 + 0.50 + 0.10 + 0.0625 = 0.9125
+	if cost < 0.91 || cost > 0.92 {
+		t.Errorf("expected ~$0.91 for combined tokens, got $%.4f", cost)
 	}
 }
 

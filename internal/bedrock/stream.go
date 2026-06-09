@@ -112,9 +112,7 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 		}
 
 		if len(tools) > 0 {
-			input.ToolConfig = &types.ToolConfiguration{
-				Tools: toBedrockTools(tools),
-			}
+			input.ToolConfig = buildToolsWithCache(tools)
 		}
 
 		// Enable extended thinking if requested

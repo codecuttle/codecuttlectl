@@ -247,9 +247,11 @@ type AuditTrail struct {
 Inkwell data is available via multiple channels:
 
 1. **Session files** — Full JSON on disk (`~/.local/share/codecuttlectl/sessions/`)
-2. **Structured logs** — One-line JSON per event to stderr (for external log aggregation)
-3. **Future: OpenTelemetry** — Spans per tool call with attributes
-4. **Future: Webhook** — POST events to an external security/audit endpoint
+2. **Structured logs** — One-line JSON per event to stderr via `--audit-log` (for external log aggregation)
+3. **TUI status bar** — Live token counts, cache hit %, and estimated cost
+4. **Session listing** — `--list-sessions` shows per-session cost estimates
+5. **Future: OpenTelemetry** — Spans per tool call with attributes
+6. **Future: Webhook** — POST events to an external security/audit endpoint
 
 ### What Gets Captured (for liability/insurance)
 
@@ -264,7 +266,7 @@ Every session file contains enough to reconstruct:
 | What happened? | `inkwell[].output` (full, never truncated) + `output_chunks` |
 | Was it dangerous? | `inkwell[].was_blocked` / `error_type` / safety flags |
 | Did a human approve it? | `inkwell[].required_approval` + audit trail |
-| How much did it cost? | `audit.total_*_tokens` |
+| How much did it cost? | `audit.total_*_tokens` + `meta.stats.estimated_cost_usd` |
 | Who authenticated? | `audit.auth_method` + `auth_identity` |
 | What model version? | `audit.model_id` + `model_version` |
 | Exact timeline? | Timestamps on every entry + `output_chunks` |

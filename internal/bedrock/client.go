@@ -104,9 +104,7 @@ func (c *Client) Converse(ctx context.Context, system string, messages []types.M
 	}
 
 	if len(tools) > 0 {
-		input.ToolConfig = &types.ToolConfiguration{
-			Tools: toBedrockTools(tools),
-		}
+		input.ToolConfig = buildToolsWithCache(tools)
 	}
 
 	output, err := c.runtime.Converse(ctx, input)
@@ -135,6 +133,10 @@ func toBedrockTools(tools []ToolDefinition) []types.Tool {
 	}
 	return result
 }
+
+// Helper functions used by cache.go
+func strPtr(s string) *string { return aws.String(s) }
+func lazyDoc(v interface{}) document.Interface { return document.NewLazyDocument(v) }
 
 func parseConverseOutput(output *bedrockruntime.ConverseOutput) *Response {
 	resp := &Response{}
