@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
+	"github.com/codecuttle/codecuttlectl/internal/compact"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
@@ -128,8 +129,9 @@ type chatMessage struct {
 	isError bool
 }
 
-// contextWindowSize is the maximum input context window for Claude Opus 4.x (200k tokens).
-const contextWindowSize = 200_000
+// contextWindowSize is the maximum input context window for Claude Opus 4.6 on Bedrock (1M tokens).
+// This went GA in March 2026 — no beta header required.
+const contextWindowSize = 1_000_000
 
 type pendingTool struct {
 	id    string
@@ -750,6 +752,11 @@ func (m *Model) launchStream() tea.Cmd {
 	m.currentToolInput.Reset()
 	m.pendingToolCalls = nil
 
+	// Apply context compaction if needed: replace old verbose tool results
+	// with summaries to keep the context window lean. The full content remains
+	// in the session file and Inkwell (never truncated there).
+	m.maybeCompact()
+
 	ctx := context.Background()
 	var streamCfg bedrock.StreamConfig
 	if m.enableThinking {
@@ -761,6 +768,47 @@ func (m *Model) launchStream() tea.Cmd {
 
 	// Return a cmd that reads the first event from the stream
 	return tea.Batch(m.spinner.Tick, m.readNextStreamEvent())
+}
+
+// maybeCompact applies heuristic compaction to the conversation history.
+// This replaces old verbose tool results (read_file, grep, etc.) with concise
+// summaries, freeing context space while preserving enough info for the model
+// to know what was there.
+//
+// Compaction always runs for results older than PreserveRecentTurns — there's
+// no reason to keep 8k tokens of a file read from 5 turns ago when a 200-byte
+// summary suffices. The MaxContextPercent threshold controls *aggressive*
+// compaction (reducing PreserveRecentTurns to 1), not whether compaction
+// happens at all.
+//
+// The full content is always preserved in the Inkwell and session file.
+func (m *Model) maybeCompact() {
+	cfg := compact.DefaultConfig()
+
+	// If context usage is high, compact more aggressively (preserve fewer turns)
+	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+	if compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
+		cfg.PreserveRecentTurns = 1 // Aggressive: only keep current turn
+	}
+
+	// Count user text messages to determine current turn
+	turn := 0
+	for _, msg := range m.history {
+		if msg.Role == types.ConversationRoleUser {
+			for _, block := range msg.Content {
+				if _, ok := block.(*types.ContentBlockMemberText); ok {
+					turn++
+					break
+				}
+			}
+		}
+	}
+
+	// Always compact stale results (older than PreserveRecentTurns)
+	result := compact.Compact(m.history, turn, cfg)
+	if result.Compacted > 0 {
+		m.history = result.Messages
+	}
 }
 
 // readNextStreamEvent returns a Cmd that reads the next event from the active stream.

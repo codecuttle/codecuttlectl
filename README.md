@@ -45,6 +45,7 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Sessions** — persistence, resume, Inkwell capture | Done |
 | **Typed Schema** — auto-derived JSON Schema from Go structs | Done |
 | **Scaffold Generator** — plugin stub generation mid-session | Done |
+| **Context Compaction** — heuristic tool result summarization | Done |
 | **Work Backlog** — cross-session deferred intent queue | Designed |
 | **Chromatophore Engine** — Chomsky hierarchy routing | Planned |
 | **Optic Lobe** — PostgreSQL + pgvector + AGE memory | Planned |
@@ -108,7 +109,8 @@ See [`docs/caching.md`](docs/caching.md).
 - MicroVM isolation (Firecracker)
 - Hot-reload plugins (fsnotify-based auto-discovery)
 - Cache keepalive pings (prevent 5-minute TTL expiration during idle)
-- Conversation compaction (summarize old history at 80% context usage)
+- LLM-generated compaction summaries (Phase 2 of [compaction doc](docs/context-compaction.md))
+- Optic Lobe retrieval for compacted content (Phase 3 of [compaction doc](docs/context-compaction.md))
 
 ## Development
 
