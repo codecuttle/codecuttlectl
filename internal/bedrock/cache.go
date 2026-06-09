@@ -111,34 +111,56 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 	}
 }
 
-// applyCachePoints implements Incremental Extension Caching.
+// applyCachePoints implements the "latest user message" caching strategy.
 //
-// Instead of shifting a checkpoint backward (which invalidates the cache),
-// we place the checkpoint on the LAST message in the array. This means:
+// The cache checkpoint is placed on the LAST USER MESSAGE in the array, not
+// the absolute last message. This is critical for tool-use loops:
 //
-//   - Turn 1: Bedrock writes tools+system+messages[0..N] to cache
-//   - Turn 2: Bedrock reads the prefix from cache (tools+system+messages[0..N]),
-//     processes only the new delta (messages[N+1..M]), and writes the extended
-//     prefix to cache
-//   - Turn 3+: Same pattern — read old prefix, compute delta, write extended
+// During a single turn, the agent may make many tool calls:
+//   User msg → Assistant tool_use → Tool result → Assistant tool_use → Tool result → ...
 //
-// The prefix grows monotonically. Since messages are only ever appended (never
-// modified or reordered), the byte-for-byte prefix match is guaranteed.
+// If we cache at the absolute last message, every step shifts the cache point,
+// forcing a full cache WRITE on each API call in the loop (~$0.02-0.10 each).
 //
-// This uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
+// By caching at the last user message, the cache point stays FIXED during the
+// entire tool-use loop:
+//   - Turn starts: cache point on user message → cache WRITE (once)
+//   - Tool call 1: prefix (up to user msg) is cached → cache READ
+//   - Tool call 2: same prefix → cache READ
+//   - Tool call N: same prefix → cache READ
+//
+// The cache write only happens once per user turn, and all subsequent tool-use
+// iterations within that turn get cheap cache reads. This matches the strategy
+// used by opencode and other production agent harnesses.
+//
+// Uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
 func applyCachePoints(messages []types.Message) []types.Message {
 	if len(messages) < 2 {
 		return messages
+	}
+
+	// Find the last user message
+	lastUserIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == types.ConversationRoleUser {
+			lastUserIdx = i
+			break
+		}
+	}
+
+	// If no user message found (shouldn't happen in practice), fall back to last message
+	if lastUserIdx == -1 {
+		lastUserIdx = len(messages) - 1
 	}
 
 	// Make a shallow copy so we don't mutate the caller's slice
 	result := make([]types.Message, len(messages))
 	copy(result, messages)
 
-	// Place cache point on the LAST message (the most recent content).
-	// Bedrock will read the cached prefix of all prior messages and only
-	// process the delta since the last cache write.
-	idx := len(result) - 1
+	// Place cache point on the last user message.
+	// Bedrock will cache the prefix up to this point. During tool-use loops,
+	// this prefix stays fixed (cache reads) until the next user message arrives.
+	idx := lastUserIdx
 
 	// Copy the message's content slice so we don't mutate the original
 	origContent := result[idx].Content
