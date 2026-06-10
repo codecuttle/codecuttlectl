@@ -988,6 +988,12 @@ func (a *Agent) loadSession() error {
 	}
 	a.history = messages
 
+	// Also restore into provHistory if we're using the provider interface,
+	// so that provider-based sessions can resume with full context.
+	if a.provider != nil && len(state.Messages) > 0 {
+		a.provHistory = sessionMsgsToProvider(state.Messages)
+	}
+
 	// Restore todos
 	if len(state.Todos) > 0 {
 		a.todos.Replace(state.Todos)

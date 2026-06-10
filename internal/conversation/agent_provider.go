@@ -394,8 +394,7 @@ func (a *Agent) allProviderToolDefs() []provider.ToolDefinition {
 }
 
 // flushSessionProvider persists session state for provider-based conversations.
-// For now, provider sessions don't persist full history (since it's in a different
-// format), but we still persist the inkwell and audit trail.
+// Serializes the provider history into the session format so it can be restored.
 func (a *Agent) flushSessionProvider() {
 	if a.store == nil || a.sessionID == "" {
 		return
@@ -414,8 +413,43 @@ func (a *Agent) flushSessionProvider() {
 	meta.Stats.Turns = a.turn
 	meta.Stats.ToolCalls = len(a.inkwell)
 
+	// Serialize provider history into session message format
+	var serialized []session.Message
+	for _, msg := range a.provHistory {
+		sMsg := session.Message{
+			Role: string(msg.Role),
+		}
+		for _, block := range msg.Content {
+			switch b := block.(type) {
+			case provider.TextBlock:
+				sMsg.Blocks = append(sMsg.Blocks, session.ContentItem{
+					Type: "text",
+					Text: b.Text,
+				})
+			case provider.ToolUseBlock:
+				sMsg.Blocks = append(sMsg.Blocks, session.ContentItem{
+					Type:      "tool_use",
+					ToolUseID: b.ToolUseID,
+					Name:      b.Name,
+					Input:     json.RawMessage(b.Input),
+				})
+			case provider.ToolResultBlock:
+				sMsg.Blocks = append(sMsg.Blocks, session.ContentItem{
+					Type:      "tool_result",
+					ResultFor: b.ToolUseID,
+					Content:   b.Content,
+					Status:    boolToStatus(b.IsError),
+				})
+			}
+		}
+		if len(sMsg.Blocks) > 0 {
+			serialized = append(serialized, sMsg)
+		}
+	}
+
 	state := &session.SessionState{
 		Meta:    meta,
+		Messages: serialized,
 		Todos:   a.todos.Items(),
 		Inkwell: a.inkwell,
 		Audit:   a.AuditTrail(),
@@ -428,4 +462,52 @@ func (a *Agent) flushSessionProvider() {
 	}
 
 	a.dirty = false
+}
+
+func boolToStatus(isError bool) string {
+	if isError {
+		return "error"
+	}
+	return ""
+}
+
+// sessionMsgsToProvider converts serialized session messages back into provider
+// messages for resuming provider-based sessions.
+func sessionMsgsToProvider(msgs []session.Message) []provider.Message {
+	var result []provider.Message
+	for _, msg := range msgs {
+		pMsg := provider.Message{
+			Role: provider.Role(msg.Role),
+		}
+		for _, block := range msg.Blocks {
+			switch block.Type {
+			case "text":
+				pMsg.Content = append(pMsg.Content, provider.TextBlock{Text: block.Text})
+			case "tool_use":
+				input := json.RawMessage(block.Input)
+				if len(input) == 0 {
+					input = json.RawMessage("{}")
+				}
+				pMsg.Content = append(pMsg.Content, provider.ToolUseBlock{
+					ToolUseID: block.ToolUseID,
+					Name:      block.Name,
+					Input:     input,
+				})
+			case "tool_result":
+				toolUseID := block.ResultFor
+				if toolUseID == "" {
+					toolUseID = block.ToolUseID
+				}
+				pMsg.Content = append(pMsg.Content, provider.ToolResultBlock{
+					ToolUseID: toolUseID,
+					Content:   block.Content,
+					IsError:   block.Status == "error",
+				})
+			}
+		}
+		if len(pMsg.Content) > 0 {
+			result = append(result, pMsg)
+		}
+	}
+	return result
 }
