@@ -1446,12 +1446,23 @@ func (m *Model) renderStatusBar() string {
 		ctxStyled = StatusDimStyle.Render(ctxStr)
 	}
 
-	tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
-		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
-	tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
+	// Build right-side status: tokens in/out, ctx%, and optionally cost
+	var right string
+	if m.client != nil {
+		// Bedrock: show cache hit % and cost
+		tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
+			formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
+		tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
+		right = tokens + " "
+	} else {
+		// Local provider (Ollama): show tokens and ctx%, no cost
+		tokenStr := fmt.Sprintf("%s in %s out ",
+			formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens))
+		tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled
+		right = tokens + " "
+	}
 
 	left := " " + label + "  " + model + "  " + regionStr + "  " + plugins
-	right := tokens + " "
 
 	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(right)
@@ -1481,12 +1492,18 @@ func formatTokenCount(tokens int32) string {
 }
 
 // estimateCost calculates an estimated dollar cost for the session's token usage.
+// Returns 0 for local providers (Ollama) since they have no API cost.
 // Uses Claude Opus 4.x pricing on Bedrock (as of 2026):
 //   - Input tokens (uncached): $5.00 / 1M tokens
 //   - Output tokens: $25.00 / 1M tokens
 //   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
 //   - Cache read: $0.50 / 1M tokens (0.1x input)
 func (m *Model) estimateCost() float64 {
+	// Local providers have no API cost — detect by: provider set but no bedrock client
+	if m.client == nil && m.llmProvider != nil {
+		return 0
+	}
+
 	const (
 		inputPer1M      = 5.00
 		outputPer1M     = 25.00

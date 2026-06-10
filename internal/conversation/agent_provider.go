@@ -29,6 +29,104 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 	for step := 0; step < a.maxSteps; step++ {
 		effectivePrompt := a.effectiveSystemPrompt()
 
+		// For smaller/local models: inject a grounding reminder every 3 tool-use steps
+		// to keep the model focused on the original user intent.
+		if step > 0 && step%3 == 0 {
+			groundingReminder := provider.Message{
+				Role: provider.RoleUser,
+				Content: []provider.ContentBlock{provider.TextBlock{
+					Text: fmt.Sprintf("[SYSTEM REMINDER: Stay focused on the user's original request: %q. Verify you are making progress toward this goal before continuing.]", userMessage),
+				}},
+			}
+			// Insert as a transient message (not persisted — just for this API call)
+			messagesWithGrounding := make([]provider.Message, len(a.provHistory)+1)
+			copy(messagesWithGrounding, a.provHistory)
+			messagesWithGrounding[len(a.provHistory)] = groundingReminder
+
+			req := provider.Request{
+				System:   effectivePrompt,
+				Messages: messagesWithGrounding,
+				Tools:    a.allProviderToolDefs(),
+			}
+
+			resp, err := a.provider.Converse(ctx, req)
+			if err != nil {
+				return "", fmt.Errorf("converse step %d: %w", step, err)
+			}
+
+			if a.verbose {
+				log.Printf("[step %d] (grounded) stop_reason=%s tools=%d tokens_in=%d tokens_out=%d",
+					step, resp.StopReason, len(resp.ToolUses), resp.Usage.InputTokens, resp.Usage.OutputTokens)
+			}
+
+			a.recordTokenUsage(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens, step)
+
+			var assistBlocks []provider.ContentBlock
+			if resp.Content != "" {
+				assistBlocks = append(assistBlocks, provider.TextBlock{Text: resp.Content})
+			}
+			for _, tu := range resp.ToolUses {
+				assistBlocks = append(assistBlocks, provider.ToolUseBlock{
+					ToolUseID: tu.ToolUseID,
+					Name:      tu.Name,
+					Input:     tu.Input,
+				})
+			}
+			if len(assistBlocks) > 0 {
+				a.provHistory = append(a.provHistory, provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: assistBlocks,
+				})
+			}
+
+			if len(resp.ToolUses) == 0 {
+				a.flushSessionProvider()
+				return resp.Content, nil
+			}
+
+			// Execute tool calls (same as below)
+			var resultBlocks []provider.ContentBlock
+			for _, toolUse := range resp.ToolUses {
+				if a.verbose {
+					log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
+				}
+				start := time.Now()
+				result, status := a.executeTool(ctx, toolUse.Name, toolUse.Input)
+				duration := time.Since(start)
+				endTime := time.Now().UTC()
+
+				isErr := status == types.ToolResultStatusError
+				errType := string(inkwell.Classify(toolUse.Name, result, isErr).Class)
+				a.inkwell = append(a.inkwell, session.InkEntry{
+					Timestamp:  start.UTC(),
+					EndTime:    endTime,
+					Turn:       a.turn,
+					Step:       step,
+					ToolName:   toolUse.Name,
+					ToolUseID:  toolUse.ToolUseID,
+					Input:      toolUse.Input,
+					Output:     result,
+					DurationMs: duration.Milliseconds(),
+					IsError:    isErr,
+					ErrorType:  errType,
+				})
+				a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
+
+				resultBlocks = append(resultBlocks, provider.ToolResultBlock{
+					ToolUseID: toolUse.ToolUseID,
+					Content:   result,
+					IsError:   isErr,
+				})
+			}
+			a.provHistory = append(a.provHistory, provider.Message{
+				Role:    provider.RoleUser,
+				Content: resultBlocks,
+			})
+			a.dirty = true
+			a.flushSessionProvider()
+			continue
+		}
+
 		req := provider.Request{
 			System:   effectivePrompt,
 			Messages: a.provHistory,
