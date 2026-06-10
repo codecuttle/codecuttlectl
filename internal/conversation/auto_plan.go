@@ -29,6 +29,13 @@ var planIntroPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:I will|I'll|Let me|I'm going to|I need to|My plan is to|Here's (?:my|the) plan|Steps?:)`),
 }
 
+// ExtractPlanFromText attempts to extract actionable steps from the model's
+// text output. Returns nil if no plan structure is detected.
+// Exported so TUI and other callers can use harness-managed planning.
+func ExtractPlanFromText(text string) []string {
+	return extractPlanFromText(text)
+}
+
 // extractPlanFromText attempts to extract actionable steps from the model's
 // text output. Returns nil if no plan structure is detected.
 func extractPlanFromText(text string) []string {
