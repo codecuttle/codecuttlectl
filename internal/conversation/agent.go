@@ -98,7 +98,11 @@ func NewAgent(cfg Config) (*Agent, error) {
 		}
 
 		var err error
-		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, cfg.Client.ModelID(), promptTools)
+		provName := "bedrock"
+		if cfg.Provider != nil {
+			provName = "ollama" // If there's a provider but also a client, it's the bedrock wrapper
+		}
+		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, cfg.Client.ModelID(), provName, promptTools)
 		if err != nil {
 			return nil, fmt.Errorf("rendering system prompt: %w", err)
 		}

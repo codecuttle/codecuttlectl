@@ -186,7 +186,7 @@ func main() {
 	} else if llmProvider != nil {
 		modelDisplayID = llmProvider.Name()
 	}
-	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, promptTools)
+	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error rendering system prompt: %v\n", err)
 		os.Exit(1)
