@@ -192,3 +192,10 @@ type StreamErrorEvent struct {
 }
 
 func (StreamErrorEvent) streamEvent() {}
+
+// ContextWindowProvider is an optional interface that providers can implement
+// to report their context window size. If not implemented, a default is assumed.
+type ContextWindowProvider interface {
+	// ContextWindow returns the maximum context window in tokens.
+	ContextWindow() int32
+}

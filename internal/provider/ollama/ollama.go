@@ -15,9 +15,10 @@ import (
 
 // Client implements provider.Provider for Ollama local models.
 type Client struct {
-	baseURL    string
-	model      string
-	httpClient *http.Client
+	baseURL       string
+	model         string
+	httpClient    *http.Client
+	contextWindow int32 // Discovered from Ollama API (0 = unknown)
 }
 
 // Config holds configuration for creating an Ollama client.
@@ -34,11 +35,14 @@ func New(cfg Config) *Client {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	return &Client{
+	c := &Client{
 		baseURL:    baseURL,
 		model:      cfg.Model,
 		httpClient: &http.Client{},
 	}
+	// Attempt to discover model context window size from Ollama API
+	c.probeContextWindow()
+	return c
 }
 
 // ID returns the provider identifier.
@@ -49,6 +53,47 @@ func (c *Client) ID() string {
 // Name returns a human-friendly display name.
 func (c *Client) Name() string {
 	return c.model
+}
+
+// ContextWindow returns the model's context window size in tokens.
+// Returns 0 if unknown (couldn't be discovered from Ollama API).
+func (c *Client) ContextWindow() int32 {
+	return c.contextWindow
+}
+
+// probeContextWindow queries the Ollama /api/show endpoint to discover
+// the model's context window size from model_info metadata.
+func (c *Client) probeContextWindow() {
+	url := c.baseURL + "/api/show"
+	body := []byte(`{"model":"` + c.model + `"}`)
+
+	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		ModelInfo map[string]interface{} `json:"model_info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	// Look for context_length in model_info. The key format varies by model family,
+	// e.g., "gemma4.context_length", "llama.context_length", "general.context_length".
+	for key, val := range result.ModelInfo {
+		if len(key) > 15 && key[len(key)-15:] == ".context_length" {
+			if f, ok := val.(float64); ok && f > 0 {
+				c.contextWindow = int32(f)
+				return
+			}
+		}
+	}
 }
 
 // Converse sends messages and returns a complete response (non-streaming).
@@ -96,6 +141,11 @@ func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 	oaiReq := chatRequest{
 		Model:  c.model,
 		Stream: stream,
+	}
+
+	// Request usage stats in streaming mode
+	if stream {
+		oaiReq.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 
 	// Build messages

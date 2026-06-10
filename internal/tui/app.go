@@ -111,6 +111,9 @@ type Model struct {
 	lastCallCacheReadInputTokens int32
 	lastCallCacheWriteInputTokens int32
 
+	// Context window size for this provider (tokens)
+	contextWindow int32
+
 	spinnerColorIdx   int
 	spinnerTickCount  int
 
@@ -141,7 +144,8 @@ type chatMessage struct {
 
 // contextWindowSize is the maximum input context window for Claude Opus 4.6 on Bedrock (1M tokens).
 // This went GA in March 2026 — no beta header required.
-const contextWindowSize = 1_000_000
+// Used as default; overridden by provider-specific context window when available.
+const defaultContextWindowSize = 1_000_000
 
 // cacheKeepaliveInterval is how often the keepalive ticker fires. Set to 4 minutes
 // to stay well within the 5-minute Bedrock cache TTL. If no real API call has been
@@ -209,6 +213,15 @@ func New(cfg Config) Model {
 	// If no bedrock client but we have a provider, create a wrapper for provider-aware streaming
 	if m.llmProvider == nil && m.client != nil {
 		m.llmProvider = bedrockprov.New(m.client)
+	}
+
+	// Discover context window size from provider
+	if m.llmProvider != nil {
+		if cwp, ok := m.llmProvider.(provider.ContextWindowProvider); ok {
+			if cw := cwp.ContextWindow(); cw > 0 {
+				m.contextWindow = cw
+			}
+		}
 	}
 
 	// If resuming a session, restore conversation history
@@ -906,7 +919,7 @@ func (m *Model) maybeCompact() {
 
 	// If context usage is high, compact more aggressively (preserve fewer turns)
 	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
-	if compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
+	if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
 		cfg.PreserveRecentTurns = 3 // Aggressive: reduce from 7 to 3
 	}
 
@@ -1418,7 +1431,7 @@ func (m *Model) renderStatusBar() string {
 	ctxUsed := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
 	ctxPct := 0
 	if ctxUsed > 0 {
-		ctxPct = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+		ctxPct = int(float64(ctxUsed) / float64(m.contextWindowSize()) * 100)
 	}
 
 	// Color the ctx% indicator based on usage level
@@ -1834,4 +1847,12 @@ func (m *Model) providerToolDefs() []provider.ToolDefinition {
 		})
 	}
 	return result
+}
+
+// contextWindowSize returns the effective context window size for the current provider.
+func (m *Model) contextWindowSize() int32 {
+	if m.contextWindow > 0 {
+		return m.contextWindow
+	}
+	return defaultContextWindowSize
 }

@@ -6,12 +6,18 @@ import "encoding/json"
 
 // chatRequest is the OpenAI chat completions request body.
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []oaiTool     `json:"tools,omitempty"`
-	Stream      bool          `json:"stream"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []chatMessage  `json:"messages"`
+	Tools         []oaiTool      `json:"tools,omitempty"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	MaxTokens     *int           `json:"max_tokens,omitempty"`
+	Temperature   *float64       `json:"temperature,omitempty"`
+}
+
+// streamOptions controls streaming behavior.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // chatMessage is a message in the OpenAI format.

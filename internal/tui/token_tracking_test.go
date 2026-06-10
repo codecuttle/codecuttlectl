@@ -136,7 +136,7 @@ func TestContextWindowPercentage(t *testing.T) {
 			ctxUsed := tt.input + tt.cacheRead + tt.cacheWrite
 			got := 0
 			if ctxUsed > 0 {
-				got = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+				got = int(float64(ctxUsed) / float64(defaultContextWindowSize) * 100)
 			}
 			if got != tt.wantPct {
 				t.Errorf("context window %% = %d, want %d", got, tt.wantPct)

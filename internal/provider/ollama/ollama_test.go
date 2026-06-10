@@ -12,8 +12,21 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
+// testHandler wraps a handler function to also handle the /api/show probe
+// that New() calls during client initialization.
+func testHandler(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"model_info":{"test.context_length":131072}}`))
+			return
+		}
+		handler(w, r)
+	}
+}
+
 func TestConverse_Basic(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
@@ -84,7 +97,7 @@ func TestConverse_Basic(t *testing.T) {
 }
 
 func TestConverse_ToolCalls(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		var req chatRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
@@ -159,7 +172,7 @@ func TestConverse_ToolCalls(t *testing.T) {
 func TestConverse_ToolResultRoundtrip(t *testing.T) {
 	var capturedReq chatRequest
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&capturedReq)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -215,7 +228,7 @@ func TestConverse_ToolResultRoundtrip(t *testing.T) {
 }
 
 func TestConverseStream_TextOnly(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 
@@ -278,7 +291,7 @@ func TestConverseStream_TextOnly(t *testing.T) {
 }
 
 func TestConverseStream_ToolCalls(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 
@@ -359,7 +372,7 @@ func TestConverseStream_ToolCalls(t *testing.T) {
 }
 
 func TestConverseStream_Reasoning(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 
@@ -449,4 +462,18 @@ func TestBuildRequest_SystemMessage(t *testing.T) {
 func TestProviderInterface(t *testing.T) {
 	// Compile-time check that Client implements provider.Provider.
 	var _ provider.Provider = (*Client)(nil)
+	// Compile-time check that Client implements provider.ContextWindowProvider.
+	var _ provider.ContextWindowProvider = (*Client)(nil)
+}
+
+func TestContextWindow(t *testing.T) {
+	server := httptest.NewServer(testHandler(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request to %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := New(Config{BaseURL: server.URL, Model: "gemma4:31b"})
+	if client.ContextWindow() != 131072 {
+		t.Errorf("ContextWindow()=%d, want 131072", client.ContextWindow())
+	}
 }
