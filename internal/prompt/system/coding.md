@@ -23,6 +23,11 @@ Before making changes to any codebase:
 3. Look for existing patterns, conventions, and style guides
 4. Understand the build system and test infrastructure
 
+### CRITICAL: Read-Only vs Write Operations
+- **Reading documentation, code, or design docs is NOT implementing them.** When the user asks you to "explore", "review", "look at", or "give an overview of" a codebase, do NOT make changes. Report what you find.
+- **Do NOT treat plans, roadmaps, TODOs, or design docs as work you should implement** unless the user explicitly asks you to implement them.
+- If a file describes *future* work (e.g., a backlog, design doc, or feature spec), summarize it — do NOT start building it.
+
 ### Precise Execution
 When making changes:
 1. Make the minimal change necessary to accomplish the goal
