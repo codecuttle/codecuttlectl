@@ -26,110 +26,34 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		Content: []provider.ContentBlock{provider.TextBlock{Text: userMessage}},
 	})
 
+	// Initialize state dictionary for this turn — tracks ground-truth about execution.
+	sd := newStateDict(userMessage)
+
 	for step := 0; step < a.maxSteps; step++ {
 		effectivePrompt := a.effectiveSystemPrompt()
 
-		// For smaller/local models: inject a grounding reminder every 3 tool-use steps
-		// to keep the model focused on the original user intent.
-		if step > 0 && step%3 == 0 {
-			groundingReminder := provider.Message{
+		// Build the messages to send. After step 0, we inject the state dictionary
+		// as a transient grounding message to keep the model anchored to reality.
+		var messages []provider.Message
+		if step > 0 {
+			// Inject state dictionary before the model's next turn.
+			// This is transient — not persisted in history — and replaces the
+			// verbose grounding reminder with a structured state snapshot.
+			messages = make([]provider.Message, len(a.provHistory)+1)
+			copy(messages, a.provHistory)
+			messages[len(a.provHistory)] = provider.Message{
 				Role: provider.RoleUser,
 				Content: []provider.ContentBlock{provider.TextBlock{
-					Text: fmt.Sprintf("[SYSTEM REMINDER: Stay focused on the user's original request: %q. Verify you are making progress toward this goal before continuing.]", userMessage),
+					Text: sd.render(),
 				}},
 			}
-			// Insert as a transient message (not persisted — just for this API call)
-			messagesWithGrounding := make([]provider.Message, len(a.provHistory)+1)
-			copy(messagesWithGrounding, a.provHistory)
-			messagesWithGrounding[len(a.provHistory)] = groundingReminder
-
-			req := provider.Request{
-				System:   effectivePrompt,
-				Messages: messagesWithGrounding,
-				Tools:    a.allProviderToolDefs(),
-			}
-
-			resp, err := a.provider.Converse(ctx, req)
-			if err != nil {
-				return "", fmt.Errorf("converse step %d: %w", step, err)
-			}
-
-			if a.verbose {
-				log.Printf("[step %d] (grounded) stop_reason=%s tools=%d tokens_in=%d tokens_out=%d",
-					step, resp.StopReason, len(resp.ToolUses), resp.Usage.InputTokens, resp.Usage.OutputTokens)
-			}
-
-			a.recordTokenUsage(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens, step)
-
-			var assistBlocks []provider.ContentBlock
-			if resp.Content != "" {
-				assistBlocks = append(assistBlocks, provider.TextBlock{Text: resp.Content})
-			}
-			for _, tu := range resp.ToolUses {
-				assistBlocks = append(assistBlocks, provider.ToolUseBlock{
-					ToolUseID: tu.ToolUseID,
-					Name:      tu.Name,
-					Input:     tu.Input,
-				})
-			}
-			if len(assistBlocks) > 0 {
-				a.provHistory = append(a.provHistory, provider.Message{
-					Role:    provider.RoleAssistant,
-					Content: assistBlocks,
-				})
-			}
-
-			if len(resp.ToolUses) == 0 {
-				a.flushSessionProvider()
-				return resp.Content, nil
-			}
-
-			// Execute tool calls (same as below)
-			var resultBlocks []provider.ContentBlock
-			for _, toolUse := range resp.ToolUses {
-				if a.verbose {
-					log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
-				}
-				start := time.Now()
-				result, status := a.executeTool(ctx, toolUse.Name, toolUse.Input)
-				duration := time.Since(start)
-				endTime := time.Now().UTC()
-
-				isErr := status == types.ToolResultStatusError
-				errType := string(inkwell.Classify(toolUse.Name, result, isErr).Class)
-				a.inkwell = append(a.inkwell, session.InkEntry{
-					Timestamp:  start.UTC(),
-					EndTime:    endTime,
-					Turn:       a.turn,
-					Step:       step,
-					ToolName:   toolUse.Name,
-					ToolUseID:  toolUse.ToolUseID,
-					Input:      toolUse.Input,
-					Output:     result,
-					DurationMs: duration.Milliseconds(),
-					IsError:    isErr,
-					ErrorType:  errType,
-				})
-				a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
-
-				resultBlocks = append(resultBlocks, provider.ToolResultBlock{
-					ToolUseID: toolUse.ToolUseID,
-					Content:   result,
-					IsError:   isErr,
-				})
-			}
-			a.provHistory = append(a.provHistory, provider.Message{
-				Role:    provider.RoleUser,
-				Content: resultBlocks,
-			})
-			a.dirty = true
-			a.flushSessionProvider()
-			continue
+		} else {
+			messages = a.provHistory
 		}
 
 		req := provider.Request{
 			System:   effectivePrompt,
-			Messages: a.provHistory,
+			Messages: messages,
 			Tools:    a.allProviderToolDefs(),
 		}
 
@@ -167,9 +91,14 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		// If no tool calls, we're done
 		if len(resp.ToolUses) == 0 {
+			// Try to extract a plan from the model's final response for the todo panel
+			a.maybeUpdatePlanFromText(resp.Content)
 			a.flushSessionProvider()
 			return resp.Content, nil
 		}
+
+		// The model expressed intent + tool calls — check for plan in its text
+		a.maybeUpdatePlanFromText(resp.Content)
 
 		// Execute tool calls and collect results
 		var resultBlocks []provider.ContentBlock
@@ -210,6 +139,9 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 			})
 
 			a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
+
+			// Update state dictionary with ground-truth from this tool execution
+			sd.recordToolResult(toolUse.Name, string(toolUse.Input), result, isErr)
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: toolUse.ToolUseID,

@@ -20,6 +20,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
+	"github.com/codecuttle/codecuttlectl/internal/conversation"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
@@ -509,6 +510,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var blocks []types.ContentBlock
 			// Include any text that was streamed before/between tool calls
 			if m.streamBuf.Len() > 0 {
+				// Try to extract a plan from the model's text for the task panel
+				m.maybeExtractPlan(m.streamBuf.String())
 				blocks = append(blocks, &types.ContentBlockMemberText{Value: m.streamBuf.String()})
 				m.streamBuf.Reset()
 			}
@@ -528,6 +531,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// No tool calls — finalize streamed text as the assistant response
 		if m.streamBuf.Len() > 0 {
 			content := m.streamBuf.String()
+			// Try to extract a plan from the model's final response
+			m.maybeExtractPlan(content)
 			m.messages = append(m.messages, chatMessage{
 				role:    "assistant",
 				content: sanitizeModelText(content),
@@ -1864,6 +1869,40 @@ func (m *Model) providerToolDefs() []provider.ToolDefinition {
 		})
 	}
 	return result
+}
+
+// maybeExtractPlan checks if the model's text output contains a plan and
+// automatically populates the todo list if the list is currently empty.
+// This enables harness-managed planning for all providers (Bedrock + Ollama).
+func (m *Model) maybeExtractPlan(text string) {
+	if !m.todos.IsEmpty() {
+		return
+	}
+
+	steps := conversation.ExtractPlanFromText(text)
+	if steps == nil || len(steps) < 2 {
+		return
+	}
+
+	// Cap at 7 steps
+	if len(steps) > 7 {
+		steps = steps[:7]
+	}
+
+	items := make([]todo.Item, len(steps))
+	for i, step := range steps {
+		status := todo.StatusPending
+		if i == 0 {
+			status = todo.StatusInProgress
+		}
+		items[i] = todo.Item{
+			Content:  step,
+			Status:   status,
+			Priority: todo.PriorityMedium,
+		}
+	}
+
+	m.todos.Replace(items)
 }
 
 // contextWindowSize returns the effective context window size for the current provider.
