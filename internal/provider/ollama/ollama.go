@@ -120,6 +120,13 @@ func (c *Client) ConverseStream(ctx context.Context, req provider.Request) <-cha
 
 	go func() {
 		defer close(events)
+		defer func() {
+			if r := recover(); r != nil {
+				events <- provider.StreamErrorEvent{
+					Err: fmt.Errorf("ollama: stream panic recovered: %v", r),
+				}
+			}
+		}()
 
 		body := c.buildRequest(req, true)
 

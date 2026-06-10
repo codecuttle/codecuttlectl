@@ -3,6 +3,7 @@ package bedrockprov
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -85,6 +86,13 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 	events := make(chan provider.StreamEvent, 64)
 	go func() {
 		defer close(events)
+		defer func() {
+			if r := recover(); r != nil {
+				events <- provider.StreamErrorEvent{
+					Err: fmt.Errorf("bedrock provider stream panic: %v", r),
+				}
+			}
+		}()
 		for ev := range bedrockCh {
 			switch e := ev.(type) {
 			case bedrock.TextDeltaEvent:

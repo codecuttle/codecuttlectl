@@ -872,6 +872,13 @@ func (m *Model) launchStream() tea.Cmd {
 		provCh := make(chan provider.StreamEvent, 64)
 		go func() {
 			defer close(provCh)
+			defer func() {
+				if r := recover(); r != nil {
+					provCh <- provider.StreamErrorEvent{
+						Err: fmt.Errorf("bedrock stream panic recovered: %v", r),
+					}
+				}
+			}()
 			for ev := range bedrockCh {
 				switch e := ev.(type) {
 				case bedrock.TextDeltaEvent:
@@ -1330,7 +1337,10 @@ func (m *Model) restoreSession() {
 	if err != nil {
 		return
 	}
-	m.history = messages
+	// Sanitize: fix consecutive same-role messages by injecting placeholder turns.
+	// This can happen when the model stops mid-response (timeout, OOM) and the user
+	// sends another message before a response is recorded.
+	m.history = sanitizeHistory(messages)
 
 	// Restore token stats (so resumed sessions accumulate correctly)
 	m.totalInputTokens = state.Meta.Stats.InputTokens
@@ -1911,4 +1921,46 @@ func (m *Model) contextWindowSize() int32 {
 		return m.contextWindow
 	}
 	return defaultContextWindowSize
+}
+
+// sanitizeHistory fixes invalid message sequences in restored conversation history.
+// Consecutive same-role messages violate the alternating user/assistant requirement.
+// Rather than deleting messages, we inject synthetic placeholder turns.
+func sanitizeHistory(messages []types.Message) []types.Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	var result []types.Message
+	result = append(result, messages[0])
+
+	for i := 1; i < len(messages); i++ {
+		prev := result[len(result)-1]
+		curr := messages[i]
+
+		if curr.Role == prev.Role {
+			// Inject a synthetic opposite-role message to maintain alternation
+			if curr.Role == types.ConversationRoleUser {
+				// Two consecutive user messages: inject assistant placeholder
+				result = append(result, types.Message{
+					Role: types.ConversationRoleAssistant,
+					Content: []types.ContentBlock{
+						&types.ContentBlockMemberText{Value: "[Response interrupted — no output was generated before the next message.]"},
+					},
+				})
+			} else {
+				// Two consecutive assistant messages: inject user placeholder
+				result = append(result, types.Message{
+					Role: types.ConversationRoleUser,
+					Content: []types.ContentBlock{
+						&types.ContentBlockMemberText{Value: "[Continue]"},
+					},
+				})
+			}
+		}
+
+		result = append(result, curr)
+	}
+
+	return result
 }
