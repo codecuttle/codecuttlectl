@@ -45,7 +45,7 @@ func TestRenderSystem(t *testing.T) {
 		{Name: "write_file", Description: "Write a file"},
 	}
 
-	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", tools)
+	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools)
 	if err != nil {
 		t.Fatalf("RenderSystem() error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRenderDefault(t *testing.T) {
 		t.Fatalf("NewManager() error: %v", err)
 	}
 
-	ctx := DefaultContext("/work", "test-model", nil)
+	ctx := DefaultContext("/work", "test-model", "bedrock", nil)
 	result, err := mgr.Render("system/default.md", ctx)
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)
