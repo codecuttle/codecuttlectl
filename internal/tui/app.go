@@ -21,6 +21,8 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
+	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
@@ -28,6 +30,7 @@ import (
 // Config holds the configuration needed to create the TUI app.
 type Config struct {
 	Client         *bedrock.Client
+	Provider       provider.Provider  // Provider interface (used when Client is nil)
 	PluginMgr      *pluginhost.Manager
 	System         string // Rendered system prompt
 	WorkDir        string
@@ -50,6 +53,7 @@ type Model struct {
 
 	// Configuration
 	client         *bedrock.Client
+	llmProvider    provider.Provider // Provider interface (non-nil for Ollama, etc.)
 	pluginMgr      *pluginhost.Manager
 	system         string
 	workDir        string
@@ -61,7 +65,7 @@ type Model struct {
 	messages  []chatMessage
 	streaming bool
 	streamBuf *strings.Builder
-	streamCh  <-chan bedrock.StreamEvent // Active stream channel
+	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -182,6 +186,7 @@ func New(cfg Config) Model {
 		input:            ta,
 		spinner:          sp,
 		client:           cfg.Client,
+		llmProvider:      cfg.Provider,
 		pluginMgr:        cfg.PluginMgr,
 		system:           cfg.System,
 		workDir:          cfg.WorkDir,
@@ -201,14 +206,27 @@ func New(cfg Config) Model {
 		sessionID:        cfg.SessionID,
 	}
 
+	// If no bedrock client but we have a provider, create a wrapper for provider-aware streaming
+	if m.llmProvider == nil && m.client != nil {
+		m.llmProvider = bedrockprov.New(m.client)
+	}
+
 	// If resuming a session, restore conversation history
 	if cfg.Store != nil && cfg.SessionID != "" {
 		m.restoreSession()
 	} else if cfg.Store != nil {
 		// Create a new session
+		modelName := ""
+		region := ""
+		if cfg.Client != nil {
+			modelName = cfg.Client.ModelID()
+			region = cfg.Client.Region()
+		} else if cfg.Provider != nil {
+			modelName = cfg.Provider.ID()
+		}
 		meta := session.SessionMeta{
-			Model:   cfg.Client.ModelID(),
-			Region:  cfg.Client.Region(),
+			Model:   modelName,
+			Region:  region,
 			WorkDir: cfg.WorkDir,
 		}
 		id, err := cfg.Store.Create(meta)
@@ -810,13 +828,62 @@ func (m *Model) launchStream() tea.Cmd {
 	m.maybeCompact()
 
 	ctx := context.Background()
-	var streamCfg bedrock.StreamConfig
-	if m.enableThinking {
-		streamCfg.EnableThinking = true
-		streamCfg.ThinkingBudget = m.thinkingBudget
+
+	// Use the provider interface for streaming
+	if m.llmProvider != nil {
+		req := provider.Request{
+			System:   m.system,
+			Messages: provider.MessagesToProvider(m.history),
+			Tools:    m.providerToolDefs(),
+			Config: provider.InferenceConfig{
+				EnableThinking: m.enableThinking,
+				ThinkingBudget: m.thinkingBudget,
+			},
+		}
+		ch := m.llmProvider.ConverseStream(ctx, req)
+		m.streamCh = ch
+	} else {
+		// Fallback: direct Bedrock client (shouldn't happen since we wrap it in New, but defensive)
+		var streamCfg bedrock.StreamConfig
+		if m.enableThinking {
+			streamCfg.EnableThinking = true
+			streamCfg.ThinkingBudget = m.thinkingBudget
+		}
+		bedrockCh := m.client.ConverseStream(ctx, m.system, m.history, m.pluginMgr.Definitions(), streamCfg)
+		// Wrap bedrock channel into provider channel
+		provCh := make(chan provider.StreamEvent, 64)
+		go func() {
+			defer close(provCh)
+			for ev := range bedrockCh {
+				switch e := ev.(type) {
+				case bedrock.TextDeltaEvent:
+					provCh <- provider.TextDeltaEvent{Text: e.Text}
+				case bedrock.ReasoningDeltaEvent:
+					provCh <- provider.ReasoningDeltaEvent{Text: e.Text}
+				case bedrock.ReasoningSignatureEvent:
+					provCh <- provider.ReasoningSignatureEvent{Signature: e.Signature}
+				case bedrock.ToolUseStartEvent:
+					provCh <- provider.ToolUseStartEvent{ToolUseID: e.ToolUseID, Name: e.Name}
+				case bedrock.ToolInputDeltaEvent:
+					provCh <- provider.ToolInputDeltaEvent{Delta: e.Delta}
+				case bedrock.ToolUseStopEvent:
+					provCh <- provider.ToolUseStopEvent{}
+				case bedrock.MessageStopEvent:
+					provCh <- provider.MessageStopEvent{StopReason: e.StopReason}
+				case bedrock.UsageEvent:
+					provCh <- provider.UsageEvent{
+						InputTokens:      e.InputTokens,
+						OutputTokens:     e.OutputTokens,
+						CacheReadTokens:  e.CacheReadInputTokens,
+						CacheWriteTokens: e.CacheWriteInputTokens,
+					}
+				case bedrock.StreamErrorEvent:
+					provCh <- provider.StreamErrorEvent{Err: e.Err}
+				}
+			}
+		}()
+		m.streamCh = provCh
 	}
-	ch := m.client.ConverseStream(ctx, m.system, m.history, m.pluginMgr.Definitions(), streamCfg)
-	m.streamCh = ch
 
 	// Return a cmd that reads the first event from the stream
 	return tea.Batch(m.spinner.Tick, m.readNextStreamEvent())
@@ -876,31 +943,31 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 				return StreamDoneMsg{StopReason: "end_turn"}
 			}
 			switch e := event.(type) {
-			case bedrock.TextDeltaEvent:
+			case provider.TextDeltaEvent:
 				return StreamTextMsg{Text: e.Text}
-			case bedrock.ReasoningDeltaEvent:
+			case provider.ReasoningDeltaEvent:
 				return StreamReasoningMsg{Text: e.Text}
-			case bedrock.ReasoningSignatureEvent:
+			case provider.ReasoningSignatureEvent:
 				return StreamReasoningDoneMsg{Signature: e.Signature}
-			case bedrock.ToolUseStartEvent:
+			case provider.ToolUseStartEvent:
 				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
-			case bedrock.ToolInputDeltaEvent:
+			case provider.ToolInputDeltaEvent:
 				return StreamToolInputMsg{Delta: e.Delta}
-			case bedrock.ToolUseStopEvent:
+			case provider.ToolUseStopEvent:
 				return StreamToolStopMsg{}
-			case bedrock.MessageStopEvent:
+			case provider.MessageStopEvent:
 				// Don't return yet — keep reading to consume the UsageEvent
-				// that Bedrock emits after MessageStop. StreamDoneMsg will be
-				// emitted when the channel closes (handled by !ok above).
+				// that may follow. StreamDoneMsg will be emitted when the
+				// channel closes (handled by !ok above).
 				continue
-			case bedrock.UsageEvent:
+			case provider.UsageEvent:
 				return StreamUsageMsg{
 					InputTokens:           e.InputTokens,
 					OutputTokens:          e.OutputTokens,
-					CacheReadInputTokens:  e.CacheReadInputTokens,
-					CacheWriteInputTokens: e.CacheWriteInputTokens,
+					CacheReadInputTokens:  e.CacheReadTokens,
+					CacheWriteInputTokens: e.CacheWriteTokens,
 				}
-			case bedrock.StreamErrorEvent:
+			case provider.StreamErrorEvent:
 				return StreamErrorMsg{Err: e.Err}
 			default:
 				return StreamDoneMsg{StopReason: "unknown"}
@@ -1325,8 +1392,16 @@ func (m *Model) saveSession() {
 
 func (m *Model) renderStatusBar() string {
 	label := StatusLabelStyle.Render("codecuttlectl")
-	model := StatusModelStyle.Render(m.client.ModelID())
-	region := StatusDimStyle.Render(m.client.Region())
+	modelName := ""
+	region := ""
+	if m.client != nil {
+		modelName = m.client.ModelID()
+		region = m.client.Region()
+	} else if m.llmProvider != nil {
+		modelName = m.llmProvider.Name()
+	}
+	model := StatusModelStyle.Render(modelName)
+	regionStr := StatusDimStyle.Render(region)
 	plugins := StatusDimStyle.Render(fmt.Sprintf("%dp", m.pluginMgr.Count()))
 
 	// Token display: show total input (including cache), output, cache hit rate, and estimated cost
@@ -1362,7 +1437,7 @@ func (m *Model) renderStatusBar() string {
 		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
 	tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
 
-	left := " " + label + "  " + model + "  " + region + "  " + plugins
+	left := " " + label + "  " + model + "  " + regionStr + "  " + plugins
 	right := tokens + " "
 
 	leftW := lipgloss.Width(left)
@@ -1745,4 +1820,18 @@ func sanitizeModelText(text string) string {
 		cleaned = strings.ReplaceAll(cleaned, "\n\n\n", "\n\n")
 	}
 	return cleaned
+}
+
+// providerToolDefs returns tool definitions in provider-agnostic format.
+func (m *Model) providerToolDefs() []provider.ToolDefinition {
+	defs := m.pluginMgr.Definitions()
+	var result []provider.ToolDefinition
+	for _, d := range defs {
+		result = append(result, provider.ToolDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
+	}
+	return result
 }

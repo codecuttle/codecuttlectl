@@ -17,6 +17,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/scaffold"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/skills"
@@ -25,13 +26,15 @@ import (
 
 // Agent orchestrates the conversation between the user, the LLM, and the tool system.
 type Agent struct {
-	client       *bedrock.Client
+	client       *bedrock.Client    // Bedrock client (nil when using provider interface)
+	provider     provider.Provider  // Provider interface (used when client is nil)
 	promptMgr    *prompt.Manager
 	pluginMgr    *pluginhost.Manager
 	systemPrompt string
 	workDir      string
 	pluginDir    string
-	history      []types.Message
+	history      []types.Message         // Bedrock SDK messages (used when client != nil)
+	provHistory  []provider.Message      // Provider-agnostic messages (used when provider != nil)
 	todos        *todo.List
 	maxSteps     int
 	verbose      bool
@@ -57,7 +60,8 @@ type Agent struct {
 
 // Config holds configuration for creating an Agent.
 type Config struct {
-	Client    *bedrock.Client
+	Client    *bedrock.Client    // Bedrock client (nil when using Provider)
+	Provider  provider.Provider  // Provider interface (takes precedence over Client when non-nil)
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
 	WorkDir   string
@@ -84,7 +88,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	var systemPrompt string
-	if cfg.PromptMgr != nil {
+	if cfg.PromptMgr != nil && cfg.Client != nil {
 		var promptTools []prompt.ToolDef
 		for _, def := range cfg.PluginMgr.Definitions() {
 			promptTools = append(promptTools, prompt.ToolDef{
@@ -106,6 +110,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 	agent := &Agent{
 		client:       cfg.Client,
+		provider:     cfg.Provider,
 		promptMgr:    cfg.PromptMgr,
 		pluginMgr:    cfg.PluginMgr,
 		systemPrompt: systemPrompt,
@@ -123,8 +128,14 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	// Initialize audit trail with model info and session start time
+	modelID := ""
+	if cfg.Client != nil {
+		modelID = cfg.Client.ModelID()
+	} else if cfg.Provider != nil {
+		modelID = cfg.Provider.ID()
+	}
 	agent.auditTrail = session.AuditTrail{
-		ModelID:        cfg.Client.ModelID(),
+		ModelID:        modelID,
 		SessionStartAt: time.Now().UTC(),
 	}
 
@@ -173,6 +184,11 @@ func (a *Agent) InitSession(model, region, workDir string) (string, error) {
 // Turn sends a user message and processes the model's response, executing tools as needed.
 // Returns the final text response from the model. (Synchronous, for one-shot/plain mode.)
 func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
+	// Use provider interface if available (Ollama, etc.)
+	if a.provider != nil {
+		return a.turnProvider(ctx, userMessage)
+	}
+
 	a.turn++
 	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
 
@@ -291,6 +307,11 @@ type StreamEvent struct {
 // The callback receives text deltas as they arrive. Tool calls are executed
 // between streaming rounds. Returns the final accumulated text response.
 func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCallback) (string, error) {
+	// Use provider interface if available (Ollama, etc.)
+	if a.provider != nil {
+		return a.streamTurnProvider(ctx, userMessage, cb)
+	}
+
 	a.turn++
 	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
 
@@ -975,7 +996,11 @@ func (a *Agent) loadSession() error {
 	a.auditTrail = state.Audit
 	// Keep original session start time; update model if changed
 	if a.auditTrail.ModelID == "" {
-		a.auditTrail.ModelID = a.client.ModelID()
+		if a.client != nil {
+			a.auditTrail.ModelID = a.client.ModelID()
+		} else if a.provider != nil {
+			a.auditTrail.ModelID = a.provider.ID()
+		}
 	}
 
 	// Restore turn counter from stats
@@ -1032,6 +1057,11 @@ func (a *Agent) flushSession() {
 // GenerateTitle asks the model to generate a short title for the session.
 // This is a lightweight call with no tools, used after the first turn.
 func (a *Agent) GenerateTitle(ctx context.Context) string {
+	// For provider-based sessions
+	if a.provider != nil {
+		return a.generateTitleProvider(ctx)
+	}
+
 	if len(a.history) == 0 {
 		return "Empty session"
 	}
@@ -1108,8 +1138,15 @@ func (a *Agent) recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrit
 	a.auditTrail.TotalCacheReadTokens += int64(cacheRead)
 	a.auditTrail.TotalCacheWriteTokens += int64(cacheWrite)
 
+	modelID := ""
+	if a.client != nil {
+		modelID = a.client.ModelID()
+	} else if a.provider != nil {
+		modelID = a.provider.ID()
+	}
+
 	if a.auditLogger != nil {
-		a.auditLogger.TokenUsage(a.sessionID, a.client.ModelID(), inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
+		a.auditLogger.TokenUsage(a.sessionID, modelID, inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
 	}
 }
 
