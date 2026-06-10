@@ -91,9 +91,14 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		// If no tool calls, we're done
 		if len(resp.ToolUses) == 0 {
+			// Try to extract a plan from the model's final response for the todo panel
+			a.maybeUpdatePlanFromText(resp.Content)
 			a.flushSessionProvider()
 			return resp.Content, nil
 		}
+
+		// The model expressed intent + tool calls — check for plan in its text
+		a.maybeUpdatePlanFromText(resp.Content)
 
 		// Execute tool calls and collect results
 		var resultBlocks []provider.ContentBlock
