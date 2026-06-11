@@ -394,10 +394,19 @@ func (a *Agent) allProviderToolDefs() []provider.ToolDefinition {
 }
 
 // flushSessionProvider persists session state for provider-based conversations.
-// For now, provider sessions don't persist full history (since it's in a different
-// format), but we still persist the inkwell and audit trail.
+// Converts provider-agnostic messages to the session serializable format for
+// full history persistence, enabling session resume across restarts.
 func (a *Agent) flushSessionProvider() {
 	if a.store == nil || a.sessionID == "" {
+		return
+	}
+
+	// Marshal provider history to session format
+	messages, err := session.MarshalProviderHistory(a.provHistory)
+	if err != nil {
+		if a.verbose {
+			log.Printf("[session] warning: failed to marshal provider history: %v", err)
+		}
 		return
 	}
 
@@ -415,10 +424,11 @@ func (a *Agent) flushSessionProvider() {
 	meta.Stats.ToolCalls = len(a.inkwell)
 
 	state := &session.SessionState{
-		Meta:    meta,
-		Todos:   a.todos.Items(),
-		Inkwell: a.inkwell,
-		Audit:   a.AuditTrail(),
+		Meta:     meta,
+		Messages: messages,
+		Todos:    a.todos.Items(),
+		Inkwell:  a.inkwell,
+		Audit:    a.AuditTrail(),
 	}
 
 	if err := a.store.Save(a.sessionID, state); err != nil {
