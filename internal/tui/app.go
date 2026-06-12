@@ -67,6 +67,7 @@ type Model struct {
 	streaming bool
 	streamBuf *strings.Builder
 	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
+	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -699,6 +700,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add tool results to history and start new stream
 		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
+		m.streamStep++ // Track consecutive tool-use rounds for grounding
 		return m, m.launchStream()
 
 	case TodoUpdatedMsg:
@@ -847,10 +849,27 @@ func (m *Model) launchStream() tea.Cmd {
 
 	ctx := context.Background()
 
+	// Determine the effective system prompt. For smaller/local models that
+	// struggle with long agentic loops, append grounding context after several
+	// consecutive tool-use rounds. This prevents the model from "resetting"
+	// (re-introducing itself) when the original user message gets buried under
+	// large tool results in the context window.
+	//
+	// Only applies to models that need it (small context window ≤ 512k).
+	// Large frontier models (Opus 4.6 etc.) maintain their own world state.
+	effectiveSystem := m.system
+	if m.streamStep > 0 && m.streamStep%3 == 0 && m.needsGroundingAssist() {
+		// Extract the user's original message from history
+		userMsg := m.extractLastUserText()
+		if userMsg != "" {
+			effectiveSystem += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMsg, m.streamStep)
+		}
+	}
+
 	// Use the provider interface for streaming
 	if m.llmProvider != nil {
 		req := provider.Request{
-			System:   m.system,
+			System:   effectiveSystem,
 			Messages: provider.MessagesToProvider(m.history),
 			Tools:    m.providerToolDefs(),
 			Config: provider.InferenceConfig{
@@ -867,7 +886,7 @@ func (m *Model) launchStream() tea.Cmd {
 			streamCfg.EnableThinking = true
 			streamCfg.ThinkingBudget = m.thinkingBudget
 		}
-		bedrockCh := m.client.ConverseStream(ctx, m.system, m.history, m.pluginMgr.Definitions(), streamCfg)
+		bedrockCh := m.client.ConverseStream(ctx, effectiveSystem, m.history, m.pluginMgr.Definitions(), streamCfg)
 		// Wrap bedrock channel into provider channel
 		provCh := make(chan provider.StreamEvent, 64)
 		go func() {
@@ -1074,6 +1093,7 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.SetContent(m.renderMessages())
 	m.viewport.GotoBottom()
 
+	m.streamStep = 0 // Reset step counter for new user turn
 	return m.launchStream()
 }
 
@@ -1911,4 +1931,38 @@ func (m *Model) contextWindowSize() int32 {
 		return m.contextWindow
 	}
 	return defaultContextWindowSize
+}
+
+// needsGroundingAssist returns true if the current model benefits from periodic
+// grounding reminders. Large frontier models don't need this; smaller/local models do.
+func (m *Model) needsGroundingAssist() bool {
+	// If we have a bedrock client (non-nil), it's a frontier model — skip grounding
+	if m.client != nil && m.llmProvider != nil {
+		// Check if it's the bedrockprov wrapper (frontier model)
+		if m.contextWindow > 512_000 {
+			return false
+		}
+	}
+
+	// Check provider's context window
+	if m.contextWindow > 512_000 {
+		return false
+	}
+
+	return true // Small/local model — inject grounding
+}
+
+// extractLastUserText finds the most recent user text message in history.
+func (m *Model) extractLastUserText() string {
+	// Walk backward to find the last user message with text content
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].Role == types.ConversationRoleUser {
+			for _, block := range m.history[i].Content {
+				if text, ok := block.(*types.ContentBlockMemberText); ok {
+					return text.Value
+				}
+			}
+		}
+	}
+	return ""
 }
