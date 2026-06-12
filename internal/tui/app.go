@@ -67,6 +67,9 @@ type Model struct {
 	streaming bool
 	streamBuf *strings.Builder
 	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
+	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
+	stateDict  *stateDict // State dictionary for small-model grounding (nil for large models)
+	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -525,6 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 			m.history = append(m.history, bedrock.BuildAssistantMessage(blocks))
+			m.lastExecutedTools = m.pendingToolCalls // Save for state dict tracking
 			return m, m.executePendingTools()
 		}
 
@@ -699,6 +703,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add tool results to history and start new stream
 		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
+		m.streamStep++ // Track consecutive tool-use rounds for grounding
+
+		// Update state dictionary with tool execution results
+		if m.stateDict != nil {
+			for _, r := range msg.Messages {
+				// Find the matching pending tool call to get the name/input
+				for _, tc := range m.lastExecutedTools {
+					if tc.id == r.ToolUseID {
+						m.stateDict.recordToolResult(tc.name, tc.input, r.Status == types.ToolResultStatusError)
+						break
+					}
+				}
+			}
+		}
+
 		return m, m.launchStream()
 
 	case TodoUpdatedMsg:
@@ -847,10 +866,28 @@ func (m *Model) launchStream() tea.Cmd {
 
 	ctx := context.Background()
 
+	// Determine the effective system prompt. For smaller/local models that
+	// struggle with long agentic loops, append grounding context after several
+	// consecutive tool-use rounds. This prevents the model from "resetting"
+	// (re-introducing itself) when the original user message gets buried under
+	// large tool results in the context window.
+	//
+	// Only applies to models that need it (small context window ≤ 512k).
+	// Large frontier models (Opus 4.6 etc.) maintain their own world state.
+	//
+	// We inject on EVERY step after the first 2 (not just every 3rd) because
+	// smaller models lose the thread extremely quickly once large tool results
+	// accumulate. The system prompt is re-sent on every API call anyway, so
+	// there's no context window cost to always including it.
+	effectiveSystem := m.system
+	if m.streamStep >= 2 && m.stateDict != nil {
+		effectiveSystem += "\n\n" + m.stateDict.render()
+	}
+
 	// Use the provider interface for streaming
 	if m.llmProvider != nil {
 		req := provider.Request{
-			System:   m.system,
+			System:   effectiveSystem,
 			Messages: provider.MessagesToProvider(m.history),
 			Tools:    m.providerToolDefs(),
 			Config: provider.InferenceConfig{
@@ -867,7 +904,7 @@ func (m *Model) launchStream() tea.Cmd {
 			streamCfg.EnableThinking = true
 			streamCfg.ThinkingBudget = m.thinkingBudget
 		}
-		bedrockCh := m.client.ConverseStream(ctx, m.system, m.history, m.pluginMgr.Definitions(), streamCfg)
+		bedrockCh := m.client.ConverseStream(ctx, effectiveSystem, m.history, m.pluginMgr.Definitions(), streamCfg)
 		// Wrap bedrock channel into provider channel
 		provCh := make(chan provider.StreamEvent, 64)
 		go func() {
@@ -922,10 +959,16 @@ func (m *Model) launchStream() tea.Cmd {
 func (m *Model) maybeCompact() {
 	cfg := compact.DefaultConfig()
 
-	// If context usage is high, compact more aggressively (preserve fewer turns)
-	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
-	if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
-		cfg.PreserveRecentTurns = 3 // Aggressive: reduce from 7 to 3
+	// For small models, use aggressive compaction settings — these models lose
+	// the thread when large tool results accumulate in context.
+	if m.needsGroundingAssist() {
+		cfg = compact.SmallModelConfig()
+	} else {
+		// If context usage is high on large models, compact more aggressively
+		lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+		if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
+			cfg.PreserveRecentTurns = 3
+		}
 	}
 
 	// Count user text messages to determine current turn
@@ -1074,6 +1117,13 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.SetContent(m.renderMessages())
 	m.viewport.GotoBottom()
 
+	m.streamStep = 0 // Reset step counter for new user turn
+	// Initialize state dictionary for small-model grounding
+	if m.needsGroundingAssist() {
+		m.stateDict = newStateDict(text)
+	} else {
+		m.stateDict = nil
+	}
 	return m.launchStream()
 }
 
@@ -1911,4 +1961,38 @@ func (m *Model) contextWindowSize() int32 {
 		return m.contextWindow
 	}
 	return defaultContextWindowSize
+}
+
+// needsGroundingAssist returns true if the current model benefits from periodic
+// grounding reminders. Large frontier models don't need this; smaller/local models do.
+func (m *Model) needsGroundingAssist() bool {
+	// If we have a bedrock client (non-nil), it's a frontier model — skip grounding
+	if m.client != nil && m.llmProvider != nil {
+		// Check if it's the bedrockprov wrapper (frontier model)
+		if m.contextWindow > 512_000 {
+			return false
+		}
+	}
+
+	// Check provider's context window
+	if m.contextWindow > 512_000 {
+		return false
+	}
+
+	return true // Small/local model — inject grounding
+}
+
+// extractLastUserText finds the most recent user text message in history.
+func (m *Model) extractLastUserText() string {
+	// Walk backward to find the last user message with text content
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].Role == types.ConversationRoleUser {
+			for _, block := range m.history[i].Content {
+				if text, ok := block.(*types.ContentBlockMemberText); ok {
+					return text.Value
+				}
+			}
+		}
+	}
+	return ""
 }

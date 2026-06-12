@@ -1,28 +1,24 @@
 package conversation
 
 // state_dict.go implements the State Dictionary — a compact representation of
-// the agent's current execution state that is injected after tool results to
-// keep the model grounded in reality (per PDDL-INSTRUCT / "Code as Agent Harness"
-// methodology). This prevents the model from relying on its own hallucinated
-// internal world model.
+// the agent's current execution state that is injected into the system prompt
+// to keep the model grounded in reality (per PDDL-INSTRUCT / "Code as Agent Harness"
+// methodology). This prevents smaller models from relying on their own hallucinated
+// internal world model and losing track of the user's goal.
+//
+// Only used for small models (gated by needsGroundingAssist). Large frontier models
+// like Opus 4.6 maintain their own internal state tracking effectively.
 
 import (
 	"fmt"
 	"strings"
 )
 
-// stateEntry tracks one observable fact about the environment.
-type stateEntry struct {
-	Key   string
-	Value string
-}
-
 // stateDict maintains a compact dictionary of ground-truth facts about the
 // current execution environment. It is updated after each tool call and
-// injected into the context before the next model invocation.
+// rendered into the system prompt before the next model invocation.
 type stateDict struct {
-	entries   []stateEntry
-	filesRead map[string]bool // paths the agent has read
+	filesRead    map[string]bool // paths the agent has read
 	filesWritten map[string]bool // paths the agent has written/created
 	dirsListed   map[string]bool // directories listed
 	commandsRun  int
@@ -47,7 +43,6 @@ func (sd *stateDict) recordToolResult(toolName string, input string, output stri
 		sd.errors++
 	}
 
-	// Extract observable state changes from tool results
 	switch toolName {
 	case "read_file":
 		if path := extractJSONString(input, "path"); path != "" {
@@ -66,25 +61,22 @@ func (sd *stateDict) recordToolResult(toolName string, input string, output stri
 		if path := extractJSONString(input, "path"); path != "" {
 			sd.dirsListed[path] = true
 		}
-	case "bash_exec":
-		sd.commandsRun++
-	case "git":
-		// Track git operations
+	case "bash_exec", "git":
 		sd.commandsRun++
 	}
 }
 
 // render produces a compact text representation of the current state for injection
-// into the model's context. This replaces verbose historical reasoning with a
-// crisp snapshot of reality.
+// into the system prompt. This replaces verbose historical context with a crisp
+// snapshot of what the agent has actually done.
 func (sd *stateDict) render() string {
 	var sb strings.Builder
-	sb.WriteString("[STATE DICTIONARY]\n")
-	sb.WriteString(fmt.Sprintf("Goal: %s\n", sd.userGoal))
-	sb.WriteString(fmt.Sprintf("Progress: %d tool calls completed, %d errors\n", sd.toolCalls, sd.errors))
+	sb.WriteString("## Current Task Context\n\n")
+	sb.WriteString(fmt.Sprintf("**Goal:** %s\n", sd.userGoal))
+	sb.WriteString(fmt.Sprintf("**Progress:** %d tool calls completed, %d errors\n", sd.toolCalls, sd.errors))
 
 	if len(sd.filesRead) > 0 {
-		sb.WriteString("Files examined: ")
+		sb.WriteString("**Files examined:** ")
 		paths := mapKeys(sd.filesRead)
 		if len(paths) > 8 {
 			sb.WriteString(fmt.Sprintf("%s ... (%d total)", strings.Join(paths[:8], ", "), len(paths)))
@@ -95,13 +87,13 @@ func (sd *stateDict) render() string {
 	}
 
 	if len(sd.filesWritten) > 0 {
-		sb.WriteString("Files modified: ")
+		sb.WriteString("**Files modified:** ")
 		sb.WriteString(strings.Join(mapKeys(sd.filesWritten), ", "))
 		sb.WriteString("\n")
 	}
 
 	if len(sd.dirsListed) > 0 {
-		sb.WriteString("Directories explored: ")
+		sb.WriteString("**Directories explored:** ")
 		dirs := mapKeys(sd.dirsListed)
 		if len(dirs) > 5 {
 			sb.WriteString(fmt.Sprintf("%s ... (%d total)", strings.Join(dirs[:5], ", "), len(dirs)))
@@ -112,29 +104,27 @@ func (sd *stateDict) render() string {
 	}
 
 	if sd.commandsRun > 0 {
-		sb.WriteString(fmt.Sprintf("Commands executed: %d\n", sd.commandsRun))
+		sb.WriteString(fmt.Sprintf("**Commands executed:** %d\n", sd.commandsRun))
 	}
 
-	sb.WriteString("[/STATE DICTIONARY]")
+	sb.WriteString("\nContinue making progress toward the goal. Do NOT re-introduce yourself or restart — you are mid-task.\n")
+	sb.WriteString("When making function calls, briefly state what you're doing and why before each tool call.")
+
 	return sb.String()
 }
 
 // extractJSONString is a quick-and-dirty JSON string field extractor.
-// Avoids importing encoding/json for a simple key lookup in tool input.
 func extractJSONString(jsonStr, key string) string {
 	needle := fmt.Sprintf(`"%s"`, key)
 	idx := strings.Index(jsonStr, needle)
 	if idx < 0 {
 		return ""
 	}
-	// Find the value after the key
 	rest := jsonStr[idx+len(needle):]
-	// Skip colon and whitespace
 	rest = strings.TrimLeft(rest, ": \t\n")
 	if len(rest) == 0 || rest[0] != '"' {
 		return ""
 	}
-	// Find the closing quote
 	rest = rest[1:]
 	end := strings.Index(rest, `"`)
 	if end < 0 {
