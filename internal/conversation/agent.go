@@ -988,6 +988,12 @@ func (a *Agent) loadSession() error {
 	}
 	a.history = messages
 
+	// If using the provider interface (Ollama, etc.), also restore into provHistory.
+	// Use the direct provider deserialization to avoid lossy Bedrock SDK round-trip.
+	if a.provider != nil && len(state.Messages) > 0 {
+		a.provHistory = session.UnmarshalProviderHistory(state.Messages)
+	}
+
 	// Restore todos
 	if len(state.Todos) > 0 {
 		a.todos.Replace(state.Todos)

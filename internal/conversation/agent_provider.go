@@ -26,6 +26,9 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		Content: []provider.ContentBlock{provider.TextBlock{Text: userMessage}},
 	})
 
+	// Initialize state dictionary for this turn — tracks ground-truth about execution.
+	sd := newStateDict(userMessage)
+
 	for step := 0; step < a.maxSteps; step++ {
 		effectivePrompt := a.effectiveSystemPrompt()
 
@@ -40,7 +43,7 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		req := provider.Request{
 			System:   effectivePrompt,
-			Messages: a.provHistory,
+			Messages: messages,
 			Tools:    a.allProviderToolDefs(),
 		}
 
@@ -78,9 +81,14 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		// If no tool calls, we're done
 		if len(resp.ToolUses) == 0 {
+			// Try to extract a plan from the model's final response for the todo panel
+			a.maybeUpdatePlanFromText(resp.Content)
 			a.flushSessionProvider()
 			return resp.Content, nil
 		}
+
+		// The model expressed intent + tool calls — check for plan in its text
+		a.maybeUpdatePlanFromText(resp.Content)
 
 		// Execute tool calls and collect results
 		var resultBlocks []provider.ContentBlock
@@ -121,6 +129,9 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 			})
 
 			a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
+
+			// Update state dictionary with ground-truth from this tool execution
+			sd.recordToolResult(toolUse.Name, string(toolUse.Input), result, isErr)
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: toolUse.ToolUseID,
@@ -405,10 +416,19 @@ func (a *Agent) needsGroundingAssist() bool {
 }
 
 // flushSessionProvider persists session state for provider-based conversations.
-// For now, provider sessions don't persist full history (since it's in a different
-// format), but we still persist the inkwell and audit trail.
+// Converts provider-agnostic messages to the session serializable format for
+// full history persistence, enabling session resume across restarts.
 func (a *Agent) flushSessionProvider() {
 	if a.store == nil || a.sessionID == "" {
+		return
+	}
+
+	// Marshal provider history to session format
+	messages, err := session.MarshalProviderHistory(a.provHistory)
+	if err != nil {
+		if a.verbose {
+			log.Printf("[session] warning: failed to marshal provider history: %v", err)
+		}
 		return
 	}
 
@@ -426,10 +446,11 @@ func (a *Agent) flushSessionProvider() {
 	meta.Stats.ToolCalls = len(a.inkwell)
 
 	state := &session.SessionState{
-		Meta:    meta,
-		Todos:   a.todos.Items(),
-		Inkwell: a.inkwell,
-		Audit:   a.AuditTrail(),
+		Meta:     meta,
+		Messages: messages,
+		Todos:    a.todos.Items(),
+		Inkwell:  a.inkwell,
+		Audit:    a.AuditTrail(),
 	}
 
 	if err := a.store.Save(a.sessionID, state); err != nil {
