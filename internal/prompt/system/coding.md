@@ -151,3 +151,20 @@ When executing multi-step tasks with tool calls:
 - After every 3 tool-use iterations, pause and verify: "Am I still working toward the user's stated goal?"
 - If you notice you are drifting or repeating actions, stop, summarize what you've done so far, and re-orient toward the user's actual request before continuing.
 - Your final response to the user MUST directly address their original question or request — not an intermediate step or tangent.
+{{- if eq .Provider "ollama"}}
+
+## Reasoning Before Action
+
+CRITICAL: Before EVERY tool call, you MUST output a brief text explanation of what you are doing and why. Do NOT emit tool calls without accompanying reasoning text. This helps you stay grounded in the task.
+
+Example pattern:
+1. State what you're looking for or what step you're taking
+2. Then make the tool call
+
+BAD (tool call with no reasoning):
+[just a bare tool_use with no text]
+
+GOOD (reasoning then tool call):
+"I'll read the main entry point to understand the application structure."
+[then the tool_use for read_file]
+{{- end}}

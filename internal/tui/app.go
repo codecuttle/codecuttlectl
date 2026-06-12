@@ -68,6 +68,8 @@ type Model struct {
 	streamBuf *strings.Builder
 	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
 	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
+	stateDict  *stateDict // State dictionary for small-model grounding (nil for large models)
+	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -526,6 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 			m.history = append(m.history, bedrock.BuildAssistantMessage(blocks))
+			m.lastExecutedTools = m.pendingToolCalls // Save for state dict tracking
 			return m, m.executePendingTools()
 		}
 
@@ -701,6 +704,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
 		m.streamStep++ // Track consecutive tool-use rounds for grounding
+
+		// Update state dictionary with tool execution results
+		if m.stateDict != nil {
+			for _, r := range msg.Messages {
+				// Find the matching pending tool call to get the name/input
+				for _, tc := range m.lastExecutedTools {
+					if tc.id == r.ToolUseID {
+						m.stateDict.recordToolResult(tc.name, tc.input, r.Status == types.ToolResultStatusError)
+						break
+					}
+				}
+			}
+		}
+
 		return m, m.launchStream()
 
 	case TodoUpdatedMsg:
@@ -863,12 +880,8 @@ func (m *Model) launchStream() tea.Cmd {
 	// accumulate. The system prompt is re-sent on every API call anyway, so
 	// there's no context window cost to always including it.
 	effectiveSystem := m.system
-	if m.streamStep >= 2 && m.needsGroundingAssist() {
-		// Extract the user's original message from history
-		userMsg := m.extractLastUserText()
-		if userMsg != "" {
-			effectiveSystem += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMsg, m.streamStep)
-		}
+	if m.streamStep >= 2 && m.stateDict != nil {
+		effectiveSystem += "\n\n" + m.stateDict.render()
 	}
 
 	// Use the provider interface for streaming
@@ -946,10 +959,16 @@ func (m *Model) launchStream() tea.Cmd {
 func (m *Model) maybeCompact() {
 	cfg := compact.DefaultConfig()
 
-	// If context usage is high, compact more aggressively (preserve fewer turns)
-	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
-	if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
-		cfg.PreserveRecentTurns = 3 // Aggressive: reduce from 7 to 3
+	// For small models, use aggressive compaction settings — these models lose
+	// the thread when large tool results accumulate in context.
+	if m.needsGroundingAssist() {
+		cfg = compact.SmallModelConfig()
+	} else {
+		// If context usage is high on large models, compact more aggressively
+		lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+		if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
+			cfg.PreserveRecentTurns = 3
+		}
 	}
 
 	// Count user text messages to determine current turn
@@ -1099,6 +1118,12 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.GotoBottom()
 
 	m.streamStep = 0 // Reset step counter for new user turn
+	// Initialize state dictionary for small-model grounding
+	if m.needsGroundingAssist() {
+		m.stateDict = newStateDict(text)
+	} else {
+		m.stateDict = nil
+	}
 	return m.launchStream()
 }
 

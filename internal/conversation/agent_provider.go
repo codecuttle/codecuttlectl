@@ -32,16 +32,12 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 	for step := 0; step < a.maxSteps; step++ {
 		effectivePrompt := a.effectiveSystemPrompt()
 
-		// For smaller/local models, append a grounding anchor to the system prompt
-		// (NOT as a user message — that causes models to treat it as a new turn
-		// and "reset", often re-introducing themselves). The system prompt is the
-		// right place for this because it's authoritative and doesn't create a
-		// fake conversational turn boundary.
-		//
-		// Inject on every step after the first 2 (not just every 3rd) — smaller
-		// models lose the thread extremely quickly once large tool results accumulate.
+		// For smaller/local models, append the state dictionary to the system prompt.
+		// This provides continuous grounding by injecting a structured reality-anchor
+		// (per PDDL-INSTRUCT / "Code as Agent Harness" research). Large frontier models
+		// don't need this — they maintain their own world state effectively.
 		if step >= 2 && a.needsGroundingAssist() {
-			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
+			effectivePrompt += "\n\n" + sd.render()
 		}
 
 		req := provider.Request{
@@ -172,12 +168,14 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 		Content: []provider.ContentBlock{provider.TextBlock{Text: userMessage}},
 	})
 
+	// State dictionary for grounding (only used for small models)
+	sd := newStateDict(userMessage)
+
 	for step := 0; step < a.maxSteps; step++ {
-		// For smaller/local models, append grounding context to system prompt
-		// (same logic as turnProvider — see needsGroundingAssist for rationale).
+		// For smaller/local models, append state dictionary to system prompt.
 		effectivePrompt := a.effectiveSystemPrompt()
 		if step >= 2 && a.needsGroundingAssist() {
-			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
+			effectivePrompt += "\n\n" + sd.render()
 		}
 
 		req := provider.Request{
@@ -305,6 +303,9 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			})
 
 			a.recordToolExec(tc.name, tc.id, duration.Milliseconds(), isErr, errType, step)
+
+			// Update state dictionary with ground-truth from this tool execution
+			sd.recordToolResult(tc.name, string(tc.input), result, isErr)
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: tc.id,
