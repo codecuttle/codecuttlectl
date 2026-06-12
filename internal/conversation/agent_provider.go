@@ -37,7 +37,10 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		// and "reset", often re-introducing themselves). The system prompt is the
 		// right place for this because it's authoritative and doesn't create a
 		// fake conversational turn boundary.
-		if step > 0 && step%3 == 0 && a.needsGroundingAssist() {
+		//
+		// Inject on every step after the first 2 (not just every 3rd) — smaller
+		// models lose the thread extremely quickly once large tool results accumulate.
+		if step >= 2 && a.needsGroundingAssist() {
 			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
 		}
 
@@ -173,7 +176,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 		// For smaller/local models, append grounding context to system prompt
 		// (same logic as turnProvider — see needsGroundingAssist for rationale).
 		effectivePrompt := a.effectiveSystemPrompt()
-		if step > 0 && step%3 == 0 && a.needsGroundingAssist() {
+		if step >= 2 && a.needsGroundingAssist() {
 			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
 		}
 

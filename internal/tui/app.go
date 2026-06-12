@@ -857,8 +857,13 @@ func (m *Model) launchStream() tea.Cmd {
 	//
 	// Only applies to models that need it (small context window ≤ 512k).
 	// Large frontier models (Opus 4.6 etc.) maintain their own world state.
+	//
+	// We inject on EVERY step after the first 2 (not just every 3rd) because
+	// smaller models lose the thread extremely quickly once large tool results
+	// accumulate. The system prompt is re-sent on every API call anyway, so
+	// there's no context window cost to always including it.
 	effectiveSystem := m.system
-	if m.streamStep > 0 && m.streamStep%3 == 0 && m.needsGroundingAssist() {
+	if m.streamStep >= 2 && m.needsGroundingAssist() {
 		// Extract the user's original message from history
 		userMsg := m.extractLastUserText()
 		if userMsg != "" {
