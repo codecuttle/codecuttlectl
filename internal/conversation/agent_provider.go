@@ -43,7 +43,7 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		req := provider.Request{
 			System:   effectivePrompt,
-			Messages: messages,
+			Messages: a.provHistory,
 			Tools:    a.allProviderToolDefs(),
 		}
 
