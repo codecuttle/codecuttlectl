@@ -29,102 +29,13 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 	for step := 0; step < a.maxSteps; step++ {
 		effectivePrompt := a.effectiveSystemPrompt()
 
-		// For smaller/local models: inject a grounding reminder every 3 tool-use steps
-		// to keep the model focused on the original user intent.
-		if step > 0 && step%3 == 0 {
-			groundingReminder := provider.Message{
-				Role: provider.RoleUser,
-				Content: []provider.ContentBlock{provider.TextBlock{
-					Text: fmt.Sprintf("[SYSTEM REMINDER: Stay focused on the user's original request: %q. Verify you are making progress toward this goal before continuing.]", userMessage),
-				}},
-			}
-			// Insert as a transient message (not persisted — just for this API call)
-			messagesWithGrounding := make([]provider.Message, len(a.provHistory)+1)
-			copy(messagesWithGrounding, a.provHistory)
-			messagesWithGrounding[len(a.provHistory)] = groundingReminder
-
-			req := provider.Request{
-				System:   effectivePrompt,
-				Messages: messagesWithGrounding,
-				Tools:    a.allProviderToolDefs(),
-			}
-
-			resp, err := a.provider.Converse(ctx, req)
-			if err != nil {
-				return "", fmt.Errorf("converse step %d: %w", step, err)
-			}
-
-			if a.verbose {
-				log.Printf("[step %d] (grounded) stop_reason=%s tools=%d tokens_in=%d tokens_out=%d",
-					step, resp.StopReason, len(resp.ToolUses), resp.Usage.InputTokens, resp.Usage.OutputTokens)
-			}
-
-			a.recordTokenUsage(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens, step)
-
-			var assistBlocks []provider.ContentBlock
-			if resp.Content != "" {
-				assistBlocks = append(assistBlocks, provider.TextBlock{Text: resp.Content})
-			}
-			for _, tu := range resp.ToolUses {
-				assistBlocks = append(assistBlocks, provider.ToolUseBlock{
-					ToolUseID: tu.ToolUseID,
-					Name:      tu.Name,
-					Input:     tu.Input,
-				})
-			}
-			if len(assistBlocks) > 0 {
-				a.provHistory = append(a.provHistory, provider.Message{
-					Role:    provider.RoleAssistant,
-					Content: assistBlocks,
-				})
-			}
-
-			if len(resp.ToolUses) == 0 {
-				a.flushSessionProvider()
-				return resp.Content, nil
-			}
-
-			// Execute tool calls (same as below)
-			var resultBlocks []provider.ContentBlock
-			for _, toolUse := range resp.ToolUses {
-				if a.verbose {
-					log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
-				}
-				start := time.Now()
-				result, status := a.executeTool(ctx, toolUse.Name, toolUse.Input)
-				duration := time.Since(start)
-				endTime := time.Now().UTC()
-
-				isErr := status == types.ToolResultStatusError
-				errType := string(inkwell.Classify(toolUse.Name, result, isErr).Class)
-				a.inkwell = append(a.inkwell, session.InkEntry{
-					Timestamp:  start.UTC(),
-					EndTime:    endTime,
-					Turn:       a.turn,
-					Step:       step,
-					ToolName:   toolUse.Name,
-					ToolUseID:  toolUse.ToolUseID,
-					Input:      toolUse.Input,
-					Output:     result,
-					DurationMs: duration.Milliseconds(),
-					IsError:    isErr,
-					ErrorType:  errType,
-				})
-				a.recordToolExec(toolUse.Name, toolUse.ToolUseID, duration.Milliseconds(), isErr, errType, step)
-
-				resultBlocks = append(resultBlocks, provider.ToolResultBlock{
-					ToolUseID: toolUse.ToolUseID,
-					Content:   result,
-					IsError:   isErr,
-				})
-			}
-			a.provHistory = append(a.provHistory, provider.Message{
-				Role:    provider.RoleUser,
-				Content: resultBlocks,
-			})
-			a.dirty = true
-			a.flushSessionProvider()
-			continue
+		// For smaller/local models, append a grounding anchor to the system prompt
+		// (NOT as a user message — that causes models to treat it as a new turn
+		// and "reset", often re-introducing themselves). The system prompt is the
+		// right place for this because it's authoritative and doesn't create a
+		// fake conversational turn boundary.
+		if step > 0 && step%3 == 0 && a.needsGroundingAssist() {
+			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
 		}
 
 		req := provider.Request{
@@ -248,8 +159,15 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 	})
 
 	for step := 0; step < a.maxSteps; step++ {
+		// For smaller/local models, append grounding context to system prompt
+		// (same logic as turnProvider — see needsGroundingAssist for rationale).
+		effectivePrompt := a.effectiveSystemPrompt()
+		if step > 0 && step%3 == 0 && a.needsGroundingAssist() {
+			effectivePrompt += fmt.Sprintf("\n\n## Current Task Context\n\nYou are currently working on the user's request: %q\n\nYou have completed %d tool-use steps so far. Continue making progress toward this goal. Do NOT re-introduce yourself or restart — you are mid-task.", userMessage, step)
+		}
+
 		req := provider.Request{
-			System:   a.effectiveSystemPrompt(),
+			System:   effectivePrompt,
 			Messages: a.provHistory,
 			Tools:    a.allProviderToolDefs(),
 		}
@@ -459,6 +377,31 @@ func (a *Agent) allProviderToolDefs() []provider.ToolDefinition {
 		})
 	}
 	return result
+}
+
+// needsGroundingAssist returns true if the current provider likely benefits from
+// periodic grounding reminders. Large frontier models (Opus 4.6, etc.) have strong
+// enough internal state tracking that injecting grounding messages actually hurts —
+// the model treats the injected user message as a conversation turn boundary and
+// "resets", often re-introducing itself. Smaller/local models (Gemma 4, Llama 3,
+// Qwen 3, etc.) genuinely drift without these reminders.
+//
+// Heuristic: if the provider implements ContextWindowProvider and reports a context
+// window > 512k tokens, it's likely a frontier model that doesn't need help.
+// Models with unknown or smaller context windows get grounding assistance.
+func (a *Agent) needsGroundingAssist() bool {
+	if a.provider == nil {
+		return false
+	}
+
+	// Check if the provider reports a large context window (frontier model indicator)
+	if cwp, ok := a.provider.(provider.ContextWindowProvider); ok {
+		if cwp.ContextWindow() > 512_000 {
+			return false // Large model — doesn't need grounding injection
+		}
+	}
+
+	return true // Small/local model or unknown — inject grounding
 }
 
 // flushSessionProvider persists session state for provider-based conversations.
