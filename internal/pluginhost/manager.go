@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -602,6 +603,10 @@ func (m *Manager) Definitions() []bedrock.ToolDefinition {
 			InputSchema: p.InputSchema,
 		})
 	}
+	// Sort by name to ensure deterministic ordering for cache stability.
+	// Map iteration is non-deterministic in Go; if tools arrive in different
+	// order between calls, the entire tool cache prefix is invalidated.
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs
 }
 
