@@ -45,6 +45,7 @@ func main() {
 		// Session management
 		sessionID     = flag.String("session", "", "Resume an existing session by ID")
 		listSessions  = flag.Bool("list-sessions", false, "Show recent sessions and exit")
+		listModels    = flag.Bool("list-models", false, "List available models for the selected provider and exit")
 		sessionLimit  = flag.Int("session-limit", 20, "Number of sessions to show in list")
 		pruneSessions = flag.Int("prune-sessions", 0, "Delete sessions older than N days and exit")
 
@@ -90,6 +91,12 @@ func main() {
 	// Handle --list-sessions
 	if *listSessions {
 		runListSessions(store, *sessionLimit)
+		return
+	}
+
+	// Handle --list-models
+	if *listModels {
+		runListModels(*providerF, *modelID)
 		return
 	}
 
@@ -478,6 +485,68 @@ func runPruneSessions(store session.Store, days int) {
 		os.Exit(1)
 	}
 	fmt.Printf("Pruned %d session(s) older than %d days.\n", deleted, days)
+}
+
+// runListModels lists available models for the given provider.
+func runListModels(providerName, currentModel string) {
+	// Resolve provider name
+	if providerName == "" {
+		if strings.HasPrefix(currentModel, "ollama:") {
+			providerName = "ollama"
+		} else {
+			providerName = "bedrock"
+		}
+	}
+
+	switch providerName {
+	case "google":
+		runListGoogleModels()
+	case "ollama":
+		fmt.Println("Ollama models — use 'ollama list' to see locally available models.")
+	case "bedrock":
+		fmt.Println("AWS Bedrock models (common Anthropic models):")
+		fmt.Println("  us.anthropic.claude-opus-4-6-v1          (Claude Opus 4)")
+		fmt.Println("  us.anthropic.claude-sonnet-4-20250514-v1:0 (Claude Sonnet 4)")
+		fmt.Println("  us.anthropic.claude-3-7-sonnet-20250219-v1:0 (Claude 3.7 Sonnet)")
+		fmt.Println("  us.anthropic.claude-3-5-haiku-20241022-v1:0  (Claude 3.5 Haiku)")
+		fmt.Println("\n  Use AWS CLI: aws bedrock list-foundation-models --region us-west-2")
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown provider: %s\n", providerName)
+		os.Exit(1)
+	}
+}
+
+func runListGoogleModels() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	client, err := googleprov.NewClientForListing(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error connecting to Google AI: %v\n", err)
+		os.Exit(1)
+	}
+
+	models, err := googleprov.ListModels(ctx, client)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing models: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Available Google AI models:")
+	fmt.Println()
+	for _, m := range models {
+		fmt.Printf("  %s\n", m)
+	}
+
+	// Show aliases
+	aliases := googleprov.ModelAliases()
+	if len(aliases) > 0 {
+		fmt.Println()
+		fmt.Println("Aliases (shortcuts):")
+		for alias, canonical := range aliases {
+			fmt.Printf("  %s -> %s\n", alias, canonical)
+		}
+	}
 }
 
 // formatAge returns a human-readable age string.
