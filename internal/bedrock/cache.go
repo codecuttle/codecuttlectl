@@ -139,10 +139,13 @@ func applyCachePoints(messages []types.Message) []types.Message {
 		return messages
 	}
 
-	// Find the last user message
+	// Find the last user TEXT message (not tool_result messages, which also
+	// have Role=User in the Bedrock API). Tool result messages shift every
+	// iteration during tool-use loops — caching on them defeats the purpose.
+	// We need the actual human user message which stays fixed during the loop.
 	lastUserIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.ConversationRoleUser {
+		if messages[i].Role == types.ConversationRoleUser && hasTextBlock(messages[i]) {
 			lastUserIdx = i
 			break
 		}
@@ -178,6 +181,18 @@ func applyCachePoints(messages []types.Message) []types.Message {
 	}
 
 	return result
+}
+
+// hasTextBlock returns true if the message contains at least one text content block.
+// Tool result messages (also Role=User) contain only ContentBlockMemberToolResult blocks.
+// This distinguishes actual human user messages from tool result messages.
+func hasTextBlock(msg types.Message) bool {
+	for _, block := range msg.Content {
+		if _, ok := block.(*types.ContentBlockMemberText); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // toBedrockToolsSorted converts tool definitions to Bedrock tools with
