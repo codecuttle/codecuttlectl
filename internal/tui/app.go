@@ -15,8 +15,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
@@ -62,7 +60,7 @@ type Model struct {
 	thinkingBudget int
 
 	// Conversation state
-	history   []types.Message
+	history   []provider.Message
 	messages  []chatMessage
 	streaming bool
 	streamBuf *strings.Builder
@@ -379,9 +377,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							role:    "assistant",
 							content: sanitizeModelText(content) + "\n\n*(interrupted)*",
 						})
-						m.history = append(m.history, bedrock.BuildAssistantMessage(
-							[]types.ContentBlock{
-								&types.ContentBlockMemberText{Value: content},
+						m.history = append(m.history, provider.BuildAssistantMessage(
+							[]provider.ContentBlock{
+								provider.TextBlock{Text: content},
 							},
 						))
 						m.streamBuf.Reset()
@@ -495,7 +493,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StreamToolStopMsg:
 		if m.currentToolName != "" {
-			input := bedrock.CollectToolInput([]string{m.currentToolInput.String()})
+			input := []byte(m.currentToolInput.String())
 			m.pendingToolCalls = append(m.pendingToolCalls, pendingTool{
 				id:    m.currentToolID,
 				name:  m.currentToolName,
@@ -511,24 +509,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If we have pending tool calls, build a single assistant message
 		// containing any text AND the tool_use blocks, then execute tools.
 		if len(m.pendingToolCalls) > 0 {
-			var blocks []types.ContentBlock
+			var blocks []provider.ContentBlock
 			// Include any text that was streamed before/between tool calls
 			if m.streamBuf.Len() > 0 {
 				// Try to extract a plan from the model's text for the task panel
 				m.maybeExtractPlan(m.streamBuf.String())
-				blocks = append(blocks, &types.ContentBlockMemberText{Value: m.streamBuf.String()})
+				blocks = append(blocks, provider.TextBlock{Text: m.streamBuf.String()})
 				m.streamBuf.Reset()
 			}
 			for _, tc := range m.pendingToolCalls {
-				blocks = append(blocks, &types.ContentBlockMemberToolUse{
-					Value: types.ToolUseBlock{
-						ToolUseId: &tc.id,
-						Name:      &tc.name,
-						Input:     document.NewLazyDocument(jsonToMap(tc.input)),
-					},
+				blocks = append(blocks, provider.ToolUseBlock{
+					ToolUseID: tc.id,
+					Name:      tc.name,
+					Input:     tc.input,
 				})
 			}
-			m.history = append(m.history, bedrock.BuildAssistantMessage(blocks))
+			m.history = append(m.history, provider.BuildAssistantMessage(blocks))
 			m.lastExecutedTools = m.pendingToolCalls // Save for state dict tracking
 			return m, m.executePendingTools()
 		}
@@ -548,15 +544,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					role:    "assistant",
 					content: sanitizeModelText(content),
 				})
-				m.history = append(m.history, bedrock.BuildAssistantMessage(
-					[]types.ContentBlock{
-						&types.ContentBlockMemberText{Value: content},
+				m.history = append(m.history, provider.BuildAssistantMessage(
+					[]provider.ContentBlock{
+						provider.TextBlock{Text: content},
 					},
 				))
 				m.streamBuf.Reset()
 				// Inject a synthetic user message to nudge it forward
 				nudge := "Continue. Execute the next step now — do not ask for permission."
-				m.history = append(m.history, bedrock.BuildUserTextMessage(nudge))
+				m.history = append(m.history, provider.BuildUserTextMessage(nudge))
 				m.messages = append(m.messages, chatMessage{
 					role:    "system_nudge",
 					content: "↻ auto-continuing…",
@@ -570,9 +566,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role:    "assistant",
 				content: sanitizeModelText(content),
 			})
-			m.history = append(m.history, bedrock.BuildAssistantMessage(
-				[]types.ContentBlock{
-					&types.ContentBlockMemberText{Value: content},
+			m.history = append(m.history, provider.BuildAssistantMessage(
+				[]provider.ContentBlock{
+					provider.TextBlock{Text: content},
 				},
 			))
 			m.streamBuf.Reset()
@@ -720,7 +716,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Display tool results in the chat
 		for _, r := range msg.Messages {
-			isErr := r.Status == types.ToolResultStatusError
+			isErr := r.IsError
 			m.messages = append(m.messages, chatMessage{
 				role:    "tool_result",
 				content: truncateToolResult(r.Content, 500),
@@ -730,7 +726,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		// Add tool results to history and start new stream
-		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
+		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
 		m.streamStep++ // Track consecutive tool-use rounds for grounding
 
@@ -740,7 +736,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Find the matching pending tool call to get the name/input
 				for _, tc := range m.lastExecutedTools {
 					if tc.id == r.ToolUseID {
-						m.stateDict.recordToolResult(tc.name, tc.input, r.Status == types.ToolResultStatusError)
+						m.stateDict.recordToolResult(tc.name, tc.input, r.IsError)
 						break
 					}
 				}
@@ -766,8 +762,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				history := m.history
 				tools := m.pluginMgr.Definitions()
 				cmd := func() tea.Msg {
-					err := client.PingCache(context.Background(), system, history, tools)
-					return CacheKeepaliveDoneMsg{Err: err}
+					if client != nil {
+						// Convert provider messages to bedrock types for cache keepalive
+						bedrockHistory := providerToBedrockMessages(history)
+						err := client.PingCache(context.Background(), system, bedrockHistory, tools)
+						return CacheKeepaliveDoneMsg{Err: err}
+					}
+					return CacheKeepaliveDoneMsg{}
 				}
 				return m, tea.Batch(cmd, m.cacheKeepaliveTick())
 			}
@@ -918,7 +919,7 @@ func (m *Model) launchStream() tea.Cmd {
 	if m.llmProvider != nil {
 		req := provider.Request{
 			System:   effectiveSystem,
-			Messages: provider.MessagesToProvider(m.history),
+			Messages: m.history,
 			Tools:    m.providerToolDefs(),
 			Config: provider.InferenceConfig{
 				EnableThinking: m.enableThinking,
@@ -927,47 +928,6 @@ func (m *Model) launchStream() tea.Cmd {
 		}
 		ch := m.llmProvider.ConverseStream(ctx, req)
 		m.streamCh = ch
-	} else {
-		// Fallback: direct Bedrock client (shouldn't happen since we wrap it in New, but defensive)
-		var streamCfg bedrock.StreamConfig
-		if m.enableThinking {
-			streamCfg.EnableThinking = true
-			streamCfg.ThinkingBudget = m.thinkingBudget
-		}
-		bedrockCh := m.client.ConverseStream(ctx, effectiveSystem, m.history, m.pluginMgr.Definitions(), streamCfg)
-		// Wrap bedrock channel into provider channel
-		provCh := make(chan provider.StreamEvent, 64)
-		go func() {
-			defer close(provCh)
-			for ev := range bedrockCh {
-				switch e := ev.(type) {
-				case bedrock.TextDeltaEvent:
-					provCh <- provider.TextDeltaEvent{Text: e.Text}
-				case bedrock.ReasoningDeltaEvent:
-					provCh <- provider.ReasoningDeltaEvent{Text: e.Text}
-				case bedrock.ReasoningSignatureEvent:
-					provCh <- provider.ReasoningSignatureEvent{Signature: e.Signature}
-				case bedrock.ToolUseStartEvent:
-					provCh <- provider.ToolUseStartEvent{ToolUseID: e.ToolUseID, Name: e.Name}
-				case bedrock.ToolInputDeltaEvent:
-					provCh <- provider.ToolInputDeltaEvent{Delta: e.Delta}
-				case bedrock.ToolUseStopEvent:
-					provCh <- provider.ToolUseStopEvent{}
-				case bedrock.MessageStopEvent:
-					provCh <- provider.MessageStopEvent{StopReason: e.StopReason}
-				case bedrock.UsageEvent:
-					provCh <- provider.UsageEvent{
-						InputTokens:      e.InputTokens,
-						OutputTokens:     e.OutputTokens,
-						CacheReadTokens:  e.CacheReadInputTokens,
-						CacheWriteTokens: e.CacheWriteInputTokens,
-					}
-				case bedrock.StreamErrorEvent:
-					provCh <- provider.StreamErrorEvent{Err: e.Err}
-				}
-			}
-		}()
-		m.streamCh = provCh
 	}
 
 	// Return a cmd that reads the first event from the stream
@@ -1004,9 +964,9 @@ func (m *Model) maybeCompact() {
 	// Count user text messages to determine current turn
 	turn := 0
 	for _, msg := range m.history {
-		if msg.Role == types.ConversationRoleUser {
+		if msg.Role == provider.RoleUser {
 			for _, block := range msg.Content {
-				if _, ok := block.(*types.ContentBlockMemberText); ok {
+				if _, ok := block.(provider.TextBlock); ok {
 					turn++
 					break
 				}
@@ -1015,7 +975,7 @@ func (m *Model) maybeCompact() {
 	}
 
 	// Always compact stale results (older than PreserveRecentTurns)
-	result := compact.Compact(m.history, turn, cfg)
+	result := compact.CompactProvider(m.history, turn, cfg)
 	if result.Compacted > 0 {
 		m.history = result.Messages
 	}
@@ -1143,7 +1103,7 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	}
 
 	m.messages = append(m.messages, chatMessage{role: "user", content: text})
-	m.history = append(m.history, bedrock.BuildUserTextMessage(text))
+	m.history = append(m.history, provider.BuildUserTextMessage(text))
 	m.viewport.SetContent(m.renderMessages())
 	m.viewport.GotoBottom()
 
@@ -1171,7 +1131,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 	autoApprove := m.autoApprove
 
 	return func() tea.Msg {
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 		ctx := context.Background()
 
@@ -1180,10 +1140,10 @@ func (m *Model) executePendingTools() tea.Cmd {
 				// Defer todo mutation to the Update handler (thread-safe).
 				// Put a placeholder result; the Update handler will replace it.
 				todoInputs = append(todoInputs, tool.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: tool.id,
 					Content:   "", // placeholder, filled in by Update
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1221,18 +1181,18 @@ func (m *Model) executePendingTools() tea.Cmd {
 			}
 
 			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-			status := types.ToolResultStatusSuccess
+			status := false
 			if err != nil {
 				if output == "" {
 					output = fmt.Sprintf("Error: %s", err.Error())
 				}
-				status = types.ToolResultStatusError
+				status = true
 			}
 
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: tool.id,
 				Content:   output,
-				Status:    status,
+				IsError: status,
 			})
 		}
 
@@ -1248,32 +1208,32 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 
 		// Execute the approved tool
 		output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-		status := types.ToolResultStatusSuccess
+		status := false
 		if err != nil {
 			if output == "" {
 				output = fmt.Sprintf("Error: %s", err.Error())
 			}
-			status = types.ToolResultStatusError
+			status = true
 		}
-		results = append(results, bedrock.ToolResult{
+		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
 			Content:   output,
-			Status:    status,
+			IsError: status,
 		})
 
 		// Execute remaining tools (they may also need approval)
 		for i, rt := range remaining {
 			if rt.name == "todo_manage" {
 				todoInputs = append(todoInputs, rt.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
 					Content:   "",
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1305,17 +1265,17 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 			}
 
 			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
-			rtStatus := types.ToolResultStatusSuccess
+			rtStatus := false
 			if rtErr != nil {
 				if rtOutput == "" {
 					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
 				}
-				rtStatus = types.ToolResultStatusError
+				rtStatus = true
 			}
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
 				Content:   rtOutput,
-				Status:    rtStatus,
+				IsError: rtStatus,
 			})
 		}
 
@@ -1331,24 +1291,24 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 
 		// Denied tool gets an error result
-		results = append(results, bedrock.ToolResult{
+		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
 			Content:   "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.",
-			Status:    types.ToolResultStatusError,
+			IsError: true,
 		})
 
 		// Execute remaining tools normally
 		for i, rt := range remaining {
 			if rt.name == "todo_manage" {
 				todoInputs = append(todoInputs, rt.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
 					Content:   "",
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1380,17 +1340,17 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 			}
 
 			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
-			rtStatus := types.ToolResultStatusSuccess
+			rtStatus := false
 			if rtErr != nil {
 				if rtOutput == "" {
 					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
 				}
-				rtStatus = types.ToolResultStatusError
+				rtStatus = true
 			}
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
 				Content:   rtOutput,
-				Status:    rtStatus,
+				IsError: rtStatus,
 			})
 		}
 
@@ -1412,11 +1372,12 @@ func (m *Model) restoreSession() {
 	}
 
 	// Restore conversation history for the model
-	messages, err := session.UnmarshalHistory(state.Messages)
+	bedrockMessages, err := session.UnmarshalHistory(state.Messages)
 	if err != nil {
 		return
 	}
-	m.history = messages
+	// Convert bedrock types to provider messages
+	m.history = bedrockToProviderMessages(bedrockMessages)
 
 	// Restore token stats (so resumed sessions accumulate correctly)
 	m.totalInputTokens = state.Meta.Stats.InputTokens
@@ -1537,7 +1498,7 @@ func (m *Model) saveSession() {
 		return
 	}
 
-	serialized, err := session.MarshalHistory(m.history)
+	serialized, err := session.MarshalProviderHistory(m.history)
 	if err != nil {
 		return
 	}
@@ -1614,8 +1575,8 @@ func (m *Model) renderStatusBar() string {
 
 	// Build right-side status: tokens in/out, ctx%, and optionally cost
 	var right string
-	if m.client != nil {
-		// Bedrock: show cache hit % and cost
+	if _, ok := m.llmProvider.(provider.CostEstimator); ok {
+		// Provider with cost API
 		tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
 			formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
 		tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
@@ -1665,24 +1626,18 @@ func formatTokenCount(tokens int32) string {
 //   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
 //   - Cache read: $0.50 / 1M tokens (0.1x input)
 func (m *Model) estimateCost() float64 {
-	// Local providers have no API cost — detect by: provider set but no bedrock client
-	if m.client == nil && m.llmProvider != nil {
+	if m.llmProvider == nil {
 		return 0
 	}
-
-	const (
-		inputPer1M      = 5.00
-		outputPer1M     = 25.00
-		cacheWritePer1M = 6.25
-		cacheReadPer1M  = 0.50
-	)
-
-	input := float64(m.totalInputTokens) / 1_000_000 * inputPer1M
-	output := float64(m.totalOutputTokens) / 1_000_000 * outputPer1M
-	cacheWrite := float64(m.totalCacheWriteInputTokens) / 1_000_000 * cacheWritePer1M
-	cacheRead := float64(m.totalCacheReadInputTokens) / 1_000_000 * cacheReadPer1M
-
-	return input + output + cacheWrite + cacheRead
+	if ce, ok := m.llmProvider.(provider.CostEstimator); ok {
+		return ce.EstimateCost(provider.Usage{
+			InputTokens:      int32(m.totalInputTokens),
+			OutputTokens:     int32(m.totalOutputTokens),
+			CacheWriteTokens: int32(m.totalCacheWriteInputTokens),
+			CacheReadTokens:  int32(m.totalCacheReadInputTokens),
+		})
+	}
+	return 0
 }
 
 func (m *Model) renderInput() string {
@@ -2097,10 +2052,10 @@ func (m *Model) needsGroundingAssist() bool {
 func (m *Model) extractLastUserText() string {
 	// Walk backward to find the last user message with text content
 	for i := len(m.history) - 1; i >= 0; i-- {
-		if m.history[i].Role == types.ConversationRoleUser {
+		if m.history[i].Role == provider.RoleUser {
 			for _, block := range m.history[i].Content {
-				if text, ok := block.(*types.ContentBlockMemberText); ok {
-					return text.Value
+				if text, ok := block.(provider.TextBlock); ok {
+					return text.Text
 				}
 			}
 		}

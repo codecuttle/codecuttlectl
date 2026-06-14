@@ -3,8 +3,8 @@ package tui
 import (
 	"encoding/json"
 
-	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
 // --- Bubble Tea message types for the TUI ---
@@ -88,7 +88,7 @@ type TodoUpdatedMsg struct {
 
 // ContinueStreamMsg signals the agent should continue after tool results.
 type ContinueStreamMsg struct {
-	Messages   []bedrock.ToolResult
+	Messages   []provider.ToolResultBlock
 	TodoInputs []json.RawMessage // Raw todo_manage inputs to apply in Update
 }
 
@@ -101,7 +101,7 @@ type ApprovalRequestMsg struct {
 	Command         string          // Human-readable command description
 	Reason          string          // Why confirmation is needed
 	Risk            string          // Risk level string
-	CompletedResults []bedrock.ToolResult  // Results already collected before this tool
+	CompletedResults []provider.ToolResultBlock  // Results already collected before this tool
 	CompletedTodos   []json.RawMessage     // Todos collected before this tool
 	RemainingTools   []pendingToolForApproval // Tools after this one still to execute
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
+	googleprov "github.com/codecuttle/codecuttlectl/internal/provider/google"
 	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
@@ -27,11 +28,12 @@ import (
 
 func main() {
 	var (
-		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID (or Ollama model name when --provider=ollama)")
+		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID (or model name when --provider is set)")
 		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
 		profile   = flag.String("profile", "", "AWS profile name")
-		providerF = flag.String("provider", "", "LLM provider: 'bedrock' (default) or 'ollama'")
+		providerF = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
 		ollamaURL = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
+		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
 		workDir   = flag.String("workdir", "", "Working directory (default: current directory)")
 		pluginDir = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
 		verbose   = flag.Bool("verbose", false, "Enable verbose/debug output")
@@ -133,6 +135,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "[provider] ollama model=%s url=%s\n", *modelID, ollamaClient.ID())
 		}
 
+	case "google":
+		googleClient, err := googleprov.New(ctx, googleprov.Config{
+			Model:          *modelID,
+			CacheThreshold: *googleCacheThreshold,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing Google client: %v\n", err)
+			os.Exit(1)
+		}
+		llmProvider = googleClient
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "[provider] google model=%s\n", *modelID)
+		}
+
 	case "bedrock":
 		var err error
 		bedrockClient, err = bedrock.NewClient(ctx, bedrock.Config{
@@ -150,7 +166,7 @@ func main() {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, ollama)\n", providerName)
+		fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama)\n", providerName)
 		os.Exit(1)
 	}
 

@@ -84,6 +84,7 @@ func (ToolUseBlock) contentBlock() {}
 
 // ToolResultBlock represents the result of a tool execution.
 type ToolResultBlock struct {
+	Name      string
 	ToolUseID string
 	Content   string
 	IsError   bool
@@ -198,4 +199,42 @@ func (StreamErrorEvent) streamEvent() {}
 type ContextWindowProvider interface {
 	// ContextWindow returns the maximum context window in tokens.
 	ContextWindow() int32
+}
+
+// CostEstimator is an optional interface that providers can implement
+// to estimate the dollar cost of the session based on token usage.
+type CostEstimator interface {
+	EstimateCost(usage Usage) float64
+}
+
+// Helper functions for building messages
+
+// BuildUserTextMessage creates a new message with the given text for the user.
+func BuildUserTextMessage(text string) Message {
+	return Message{
+		Role: RoleUser,
+		Content: []ContentBlock{
+			TextBlock{Text: text},
+		},
+	}
+}
+
+// BuildAssistantMessage creates a new message for the assistant with the given blocks.
+func BuildAssistantMessage(blocks []ContentBlock) Message {
+	return Message{
+		Role:    RoleAssistant,
+		Content: blocks,
+	}
+}
+
+// BuildToolResultMessage creates a new user message containing tool results.
+func BuildToolResultMessage(results []ToolResultBlock) Message {
+	var blocks []ContentBlock
+	for _, r := range results {
+		blocks = append(blocks, r)
+	}
+	return Message{
+		Role:    RoleUser,
+		Content: blocks,
+	}
 }
