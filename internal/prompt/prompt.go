@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"runtime"
 	"text/template"
-	"time"
 )
 
 //go:embed all:system all:tools
@@ -18,9 +17,8 @@ var promptFS embed.FS
 type Context struct {
 	WorkingDirectory string
 	Platform         string
-	Date             string
 	Model            string
-	Provider         string // Provider name: "bedrock", "ollama", etc.
+	Provider         string
 	Tools            []ToolDef
 }
 
@@ -90,7 +88,6 @@ func DefaultContext(workDir, model, providerName string, tools []ToolDef) Contex
 	return Context{
 		WorkingDirectory: workDir,
 		Platform:         runtime.GOOS + "/" + runtime.GOARCH,
-		Date:             time.Now().Format("Mon Jan 2 2006"),
 		Model:            model,
 		Provider:         providerName,
 		Tools:            tools,

@@ -70,27 +70,12 @@ func buildToolsWithCache(tools []ToolDefinition) *types.ToolConfiguration {
 //	[stable base prompt + tool guidance] [CACHE_POINT] [dynamic injections]
 //
 // The stable portion includes everything up to the first dynamic marker.
-// Dynamic markers: "## Active Skills", "## Inkwell", "## Current Task Context"
+// Dynamic markers: "## Current Task Context"
 func buildSystemBlocks(system string) []types.SystemContentBlock {
-	// Find where dynamic content begins (first skill or inkwell injection)
-	skillMarker := "\n\n## Active Skills\n"
-	inkwellMarker := "\n\n## Inkwell"
+	// Find where dynamic content begins
 	taskCtxMarker := "\n\n## Current Task Context\n"
 
-	splitIdx := -1
-	if idx := strings.Index(system, skillMarker); idx != -1 {
-		splitIdx = idx
-	}
-	if idx := strings.Index(system, inkwellMarker); idx != -1 {
-		if splitIdx == -1 || idx < splitIdx {
-			splitIdx = idx
-		}
-	}
-	if idx := strings.Index(system, taskCtxMarker); idx != -1 {
-		if splitIdx == -1 || idx < splitIdx {
-			splitIdx = idx
-		}
-	}
+	splitIdx := strings.Index(system, taskCtxMarker)
 
 	if splitIdx == -1 {
 		// No dynamic injections — cache the entire system prompt
@@ -117,10 +102,11 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 	}
 }
 
-// applyCachePoints implements the "latest user message" caching strategy.
+// applyCachePoints implements the cache anchor strategy for the messages array.
 //
-// The cache checkpoint is placed on the LAST USER MESSAGE in the array, not
-// the absolute last message. This is critical for tool-use loops:
+// The cache checkpoint is placed on a recent USER MESSAGE, not the absolute
+// last message (which is often a shifting tool_result). This is critical for
+// tool-use loops.
 //
 // During a single turn, the agent may make many tool calls:
 //   User msg → Assistant tool_use → Tool result → Assistant tool_use → Tool result → ...
@@ -128,16 +114,13 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 // If we cache at the absolute last message, every step shifts the cache point,
 // forcing a full cache WRITE on each API call in the loop (~$0.02-0.10 each).
 //
-// By caching at the last user message, the cache point stays FIXED during the
-// entire tool-use loop:
+// By anchoring the cache on a user message, the cache point stays FIXED:
 //   - Turn starts: cache point on user message → cache WRITE (once)
-//   - Tool call 1: prefix (up to user msg) is cached → cache READ
-//   - Tool call 2: same prefix → cache READ
+//   - Tool call 1: prefix is cached → cache READ
 //   - Tool call N: same prefix → cache READ
 //
-// The cache write only happens once per user turn, and all subsequent tool-use
-// iterations within that turn get cheap cache reads. This matches the strategy
-// used by opencode and other production agent harnesses.
+// To prevent the uncached delta from growing too large in deep loops, the
+// anchor deterministically advances every 4 tool rounds (8 messages).
 //
 // Uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
 func applyCachePoints(messages []types.Message) []types.Message {
@@ -145,10 +128,7 @@ func applyCachePoints(messages []types.Message) []types.Message {
 		return messages
 	}
 
-	// Find the last user TEXT message (not tool_result messages, which also
-	// have Role=User in the Bedrock API). Tool result messages shift every
-	// iteration during tool-use loops — caching on them defeats the purpose.
-	// We need the actual human user message which stays fixed during the loop.
+	// Find the baseline human user text message
 	lastUserIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == types.ConversationRoleUser && hasTextBlock(messages[i]) {
@@ -162,14 +142,23 @@ func applyCachePoints(messages []types.Message) []types.Message {
 		lastUserIdx = len(messages) - 1
 	}
 
+	// Count messages since the baseline (tool_use / tool_result pairs)
+	deltaMsgs := len(messages) - 1 - lastUserIdx
+
+	// Advance the cache anchor every 4 tool rounds (8 messages)
+	const advanceEvery = 8
+
+	anchorIdx := lastUserIdx
+	if deltaMsgs >= advanceEvery {
+		rounds := deltaMsgs / advanceEvery
+		anchorIdx = lastUserIdx + (rounds * advanceEvery)
+	}
+
 	// Make a shallow copy so we don't mutate the caller's slice
 	result := make([]types.Message, len(messages))
 	copy(result, messages)
 
-	// Place cache point on the last user message.
-	// Bedrock will cache the prefix up to this point. During tool-use loops,
-	// this prefix stays fixed (cache reads) until the next user message arrives.
-	idx := lastUserIdx
+	idx := anchorIdx
 
 	// Copy the message's content slice so we don't mutate the original
 	origContent := result[idx].Content

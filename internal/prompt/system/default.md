@@ -39,4 +39,3 @@ After receiving tool results, either:
 
 {{if .WorkingDirectory}}Working directory: {{.WorkingDirectory}}{{end}}
 {{if .Platform}}Platform: {{.Platform}}{{end}}
-{{if .Date}}Date: {{.Date}}{{end}}

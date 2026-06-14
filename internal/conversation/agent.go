@@ -288,8 +288,17 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 			// Don't actually abort — let the model handle it via the injected prompt.
 			// The escalation prompt tells the model to stop retrying and explain the failure.
 		}
-		if advice.InjectPrompt != "" && a.verbose {
-			log.Printf("[inkwell] injecting corrective prompt (%d chars)", len(advice.InjectPrompt))
+		if advice.InjectPrompt != "" {
+			if a.verbose {
+				log.Printf("[inkwell] injecting corrective prompt (%d chars)", len(advice.InjectPrompt))
+			}
+			// Append the inkwell advice as a text block to the last tool_result message
+			lastIdx := len(a.history) - 1
+			if lastIdx >= 0 && a.history[lastIdx].Role == types.ConversationRoleUser {
+				a.history[lastIdx].Content = append(a.history[lastIdx].Content, &types.ContentBlockMemberText{
+					Value: advice.InjectPrompt,
+				})
+			}
 		}
 	}
 
@@ -726,15 +735,9 @@ func (a *Agent) handleScaffoldPlugin(input json.RawMessage) (string, types.ToolR
 	return sb.String(), types.ToolResultStatusSuccess
 }
 
-// effectiveSystemPrompt returns the system prompt with any reconciler and skill injections appended.
+// effectiveSystemPrompt returns the system prompt with any skill injections appended.
 func (a *Agent) effectiveSystemPrompt() string {
 	prompt := a.systemPrompt
-
-	// Reconciler injection (error correction)
-	advice := a.reconciler.Advise(a.inkwell)
-	if advice.InjectPrompt != "" {
-		prompt += advice.InjectPrompt
-	}
 
 	// Skill injection (knowledge/workflows based on context)
 	skillCtx := a.buildSkillContext()

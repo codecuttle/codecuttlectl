@@ -126,7 +126,6 @@ When in doubt, use it.
 
 {{if .WorkingDirectory}}Working directory: {{.WorkingDirectory}}{{end}}
 {{if .Platform}}Platform: {{.Platform}}{{end}}
-{{if .Date}}Date: {{.Date}}{{end}}
 {{if .Model}}Model: {{.Model}}{{end}}
 {{if .Provider}}Provider: {{.Provider}}{{end}}
 
