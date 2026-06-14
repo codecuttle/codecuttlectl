@@ -143,9 +143,11 @@ func TestApplyCachePoints_AnchorOnLastUserText(t *testing.T) {
 	}
 }
 
-func TestApplyCachePoints_AdvancesAfter8Messages(t *testing.T) {
-	// Build a sequence: user_text + 8 more messages (4 tool rounds)
-	// The anchor should advance from the user text to index user+8
+func TestApplyCachePoints_NeverAdvancesMidTurn(t *testing.T) {
+	// With many tool rounds in a single turn, the cache point should stay
+	// on the user text message and NEVER advance mid-turn. This avoids
+	// Bedrock cache corruption from removing a CachePointBlock that was
+	// part of a prior message's content array.
 	msgs := []types.Message{
 		BuildUserTextMessage("do many things"),
 	}
@@ -168,34 +170,34 @@ func TestApplyCachePoints_AdvancesAfter8Messages(t *testing.T) {
 
 	result := applyCachePoints(msgs)
 
-	// deltaMsgs = 9-1 - 0 = 8, rounds = 8/8 = 1, anchorIdx = 0 + 1*8 = 8
-	// Cache point should be on message at index 8
-	lastMsg := result[8]
+	// Cache point should remain on the user text message at index 0
 	foundCachePoint := false
-	for _, block := range lastMsg.Content {
+	for _, block := range result[0].Content {
 		if _, ok := block.(*types.ContentBlockMemberCachePoint); ok {
 			foundCachePoint = true
 			break
 		}
 	}
 	if !foundCachePoint {
-		t.Error("expected cache point to advance to index 8 after 4 tool rounds")
+		t.Error("expected cache point to stay on user text message (idx 0)")
 	}
 
-	// The user text message at idx 0 should NOT have a cache point
-	for _, block := range result[0].Content {
-		if _, ok := block.(*types.ContentBlockMemberCachePoint); ok {
-			t.Error("user text at idx 0 should not have cache point after anchor advances")
+	// No other messages should have a cache point
+	for i := 1; i < len(result); i++ {
+		for _, block := range result[i].Content {
+			if _, ok := block.(*types.ContentBlockMemberCachePoint); ok {
+				t.Errorf("message at index %d should not have a cache point", i)
+			}
 		}
 	}
 }
 
-func TestApplyCachePoints_StaysOnUserBelow8(t *testing.T) {
-	// With fewer than 8 delta messages, anchor stays on user text
+func TestApplyCachePoints_StaysOnUserDuringToolLoop(t *testing.T) {
+	// Cache point always stays on user text regardless of tool round count
 	msgs := []types.Message{
 		BuildUserTextMessage("do stuff"),
 	}
-	// Add 3 tool rounds (6 messages) - below threshold of 8
+	// Add 3 tool rounds (6 messages)
 	for i := 0; i < 3; i++ {
 		msgs = append(msgs, BuildAssistantMessage([]types.ContentBlock{
 			&types.ContentBlockMemberToolUse{Value: types.ToolUseBlock{
@@ -208,7 +210,7 @@ func TestApplyCachePoints_StaysOnUserBelow8(t *testing.T) {
 
 	result := applyCachePoints(msgs)
 
-	// Anchor should still be on index 0 (user text)
+	// Anchor should be on index 0 (user text)
 	foundCachePoint := false
 	for _, block := range result[0].Content {
 		if _, ok := block.(*types.ContentBlockMemberCachePoint); ok {
@@ -216,7 +218,7 @@ func TestApplyCachePoints_StaysOnUserBelow8(t *testing.T) {
 		}
 	}
 	if !foundCachePoint {
-		t.Error("expected cache point to stay on user text message when delta < 8")
+		t.Error("expected cache point to stay on user text message during tool loop")
 	}
 }
 
