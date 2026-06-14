@@ -95,9 +95,7 @@ func (p *webSearchPlugin) Describe(ctx context.Context) (*pb.DescribeResponse, e
 		Name:        "websearch",
 		Description: "Search the web and fetch URL content. Performs real-time web searches via Exa and retrieves/converts web page content to readable text. Use for accessing information beyond the knowledge cutoff, researching APIs, or reading documentation.",
 		InputSchema: schema.MustSchema(&searchInput{}),
-		LlmContextHint: `Use websearch to find current information, documentation, API references, or anything beyond your training data. The current year is ` + fmt.Sprintf("%d", time.Now().Year()) + `. Always use the current year when searching for recent information.
-
-For fetching specific URLs (documentation pages, GitHub READMEs, etc.), use webfetch instead.`,
+		LlmContextHint: `Use websearch to find current information, documentation, API references, or anything beyond your training data. The current year is ` + fmt.Sprintf("%d", time.Now().Year()) + `. Always use the current year when searching for recent information.`,
 		Version: "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,

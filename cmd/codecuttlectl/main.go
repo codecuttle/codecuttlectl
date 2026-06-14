@@ -178,6 +178,7 @@ func main() {
 		promptTools = append(promptTools, prompt.ToolDef{
 			Name:        def.Name,
 			Description: def.Description,
+			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 		})
 	}
 	modelDisplayID := *modelID

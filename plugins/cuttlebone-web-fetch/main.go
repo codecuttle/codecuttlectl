@@ -40,6 +40,10 @@ func (t *webFetchTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 
 Prefer format "text" for general reading. Use "markdown" when you need to preserve headings and code blocks. Use "html" only when you need raw markup.`,
 		Version: "1.0.0",
+		CommandPatterns: []string{
+			"curl *",
+			"wget *",
+		},
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
 			MaxTimeoutSeconds:    30,

@@ -148,14 +148,15 @@ func (c *grpcClient) ExecuteStream(ctx context.Context, req *pb.ExecuteRequest) 
 
 // ManagedPlugin holds a running plugin's client and its metadata.
 type ManagedPlugin struct {
-	Name        string
-	Description string
-	InputSchema json.RawMessage
-	LLMHint     string
-	Version     string
-	Path           string // Binary path for restart
-	MaxTimeout     time.Duration
-	CanStream      bool   // Whether plugin supports ExecuteStream
+	Name            string
+	Description     string
+	InputSchema     json.RawMessage
+	LLMHint         string
+	Version         string
+	CommandPatterns []string // Shell patterns this tool claims (for tool discipline)
+	Path            string   // Binary path for restart
+	MaxTimeout      time.Duration
+	CanStream       bool     // Whether plugin supports ExecuteStream
 
 	client    *plugin.Client
 	rpcClient *grpcClient
@@ -285,17 +286,18 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 	}
 
 	managed := &ManagedPlugin{
-		Name:        desc.Name,
-		Description: desc.Description,
-		InputSchema: json.RawMessage(desc.InputSchema),
-		LLMHint:     desc.LlmContextHint,
-		Version:     desc.Version,
-		Path:        path,
-		MaxTimeout:  maxTimeout,
-		CanStream:   canStream,
-		client:      client,
-		rpcClient:   toolClient,
-		healthy:     true,
+		Name:           desc.Name,
+		Description:    desc.Description,
+		InputSchema:    json.RawMessage(desc.InputSchema),
+		LLMHint:        desc.LlmContextHint,
+		Version:        desc.Version,
+		CommandPatterns: desc.CommandPatterns,
+		Path:           path,
+		MaxTimeout:     maxTimeout,
+		CanStream:      canStream,
+		client:         client,
+		rpcClient:      toolClient,
+		healthy:        true,
 	}
 
 	m.mu.Lock()
@@ -369,6 +371,7 @@ func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMe
 	resp, err := p.rpcClient.Execute(execCtx, &pb.ExecuteRequest{
 		Input:            string(input),
 		WorkingDirectory: workDir,
+		AvailableTools:   m.toolInfoList(),
 	})
 	if err != nil {
 		// Check if this is a crash (connection lost)
@@ -384,6 +387,7 @@ func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMe
 				resp, err = p.rpcClient.Execute(retryCtx, &pb.ExecuteRequest{
 					Input:            string(input),
 					WorkingDirectory: workDir,
+					AvailableTools:   m.toolInfoList(),
 				})
 				if err != nil {
 					return ExecuteResult{Output: fmt.Sprintf("Plugin %s failed after restart: %s", name, err.Error()), IsError: true},
@@ -461,6 +465,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.Raw
 	eventCh, err := p.rpcClient.ExecuteStream(execCtx, &pb.ExecuteRequest{
 		Input:            string(input),
 		WorkingDirectory: workDir,
+		AvailableTools:   m.toolInfoList(),
 	})
 	if err != nil {
 		cancel()
@@ -624,6 +629,20 @@ func (m *Manager) LLMHints() string {
 		}
 	}
 	return hints
+}
+
+// toolInfoList builds the available_tools registry for ExecuteRequest.
+// Caller must hold at least m.mu.RLock().
+func (m *Manager) toolInfoList() []*pb.ToolInfo {
+	infos := make([]*pb.ToolInfo, 0, len(m.plugins))
+	for _, p := range m.plugins {
+		infos = append(infos, &pb.ToolInfo{
+			Name:            p.Name,
+			Description:     p.Description,
+			CommandPatterns: p.CommandPatterns,
+		})
+	}
+	return infos
 }
 
 // Shutdown kills all running plugin subprocesses.
