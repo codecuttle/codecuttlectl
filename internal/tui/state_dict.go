@@ -20,7 +20,8 @@ type stateDict struct {
 	commandsRun  int
 	toolCalls    int
 	errors       int
-	userGoal     string
+	userGoal     string // Current turn's user message
+	originalGoal string // First substantial user message (persists across turns)
 }
 
 func newStateDict(userGoal string) *stateDict {
@@ -29,6 +30,22 @@ func newStateDict(userGoal string) *stateDict {
 		filesWritten: make(map[string]bool),
 		dirsListed:   make(map[string]bool),
 		userGoal:     userGoal,
+		originalGoal: userGoal,
+	}
+}
+
+// updateGoal sets the current user goal while preserving the original goal.
+// Short messages (< 20 chars) like "yes", "go ahead" are treated as continuations
+// and do NOT replace the display goal.
+func (sd *stateDict) updateGoal(newGoal string) {
+	sd.userGoal = newGoal
+	// Don't replace originalGoal with trivial continuations
+	if len(newGoal) >= 20 && sd.originalGoal != "" {
+		// Keep the original — it's the real task description
+		return
+	}
+	if sd.originalGoal == "" {
+		sd.originalGoal = newGoal
 	}
 }
 
@@ -66,8 +83,7 @@ func (sd *stateDict) recordToolResult(toolName string, input json.RawMessage, is
 	case "bash_exec", "git":
 		sd.commandsRun++
 	case "glob", "grep":
-		// These are read-like operations
-		sd.toolCalls++ // already counted above, this is just a note
+		// These are read-like operations (already counted at top of function)
 	}
 }
 
@@ -75,7 +91,13 @@ func (sd *stateDict) recordToolResult(toolName string, input json.RawMessage, is
 func (sd *stateDict) render() string {
 	var sb strings.Builder
 	sb.WriteString("## Current Task Context\n\n")
-	sb.WriteString(fmt.Sprintf("**Goal:** %s\n", sd.userGoal))
+
+	// Use the original goal (the substantive task description), not short continuations
+	goal := sd.originalGoal
+	if goal == "" {
+		goal = sd.userGoal
+	}
+	sb.WriteString(fmt.Sprintf("**Goal:** %s\n", goal))
 	sb.WriteString(fmt.Sprintf("**Progress:** %d tool calls completed, %d errors\n", sd.toolCalls, sd.errors))
 
 	if len(sd.filesRead) > 0 {

@@ -1118,9 +1118,14 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.GotoBottom()
 
 	m.streamStep = 0 // Reset step counter for new user turn
-	// Initialize state dictionary for small-model grounding
+	// Initialize or update state dictionary for small-model grounding
 	if m.needsGroundingAssist() {
-		m.stateDict = newStateDict(text)
+		if m.stateDict == nil {
+			m.stateDict = newStateDict(text)
+		} else {
+			// Preserve accumulated state across turns; just update the goal
+			m.stateDict.updateGoal(text)
+		}
 	} else {
 		m.stateDict = nil
 	}
@@ -1393,6 +1398,13 @@ func (m *Model) restoreSession() {
 		m.todos.Replace(state.Todos)
 	}
 
+	// Rebuild state dictionary from session history for small-model grounding.
+	// Without this, resumed sessions have no "Current Task Context" block until
+	// the next user message — causing the model to lose its place.
+	if m.needsGroundingAssist() {
+		m.rebuildStateDictFromHistory(state.Messages)
+	}
+
 	// Rebuild display messages from the serialized history
 	for _, msg := range state.Messages {
 		for _, block := range msg.Blocks {
@@ -1418,6 +1430,69 @@ func (m *Model) restoreSession() {
 			}
 		}
 	}
+}
+
+// rebuildStateDictFromHistory reconstructs the state dictionary by replaying
+// tool executions from the serialized session messages. This ensures resumed
+// sessions have accurate grounding context from the start.
+func (m *Model) rebuildStateDictFromHistory(messages []session.Message) {
+	// Find the first substantial user message as the original goal
+	var originalGoal string
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			for _, block := range msg.Blocks {
+				if block.Type == "text" && len(block.Text) >= 20 {
+					originalGoal = block.Text
+					break
+				}
+			}
+			if originalGoal != "" {
+				break
+			}
+		}
+	}
+	if originalGoal == "" {
+		// Fall back to any user text
+		for _, msg := range messages {
+			if msg.Role == "user" {
+				for _, block := range msg.Blocks {
+					if block.Type == "text" {
+						originalGoal = block.Text
+						break
+					}
+				}
+				if originalGoal != "" {
+					break
+				}
+			}
+		}
+	}
+
+	sd := newStateDict(originalGoal)
+
+	// Replay all tool_use and tool_result blocks to rebuild state
+	for _, msg := range messages {
+		for _, block := range msg.Blocks {
+			switch block.Type {
+			case "tool_use":
+				// Record as a tool call with the input
+				sd.recordToolResult(block.Name, block.Input, false)
+			case "tool_result":
+				// If it was an error, adjust the error count
+				// (recordToolResult already counted this tool call from tool_use,
+				// so we only need to fixup errors here)
+				if block.Status == "error" {
+					sd.errors++
+				}
+			}
+		}
+	}
+
+	// Correct for double-counting: tool_use blocks record the call,
+	// but we don't want to also count from tool_result. The tool_calls
+	// count comes purely from tool_use blocks via recordToolResult.
+
+	m.stateDict = sd
 }
 
 // saveSession persists current TUI state to disk.

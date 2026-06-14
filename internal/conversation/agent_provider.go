@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/codecuttle/codecuttlectl/internal/compact"
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/session"
@@ -145,6 +146,14 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 			Content: resultBlocks,
 		})
 		a.dirty = true
+
+		// Compact old tool results to keep context window manageable for small models
+		if a.needsGroundingAssist() {
+			a.provHistory, _ = compact.CompactProviderIfNeeded(
+				a.provHistory, a.turn, 0, 0, compact.SmallModelConfig(),
+			)
+		}
+
 		a.flushSessionProvider()
 
 		// Reconciler check
@@ -323,6 +332,14 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			Content: resultBlocks,
 		})
 		a.dirty = true
+
+		// Compact old tool results to keep context window manageable for small models
+		if a.needsGroundingAssist() {
+			a.provHistory, _ = compact.CompactProviderIfNeeded(
+				a.provHistory, a.turn, 0, 0, compact.SmallModelConfig(),
+			)
+		}
+
 		a.flushSessionProvider()
 
 		// Clear text buffer for next round

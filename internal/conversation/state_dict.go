@@ -25,6 +25,7 @@ type stateDict struct {
 	toolCalls    int
 	errors       int
 	userGoal     string
+	originalGoal string // Preserved across turns; the first substantive user message
 }
 
 func newStateDict(userGoal string) *stateDict {
@@ -33,6 +34,7 @@ func newStateDict(userGoal string) *stateDict {
 		filesWritten: make(map[string]bool),
 		dirsListed:   make(map[string]bool),
 		userGoal:     userGoal,
+		originalGoal: userGoal,
 	}
 }
 
@@ -72,7 +74,13 @@ func (sd *stateDict) recordToolResult(toolName string, input string, output stri
 func (sd *stateDict) render() string {
 	var sb strings.Builder
 	sb.WriteString("## Current Task Context\n\n")
-	sb.WriteString(fmt.Sprintf("**Goal:** %s\n", sd.userGoal))
+
+	// Use the original goal (first substantive user message) for grounding stability
+	goal := sd.originalGoal
+	if goal == "" {
+		goal = sd.userGoal
+	}
+	sb.WriteString(fmt.Sprintf("**Goal:** %s\n", goal))
 	sb.WriteString(fmt.Sprintf("**Progress:** %d tool calls completed, %d errors\n", sd.toolCalls, sd.errors))
 
 	if len(sd.filesRead) > 0 {

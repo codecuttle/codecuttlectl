@@ -11,14 +11,15 @@ package compact
 
 // SmallModelConfig returns a Config tuned for aggressive compaction suitable for
 // smaller models with limited attention span. Key differences from DefaultConfig:
-//   - PreserveRecentTurns: 1 (only the most recent tool result is kept verbatim)
+//   - PreserveRecentTurns: 2 (keep last 2 turns verbatim — model needs to "see"
+//     a result at least twice before it's safe to compact)
 //   - SummaryMaxLines: 6 (very compact summaries)
 //   - MinResultSize: 500 (compact smaller results too)
 //   - MaxContextPercent: 0.0 (always compact — don't wait for high usage)
 func SmallModelConfig() Config {
 	return Config{
 		MaxContextPercent:   0.0, // Always compact stale results
-		PreserveRecentTurns: 1,   // Only keep the most recent turn's results intact
+		PreserveRecentTurns: 2,   // Keep last 2 turns' results intact
 		SummaryMaxLines:     6,   // Tighter summaries
 		MinResultSize:       500, // Compact smaller results too
 	}
