@@ -70,6 +70,7 @@ type Model struct {
 	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
 	stateDict  *stateDict // State dictionary for small-model grounding (nil for large models)
 	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
+	autoNudgeCount int // Number of auto-nudges in this turn (capped to prevent infinite loops)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -537,6 +538,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content := m.streamBuf.String()
 			// Try to extract a plan from the model's final response
 			m.maybeExtractPlan(content)
+
+			// For small models: detect when the model stopped to explain/ask
+			// permission instead of actually executing. If it looks like the model
+			// is narrating its next steps without using tools, auto-nudge it to
+			// continue by injecting a continuation prompt.
+			if m.needsGroundingAssist() && m.shouldAutoNudge(content) {
+				m.messages = append(m.messages, chatMessage{
+					role:    "assistant",
+					content: sanitizeModelText(content),
+				})
+				m.history = append(m.history, bedrock.BuildAssistantMessage(
+					[]types.ContentBlock{
+						&types.ContentBlockMemberText{Value: content},
+					},
+				))
+				m.streamBuf.Reset()
+				// Inject a synthetic user message to nudge it forward
+				nudge := "Continue. Execute the next step now — do not ask for permission."
+				m.history = append(m.history, bedrock.BuildUserTextMessage(nudge))
+				m.messages = append(m.messages, chatMessage{
+					role:    "system_nudge",
+					content: "↻ auto-continuing…",
+				})
+				m.viewport.SetContent(m.renderMessages())
+				m.viewport.GotoBottom()
+				return m, m.launchStream()
+			}
+
 			m.messages = append(m.messages, chatMessage{
 				role:    "assistant",
 				content: sanitizeModelText(content),
@@ -1118,6 +1147,7 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.GotoBottom()
 
 	m.streamStep = 0 // Reset step counter for new user turn
+	m.autoNudgeCount = 0 // Reset auto-nudge counter for new user turn
 	// Initialize or update state dictionary for small-model grounding
 	if m.needsGroundingAssist() {
 		if m.stateDict == nil {
@@ -2070,4 +2100,77 @@ func (m *Model) extractLastUserText() string {
 		}
 	}
 	return ""
+}
+
+// shouldAutoNudge returns true if the model's text-only response (no tool calls)
+// looks like it's explaining/asking permission instead of executing. This is common
+// with smaller models that narrate plans then wait for confirmation.
+//
+// Only applies to small models (gated by needsGroundingAssist). Capped at 3 nudges
+// per turn to prevent infinite loops if the model genuinely cannot proceed.
+func (m *Model) shouldAutoNudge(content string) bool {
+	// Safety cap: don't nudge more than 3 times in one user turn
+	if m.autoNudgeCount >= 3 {
+		return false
+	}
+
+	// Only nudge during an active agentic loop (streamStep > 0 means we've already
+	// done at least one tool round this turn)
+	if m.streamStep < 1 {
+		return false
+	}
+
+	// Short responses are likely genuine completions or errors
+	if len(content) < 50 {
+		return false
+	}
+
+	// Check for patterns that indicate the model is asking permission or narrating
+	// a plan instead of executing it
+	lower := strings.ToLower(content)
+
+	// Permission-seeking patterns
+	permissionPatterns := []string{
+		"shall i",
+		"should i",
+		"would you like me to",
+		"do you want me to",
+		"let me know if",
+		"want me to proceed",
+		"ready to proceed",
+		"i can proceed",
+		"i'll proceed if",
+		"proceed with",
+		"like me to continue",
+		"want me to go ahead",
+		"shall we",
+	}
+	for _, p := range permissionPatterns {
+		if strings.Contains(lower, p) {
+			m.autoNudgeCount++
+			return true
+		}
+	}
+
+	// Plan-narration patterns: model describes numbered steps without executing
+	// Only trigger if the response ends without a concrete action
+	planIndicators := 0
+	if strings.Contains(lower, "here's my plan") || strings.Contains(lower, "here is my plan") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "i will:") || strings.Contains(lower, "i'll:") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "step 1") || strings.Contains(lower, "1.") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "next steps") || strings.Contains(lower, "my approach") {
+		planIndicators++
+	}
+	if planIndicators >= 2 {
+		m.autoNudgeCount++
+		return true
+	}
+
+	return false
 }
