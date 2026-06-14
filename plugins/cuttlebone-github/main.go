@@ -76,7 +76,13 @@ Common workflows:
 - Create an issue: github(command="issue_create", title="...", body="...", labels=["bug"])
 - Raw API call: github(command="api", method="GET", path="/repos/codecuttle/codecuttlectl/topics")
 
-Owner defaults to "codecuttle" and repo defaults to "codecuttlectl" when not specified.`,
+Owner defaults to "codecuttle" and repo defaults to "codecuttlectl" when not specified.
+
+CRITICAL: PR and issue body fields must contain real markdown with actual newline characters.
+Never use literal backslash-n (\n) escape sequences in body text — they render as visible
+"\n" on GitHub instead of line breaks. When using the "api" command with api_body to update
+a PR body, ensure the JSON string value contains real newlines (use \n in the JSON encoding,
+which produces actual newline characters in the decoded string).`,
 		Version: "1.0.0",
 		CommandPatterns: []string{
 			"gh *",
