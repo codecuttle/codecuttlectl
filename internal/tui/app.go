@@ -1162,6 +1162,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 				todoInputs = append(todoInputs, tool.input)
 				results = append(results, provider.ToolResultBlock{
 					ToolUseID: tool.id,
+					Name:      tool.name,
 					Content:   "", // placeholder, filled in by Update
 					IsError: false,
 				})
@@ -1211,6 +1212,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 
 			results = append(results, provider.ToolResultBlock{
 				ToolUseID: tool.id,
+				Name:      tool.name,
 				Content:   output,
 				IsError: status,
 			})
@@ -1242,6 +1244,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 		}
 		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
+			Name:      tool.name,
 			Content:   output,
 			IsError: status,
 		})
@@ -1252,6 +1255,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 				todoInputs = append(todoInputs, rt.input)
 				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
+					Name:      rt.name,
 					Content:   "",
 					IsError: false,
 				})
@@ -1294,6 +1298,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 			}
 			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
+				Name:      rt.name,
 				Content:   rtOutput,
 				IsError: rtStatus,
 			})
@@ -1317,6 +1322,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 		// Denied tool gets an error result
 		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
+			Name:      tool.name,
 			Content:   "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.",
 			IsError: true,
 		})
@@ -1327,6 +1333,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 				todoInputs = append(todoInputs, rt.input)
 				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
+					Name:      rt.name,
 					Content:   "",
 					IsError: false,
 				})
@@ -1369,6 +1376,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 			}
 			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
+				Name:      rt.name,
 				Content:   rtOutput,
 				IsError: rtStatus,
 			})

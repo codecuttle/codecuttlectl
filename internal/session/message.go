@@ -102,6 +102,7 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 			case "tool_result":
 				blocks = append(blocks, providerPkg.ToolResultBlock{
 					ToolUseID: item.ResultFor,
+					Name:      item.Name,
 					Content:   item.Content,
 					IsError:   item.Status == "error",
 				})
@@ -139,6 +140,7 @@ func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
 		}
 		return ContentItem{
 			Type:      "tool_result",
+			Name:      b.Name,
 			Content:   b.Content,
 			Status:    status,
 			ResultFor: b.ToolUseID,

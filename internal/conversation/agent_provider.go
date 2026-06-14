@@ -135,6 +135,7 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: toolUse.ToolUseID,
+				Name:      toolUse.Name,
 				Content:   result,
 				IsError:   isErr,
 			})
@@ -318,6 +319,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: tc.id,
+				Name:      tc.name,
 				Content:   result,
 				IsError:   isErr,
 			})
