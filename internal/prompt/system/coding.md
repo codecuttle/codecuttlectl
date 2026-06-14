@@ -141,6 +141,10 @@ When in doubt, use it.
 You have access to the following tools. Use ONLY these exact tool names when invoking tools:
 {{range .Tools}}
 - **{{.Name}}**: {{.Description}}
+{{- if .Parameters}}
+{{range .Parameters}}  - `{{.Name}}` ({{.Type}}{{if .Required}}, required{{end}}): {{.Description}}
+{{end}}
+{{- end}}
 {{end}}
 Use these exact names in your tool invocations. Do not invent, rename, or abbreviate tool names.
 

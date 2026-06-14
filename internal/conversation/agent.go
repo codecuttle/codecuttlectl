@@ -94,6 +94,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 			promptTools = append(promptTools, prompt.ToolDef{
 				Name:        def.Name,
 				Description: def.Description,
+				Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 			})
 		}
 
