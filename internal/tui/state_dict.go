@@ -133,7 +133,8 @@ func (sd *stateDict) render() string {
 	}
 
 	sb.WriteString("\nContinue making progress toward the goal. Do NOT re-introduce yourself or restart — you are mid-task.\n")
-	sb.WriteString("When making function calls, briefly state what you're doing and why before each tool call.")
+	sb.WriteString("When making function calls, briefly state what you're doing and why before each tool call.\n")
+	sb.WriteString("IMPORTANT: Do NOT stop to explain your plan or ask for permission. Take action immediately with tool calls.\n")
 
 	return sb.String()
 }

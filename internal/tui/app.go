@@ -1433,6 +1433,11 @@ func (m *Model) restoreSession() {
 	// the next user message — causing the model to lose its place.
 	if m.needsGroundingAssist() {
 		m.rebuildStateDictFromHistory(state.Messages)
+		// Set streamStep to reflect that this is a resumed session with prior tool use.
+		// This enables auto-nudge on the very first response after resume.
+		if m.stateDict != nil && m.stateDict.toolCalls > 0 {
+			m.streamStep = m.stateDict.toolCalls
+		}
 	}
 
 	// Rebuild display messages from the serialized history
@@ -2114,14 +2119,14 @@ func (m *Model) shouldAutoNudge(content string) bool {
 		return false
 	}
 
-	// Only nudge during an active agentic loop (streamStep > 0 means we've already
-	// done at least one tool round this turn)
-	if m.streamStep < 1 {
+	// Short responses are likely genuine completions or errors
+	if len(content) < 50 {
 		return false
 	}
 
-	// Short responses are likely genuine completions or errors
-	if len(content) < 50 {
+	// On the very first response (streamStep == 0), only nudge if this is a resumed
+	// session with existing history. Otherwise wait until at least 1 tool round.
+	if m.streamStep < 1 && len(m.history) < 4 {
 		return false
 	}
 
@@ -2144,6 +2149,12 @@ func (m *Model) shouldAutoNudge(content string) bool {
 		"like me to continue",
 		"want me to go ahead",
 		"shall we",
+		"if you'd like",
+		"if you want",
+		"let me know",
+		"i'd recommend",
+		"here's what i suggest",
+		"i suggest we",
 	}
 	for _, p := range permissionPatterns {
 		if strings.Contains(lower, p) {
@@ -2165,6 +2176,15 @@ func (m *Model) shouldAutoNudge(content string) bool {
 		planIndicators++
 	}
 	if strings.Contains(lower, "next steps") || strings.Contains(lower, "my approach") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "first, i") || strings.Contains(lower, "first i") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "then i") || strings.Contains(lower, "then, i") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "finally") || strings.Contains(lower, "lastly") {
 		planIndicators++
 	}
 	if planIndicators >= 2 {
