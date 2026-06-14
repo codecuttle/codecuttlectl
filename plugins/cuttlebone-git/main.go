@@ -32,7 +32,10 @@ func (t *gitTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 		Description: "Execute git commands for version control. Supports: status, diff, log, add, commit, branch, checkout, stash. For safety, destructive operations (force push, reset --hard) are rejected.",
 		InputSchema: schema.MustSchema(&gitInput{}),
 		LlmContextHint: "Use git for version control operations. Always check 'git status' before committing. Use 'git diff' to review changes. Allowed subcommands: status, diff, log, add, commit, branch, checkout, stash, show, rev-parse, remote, fetch, pull, push, tag, blame, merge, rebase, cherry-pick, init. Forbidden: push --force, reset --hard, clean -fd. Protected branches (main, master, production, prod): direct commits and pushes are blocked — always create a feature branch first.",
-		Version:         "1.0.0",
+		Version:     "1.0.0",
+		CommandPatterns: []string{
+			"git *",
+		},
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
 			SupportsStreaming:    true,

@@ -78,6 +78,10 @@ Common workflows:
 
 Owner defaults to "codecuttle" and repo defaults to "codecuttlectl" when not specified.`,
 		Version: "1.0.0",
+		CommandPatterns: []string{
+			"gh *",
+			"*api.github.com*",
+		},
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
 			MaxTimeoutSeconds:    30,
