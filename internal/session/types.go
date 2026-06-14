@@ -37,11 +37,12 @@ type Stats struct {
 // SessionState is the full persisted state of a session.
 // This is what gets serialized to disk and loaded on resume.
 type SessionState struct {
-	Meta     SessionMeta `json:"meta"`
-	Messages []Message   `json:"messages"` // Serializable conversation history
-	Todos    []todo.Item `json:"todos"`    // Current task state
-	Inkwell  []InkEntry  `json:"inkwell"`  // Tool execution diagnostics
-	Audit    AuditTrail  `json:"audit"`    // Session-level governance/audit info
+	Meta         SessionMeta `json:"meta"`
+	Messages     []Message   `json:"messages"` // Serializable conversation history
+	Todos        []todo.Item `json:"todos"`    // Current task state
+	Inkwell      []InkEntry  `json:"inkwell"`  // Tool execution diagnostics
+	Audit        AuditTrail  `json:"audit"`    // Session-level governance/audit info
+	DraftMessage string      `json:"draft_message,omitempty"` // Content being actively typed
 }
 
 // AuditTrail captures session-level governance and accounting metadata.
