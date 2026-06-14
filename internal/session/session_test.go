@@ -42,6 +42,30 @@ func TestGenerateIDUniqueness(t *testing.T) {
 	}
 }
 
+func TestSessionStateDraftPersistence(t *testing.T) {
+	state := SessionState{
+		DraftMessage: "This is a draft message that should survive crashes.",
+		Meta: SessionMeta{
+			CreatedAt: time.Now(),
+		},
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+
+	var decoded SessionState
+	err = json.Unmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+
+	if decoded.DraftMessage != state.DraftMessage {
+		t.Errorf("expected DraftMessage %q, got %q", state.DraftMessage, decoded.DraftMessage)
+	}
+}
+
 // --- Message Serialization Tests ---
 
 func TestMarshalUnmarshalTextOnly(t *testing.T) {
