@@ -510,6 +510,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// containing any text AND the tool_use blocks, then execute tools.
 		if len(m.pendingToolCalls) > 0 {
 			var blocks []provider.ContentBlock
+			// For Gemini 3 models: include reasoning/thought blocks with signatures
+			// so that the thought context is preserved across multi-turn function calling.
+			if m.reasoningBuf.Len() > 0 {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Text:      m.reasoningBuf.String(),
+					Signature: m.reasoningSignature,
+				})
+				m.messages = append(m.messages, chatMessage{
+					role:    "reasoning",
+					content: m.reasoningBuf.String(),
+				})
+				m.reasoningBuf.Reset()
+				m.inReasoning = false
+			} else if m.reasoningSignature != "" {
+				// We have a signature but no buffered text (reasoning was already
+				// finalized via StreamReasoningDoneMsg). Still include it.
+				blocks = append(blocks, provider.ReasoningBlock{
+					Signature: m.reasoningSignature,
+				})
+			}
 			// Include any text that was streamed before/between tool calls
 			if m.streamBuf.Len() > 0 {
 				// Try to extract a plan from the model's text for the task panel

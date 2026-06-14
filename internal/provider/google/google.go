@@ -176,6 +176,21 @@ func toGenAITools(tools []provider.ToolDefinition) []*genai.Tool {
 	}
 }
 
+// toGenAIContents converts provider-agnostic messages to GenAI Content objects.
+//
+// Critical: Gemini requires a specific turn structure for function calling:
+//   - Model turns contain FunctionCall parts (and optionally thought/text parts)
+//   - The IMMEDIATELY NEXT user turn must contain the FunctionResponse parts
+//   - Function responses MUST have the correct role ("user") and include the
+//     matching ID from the original function call
+//   - Gemini 3 models require thought signatures (ThoughtSignature) to be passed
+//     back on model turns for multi-turn function calling to work
+//
+// Our provider.Message history looks like:
+//   [user text] [assistant: text + tool_use blocks] [user: tool_result blocks] ...
+//
+// This maps naturally to Gemini's expected format since BuildToolResultMessage
+// already creates user-role messages with ToolResultBlock content.
 func toGenAIContents(msgs []provider.Message) []*genai.Content {
 	var out []*genai.Content
 	for _, m := range msgs {
@@ -188,6 +203,18 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 			switch b := b.(type) {
 			case provider.TextBlock:
 				parts = append(parts, &genai.Part{Text: b.Text})
+			case provider.ReasoningBlock:
+				// Preserve thought parts with their signatures for Gemini 3 models.
+				// These MUST be sent back to the model on subsequent turns for
+				// function calling to work correctly.
+				part := &genai.Part{
+					Text:    b.Text,
+					Thought: true,
+				}
+				if b.Signature != "" {
+					part.ThoughtSignature = []byte(b.Signature)
+				}
+				parts = append(parts, part)
 			case provider.ToolUseBlock:
 				var args map[string]any
 				if len(b.Input) > 0 {
@@ -213,10 +240,12 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 				})
 			}
 		}
-		out = append(out, &genai.Content{
-			Role:  role,
-			Parts: parts,
-		})
+		if len(parts) > 0 {
+			out = append(out, &genai.Content{
+				Role:  role,
+				Parts: parts,
+			})
+		}
 	}
 	return out
 }
@@ -263,6 +292,10 @@ func (p *Provider) Converse(ctx context.Context, req provider.Request) (*provide
 	res.Usage = extractUsage(resp.UsageMetadata)
 
 	for _, part := range cand.Content.Parts {
+		if part.Thought {
+			// Skip thought parts in the direct response (they're internal reasoning)
+			continue
+		}
 		if part.Text != "" {
 			res.Content += part.Text
 		}
@@ -342,6 +375,21 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 				cand := resp.Candidates[0]
 				if cand.Content != nil {
 					for _, part := range cand.Content.Parts {
+						// Handle thought/reasoning parts from Gemini 3 models.
+						// These contain the model's internal reasoning and MUST be
+						// preserved and sent back for function calling continuity.
+						if part.Thought {
+							if part.Text != "" {
+								events <- provider.ReasoningDeltaEvent{Text: part.Text}
+							}
+							if len(part.ThoughtSignature) > 0 {
+								events <- provider.ReasoningSignatureEvent{
+									Signature: string(part.ThoughtSignature),
+								}
+							}
+							continue
+						}
+
 						if part.Text != "" {
 							events <- provider.TextDeltaEvent{Text: part.Text}
 						}
