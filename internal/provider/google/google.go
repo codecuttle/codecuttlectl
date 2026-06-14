@@ -20,6 +20,7 @@ type Config struct {
 type Provider struct {
 	client *genai.Client
 	config Config
+	cache  *CacheManager
 }
 
 // New creates a new Google GenAI provider.
@@ -28,10 +29,23 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{
+	p := &Provider{
 		client: client,
 		config: cfg,
-	}, nil
+	}
+	// Initialize cache manager if threshold is set
+	if cfg.CacheThreshold > 0 {
+		p.cache = NewCacheManager(client, cfg.Model, cfg.CacheThreshold)
+	}
+	return p, nil
+}
+
+// Close cleans up resources, including deleting any active cache.
+func (p *Provider) Close(ctx context.Context) error {
+	if p.cache != nil {
+		return p.cache.Close(ctx)
+	}
+	return nil
 }
 
 func (p *Provider) ID() string {
@@ -43,17 +57,64 @@ func (p *Provider) Name() string {
 }
 
 func (p *Provider) ContextWindow() int32 {
-	return 2_000_000
+	// Model-specific context windows
+	switch p.config.Model {
+	case "gemini-2.5-pro", "gemini-2.5-pro-preview-06-05":
+		return 1_048_576
+	case "gemini-2.5-flash", "gemini-2.5-flash-preview-05-20":
+		return 1_048_576
+	case "gemini-2.0-flash":
+		return 1_048_576
+	case "gemini-1.5-pro":
+		return 2_000_000
+	case "gemini-1.5-flash":
+		return 1_000_000
+	default:
+		return 1_048_576 // safe default for recent models
+	}
 }
 
+// EstimateCost calculates estimated dollar cost using Gemini pricing.
+// Pricing varies by model and by prompt size (< or > 128k tokens).
+// For simplicity, we use the <128k tier; the provider can be enhanced
+// later for tiered pricing based on actual token counts.
 func (p *Provider) EstimateCost(usage provider.Usage) float64 {
-	const (
-		inputPer1M  = 1.25
-		outputPer1M = 5.00
-	)
-	input := float64(usage.InputTokens) / 1_000_000 * inputPer1M
-	output := float64(usage.OutputTokens) / 1_000_000 * outputPer1M
-	return input + output
+	pricing := p.modelPricing()
+
+	input := float64(usage.InputTokens) / 1_000_000 * pricing.inputPer1M
+	output := float64(usage.OutputTokens) / 1_000_000 * pricing.outputPer1M
+	cacheRead := float64(usage.CacheReadTokens) / 1_000_000 * pricing.cacheReadPer1M
+
+	return input + output + cacheRead
+}
+
+type pricingTier struct {
+	inputPer1M     float64
+	outputPer1M    float64
+	cacheReadPer1M float64
+}
+
+func (p *Provider) modelPricing() pricingTier {
+	switch p.config.Model {
+	case "gemini-2.5-pro", "gemini-2.5-pro-preview-06-05":
+		// Gemini 2.5 Pro: $1.25/1M in, $10.00/1M out, $0.3125/1M cache read
+		return pricingTier{inputPer1M: 1.25, outputPer1M: 10.00, cacheReadPer1M: 0.3125}
+	case "gemini-2.5-flash", "gemini-2.5-flash-preview-05-20":
+		// Gemini 2.5 Flash: $0.15/1M in, $0.60/1M out (thinking), $0.0375/1M cache read
+		return pricingTier{inputPer1M: 0.15, outputPer1M: 0.60, cacheReadPer1M: 0.0375}
+	case "gemini-2.0-flash":
+		// Gemini 2.0 Flash: $0.10/1M in, $0.40/1M out, $0.025/1M cache read
+		return pricingTier{inputPer1M: 0.10, outputPer1M: 0.40, cacheReadPer1M: 0.025}
+	case "gemini-1.5-pro":
+		// Gemini 1.5 Pro: $1.25/1M in, $5.00/1M out, $0.3125/1M cache read
+		return pricingTier{inputPer1M: 1.25, outputPer1M: 5.00, cacheReadPer1M: 0.3125}
+	case "gemini-1.5-flash":
+		// Gemini 1.5 Flash: $0.075/1M in, $0.30/1M out, $0.01875/1M cache read
+		return pricingTier{inputPer1M: 0.075, outputPer1M: 0.30, cacheReadPer1M: 0.01875}
+	default:
+		// Default to 2.5 Pro pricing (safest assumption for cost tracking)
+		return pricingTier{inputPer1M: 1.25, outputPer1M: 10.00, cacheReadPer1M: 0.3125}
+	}
 }
 
 func toGenAITools(tools []provider.ToolDefinition) []*genai.Tool {
@@ -151,8 +212,8 @@ func (p *Provider) Converse(ctx context.Context, req provider.Request) (*provide
 		config.MaxOutputTokens = int32(req.Config.MaxTokens)
 	}
 
-	contents := toGenAIContents(req.Messages)
-	resp, err := p.client.Models.GenerateContent(ctx, p.config.Model, contents, config)
+	// Use cache-aware call path
+	resp, err := p.converseWithCache(ctx, req, config)
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +270,33 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 
 		contents := toGenAIContents(req.Messages)
 
+		// Determine if we should use cached content
+		var streamConfig *genai.GenerateContentConfig
+		if p.cache != nil {
+			cacheName, err := p.cache.EnsureCache(ctx, req.System, config.Tools)
+			if err != nil {
+				log.Printf("[google-cache] EnsureCache error in stream (proceeding uncached): %v", err)
+				streamConfig = config
+			} else if cacheName != "" {
+				// Use cache: strip system/tools, add CachedContent reference
+				streamConfig = &genai.GenerateContentConfig{
+					CachedContent: cacheName,
+				}
+				if config.Temperature != nil {
+					streamConfig.Temperature = config.Temperature
+				}
+				if config.MaxOutputTokens > 0 {
+					streamConfig.MaxOutputTokens = config.MaxOutputTokens
+				}
+			} else {
+				streamConfig = config
+			}
+		} else {
+			streamConfig = config
+		}
+
 		// GenerateContentStream returns iter.Seq2[*GenerateContentResponse, error]
-		for resp, err := range p.client.Models.GenerateContentStream(ctx, p.config.Model, contents, config) {
+		for resp, err := range p.client.Models.GenerateContentStream(ctx, p.config.Model, contents, streamConfig) {
 			if err != nil {
 				events <- provider.StreamErrorEvent{Err: err}
 				return
@@ -224,7 +310,6 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 							events <- provider.TextDeltaEvent{Text: part.Text}
 						}
 						if part.FunctionCall != nil {
-							// Stream events for function call
 							events <- provider.ToolUseStartEvent{
 								ToolUseID: part.FunctionCall.ID,
 								Name:      part.FunctionCall.Name,

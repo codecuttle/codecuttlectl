@@ -145,8 +145,10 @@ func main() {
 			os.Exit(1)
 		}
 		llmProvider = googleClient
+		// Ensure cache cleanup on shutdown
+		defer googleClient.Close(context.Background())
 		if *verbose {
-			fmt.Fprintf(os.Stderr, "[provider] google model=%s\n", *modelID)
+			fmt.Fprintf(os.Stderr, "[provider] google model=%s cache-threshold=%d\n", *modelID, *googleCacheThreshold)
 		}
 
 	case "bedrock":
