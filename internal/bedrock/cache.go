@@ -104,7 +104,7 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 
 // applyCachePoints implements the cache anchor strategy for the messages array.
 //
-// The cache checkpoint is placed on a recent USER MESSAGE, not the absolute
+// The cache checkpoint is placed on the MOST RECENT USER MESSAGE, not the absolute
 // last message (which is often a shifting tool_result). This is critical for
 // tool-use loops.
 //
@@ -114,13 +114,22 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 // If we cache at the absolute last message, every step shifts the cache point,
 // forcing a full cache WRITE on each API call in the loop (~$0.02-0.10 each).
 //
-// By anchoring the cache on a user message, the cache point stays FIXED:
+// By anchoring the cache on the user message, the cache point stays FIXED:
 //   - Turn starts: cache point on user message → cache WRITE (once)
 //   - Tool call 1: prefix is cached → cache READ
 //   - Tool call N: same prefix → cache READ
 //
-// To prevent the uncached delta from growing too large in deep loops, the
-// anchor deterministically advances every 4 tool rounds (8 messages).
+// CRITICAL INSIGHT ON BEDROCK CACHING:
+// Unlike Anthropic's native API where cache_control is metadata, Bedrock's
+// CachePointBlock is an actual block in the content array. If you ever REMOVE
+// a CachePointBlock from a previous message, it alters the message's content
+// array, which changes the cumulative hash and busts the ENTIRE downstream cache.
+// Because we only have 4 total checkpoints allowed (and use 2 for Tools/System),
+// we CANNOT leave checkpoints on all historical user messages.
+// Therefore, we MUST accept a full cache rewrite once per user turn (when we
+// move the checkpoint to the new user message), but we MUST NEVER advance the
+// checkpoint mid-turn during tool loops, as that would trigger massive rewrite
+// penalties unnecessarily.
 //
 // Uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
 func applyCachePoints(messages []types.Message) []types.Message {
@@ -142,23 +151,11 @@ func applyCachePoints(messages []types.Message) []types.Message {
 		lastUserIdx = len(messages) - 1
 	}
 
-	// Count messages since the baseline (tool_use / tool_result pairs)
-	deltaMsgs := len(messages) - 1 - lastUserIdx
-
-	// Advance the cache anchor every 4 tool rounds (8 messages)
-	const advanceEvery = 8
-
-	anchorIdx := lastUserIdx
-	if deltaMsgs >= advanceEvery {
-		rounds := deltaMsgs / advanceEvery
-		anchorIdx = lastUserIdx + (rounds * advanceEvery)
-	}
-
 	// Make a shallow copy so we don't mutate the caller's slice
 	result := make([]types.Message, len(messages))
 	copy(result, messages)
 
-	idx := anchorIdx
+	idx := lastUserIdx
 
 	// Copy the message's content slice so we don't mutate the original
 	origContent := result[idx].Content
