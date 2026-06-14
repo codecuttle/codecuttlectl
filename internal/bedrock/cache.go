@@ -70,17 +70,23 @@ func buildToolsWithCache(tools []ToolDefinition) *types.ToolConfiguration {
 //	[stable base prompt + tool guidance] [CACHE_POINT] [dynamic injections]
 //
 // The stable portion includes everything up to the first dynamic marker.
-// Dynamic markers: "## Active Skills", "## Inkwell"
+// Dynamic markers: "## Active Skills", "## Inkwell", "## Current Task Context"
 func buildSystemBlocks(system string) []types.SystemContentBlock {
 	// Find where dynamic content begins (first skill or inkwell injection)
 	skillMarker := "\n\n## Active Skills\n"
 	inkwellMarker := "\n\n## Inkwell"
+	taskCtxMarker := "\n\n## Current Task Context\n"
 
 	splitIdx := -1
 	if idx := strings.Index(system, skillMarker); idx != -1 {
 		splitIdx = idx
 	}
 	if idx := strings.Index(system, inkwellMarker); idx != -1 {
+		if splitIdx == -1 || idx < splitIdx {
+			splitIdx = idx
+		}
+	}
+	if idx := strings.Index(system, taskCtxMarker); idx != -1 {
 		if splitIdx == -1 || idx < splitIdx {
 			splitIdx = idx
 		}
@@ -135,20 +141,23 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 //
 // Uses 1 of the remaining 2 cache checkpoints (tools=1, system=1, messages=1, total=3/4).
 func applyCachePoints(messages []types.Message) []types.Message {
-	if len(messages) < 2 {
+	if len(messages) == 0 {
 		return messages
 	}
 
-	// Find the last user message
+	// Find the last user TEXT message (not tool_result messages, which also
+	// have Role=User in the Bedrock API). Tool result messages shift every
+	// iteration during tool-use loops — caching on them defeats the purpose.
+	// We need the actual human user message which stays fixed during the loop.
 	lastUserIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.ConversationRoleUser {
+		if messages[i].Role == types.ConversationRoleUser && hasTextBlock(messages[i]) {
 			lastUserIdx = i
 			break
 		}
 	}
 
-	// If no user message found (shouldn't happen in practice), fall back to last message
+	// If no user text message found, fall back to the last message
 	if lastUserIdx == -1 {
 		lastUserIdx = len(messages) - 1
 	}
@@ -178,6 +187,18 @@ func applyCachePoints(messages []types.Message) []types.Message {
 	}
 
 	return result
+}
+
+// hasTextBlock returns true if the message contains at least one text content block.
+// Tool result messages (also Role=User) contain only ContentBlockMemberToolResult blocks.
+// This distinguishes actual human user messages from tool result messages.
+func hasTextBlock(msg types.Message) bool {
+	for _, block := range msg.Content {
+		if _, ok := block.(*types.ContentBlockMemberText); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // toBedrockToolsSorted converts tool definitions to Bedrock tools with
