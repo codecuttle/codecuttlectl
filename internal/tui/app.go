@@ -755,8 +755,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CacheKeepaliveTickMsg:
 		// Only ping if we have history (something worth caching) and we're
-		// not currently streaming (a stream already refreshes the cache).
-		if !m.streaming && len(m.history) > 0 {
+		// not currently streaming (or if we are waiting at an approval gate,
+		// where streaming is 'true' but we are blocked).
+		if (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
 			elapsed := time.Since(m.lastAPICallTime)
 			if elapsed >= cacheKeepaliveInterval {
 				// Time to refresh — fire a ping in the background.
