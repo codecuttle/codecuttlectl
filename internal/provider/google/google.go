@@ -16,6 +16,24 @@ type Config struct {
 	CacheThreshold int
 }
 
+// modelAliases maps shorthand/common model names to the canonical API names.
+// This allows users to use intuitive names like "gemini-3.1-flash" even when
+// the official API model name differs.
+var modelAliases = map[string]string{
+	"gemini-3.1-flash":     "gemini-3.1-flash-lite",
+	"gemini-3-flash":       "gemini-3-flash-preview",
+	"gemini-3-pro":         "gemini-3-pro-preview",
+	"gemini-3.1-pro":       "gemini-3.1-pro-preview",
+}
+
+// resolveModel returns the canonical model name, resolving aliases.
+func resolveModel(model string) string {
+	if canonical, ok := modelAliases[model]; ok {
+		return canonical
+	}
+	return model
+}
+
 // Provider implements provider.Provider for Google GenAI.
 type Provider struct {
 	client *genai.Client
@@ -25,6 +43,7 @@ type Provider struct {
 
 // New creates a new Google GenAI provider.
 func New(ctx context.Context, cfg Config) (*Provider, error) {
+	cfg.Model = resolveModel(cfg.Model)
 	client, err := genai.NewClient(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -69,6 +88,14 @@ func (p *Provider) ContextWindow() int32 {
 		return 2_000_000
 	case "gemini-1.5-flash":
 		return 1_000_000
+	case "gemini-3.5-flash":
+		return 1_048_576
+	case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools":
+		return 1_048_576
+	case "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite":
+		return 1_048_576
+	case "gemini-3-pro-preview", "gemini-3-flash-preview":
+		return 1_048_576
 	default:
 		return 1_048_576 // safe default for recent models
 	}
@@ -111,6 +138,15 @@ func (p *Provider) modelPricing() pricingTier {
 	case "gemini-1.5-flash":
 		// Gemini 1.5 Flash: $0.075/1M in, $0.30/1M out, $0.01875/1M cache read
 		return pricingTier{inputPer1M: 0.075, outputPer1M: 0.30, cacheReadPer1M: 0.01875}
+	case "gemini-3.5-flash":
+		// Gemini 3.5 Flash: priced like 2.5 Flash (best estimate pending official pricing)
+		return pricingTier{inputPer1M: 0.15, outputPer1M: 0.60, cacheReadPer1M: 0.0375}
+	case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3-pro-preview":
+		// Gemini 3.x Pro: priced like 2.5 Pro (best estimate pending official pricing)
+		return pricingTier{inputPer1M: 1.25, outputPer1M: 10.00, cacheReadPer1M: 0.3125}
+	case "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview":
+		// Gemini 3.x Flash Lite: priced like 2.5 Flash (best estimate pending official pricing)
+		return pricingTier{inputPer1M: 0.15, outputPer1M: 0.60, cacheReadPer1M: 0.0375}
 	default:
 		// Default to 2.5 Pro pricing (safest assumption for cost tracking)
 		return pricingTier{inputPer1M: 1.25, outputPer1M: 10.00, cacheReadPer1M: 0.3125}
