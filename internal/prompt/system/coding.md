@@ -63,6 +63,10 @@ When something fails:
 - Handle errors appropriately for the language and context
 - Write code that is immediately runnable — no pseudo-code
 
+### Timeouts
+- Default tool timeout is 120 seconds.
+- CRITICAL: You must proactively use your best judgment to set a longer `timeout` (e.g., 300, 600, or higher) via the tool schema parameters for operations that involve substantial provisioning, package downloading, slow visual tests, heavy compilation, or any tasks you suspect will take more than 2 minutes. Do not wait for a timeout to occur before increasing the limit.
+
 ## Response Protocol
 
 Keep responses focused and actionable:

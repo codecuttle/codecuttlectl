@@ -116,3 +116,25 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 
 	return events
 }
+
+// EstimateCost calculates the estimated dollar cost for the given token usage.
+// Uses Claude Opus 4.x pricing on Bedrock (as of 2026):
+//   - Input tokens (uncached): $5.00 / 1M tokens
+//   - Output tokens: $25.00 / 1M tokens
+//   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
+//   - Cache read: $0.50 / 1M tokens (0.1x input)
+func (p *Provider) EstimateCost(usage provider.Usage) float64 {
+	const (
+		inputPer1M      = 5.00
+		outputPer1M     = 25.00
+		cacheWritePer1M = 6.25
+		cacheReadPer1M  = 0.50
+	)
+
+	input := float64(usage.InputTokens) / 1_000_000 * inputPer1M
+	output := float64(usage.OutputTokens) / 1_000_000 * outputPer1M
+	cacheWrite := float64(usage.CacheWriteTokens) / 1_000_000 * cacheWritePer1M
+	cacheRead := float64(usage.CacheReadTokens) / 1_000_000 * cacheReadPer1M
+
+	return input + output + cacheWrite + cacheRead
+}

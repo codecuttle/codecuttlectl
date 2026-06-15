@@ -471,9 +471,10 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 }
 
 type pendingToolCall struct {
-	id    string
-	name  string
-	input json.RawMessage
+	id               string
+	name             string
+	input            json.RawMessage
+	thoughtSignature string
 }
 
 func jsonToMapAgent(data json.RawMessage) map[string]interface{} {

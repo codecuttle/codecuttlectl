@@ -314,3 +314,9 @@ func completionToResponse(c chatCompletion) *provider.Response {
 
 	return resp
 }
+
+// EstimateCost calculates the estimated dollar cost for the given token usage.
+// Ollama runs locally, so the cost is $0.
+func (c *Client) EstimateCost(usage provider.Usage) float64 {
+	return 0.0
+}

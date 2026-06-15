@@ -10,6 +10,7 @@ graph TD
     REPL --> Agent
     Agent --> ProviderIF[Provider Interface]
     ProviderIF --> Bedrock[AWS Bedrock ConverseStream]
+    ProviderIF --> Google[Google AI Gemini]
     ProviderIF --> Ollama[Ollama Local Models]
     Agent --> PluginMgr[Plugin Manager]
     Agent --> TodoMgr[Todo Manager]

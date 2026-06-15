@@ -135,6 +135,7 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: toolUse.ToolUseID,
+				Name:      toolUse.Name,
 				Content:   result,
 				IsError:   isErr,
 			})
@@ -193,12 +194,23 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			Tools:    a.allProviderToolDefs(),
 		}
 
-		ch := a.provider.ConverseStream(ctx, req)
+		fmt.Printf("[DEBUG] About to call ConverseStream with %d messages\n", len(req.Messages))
+	for i, m := range req.Messages {
+		for j, block := range m.Content {
+			if tr, ok := block.(provider.ToolResultBlock); ok {
+				if tr.Name == "" {
+					fmt.Printf("[CRITICAL] Msg %d Block %d has empty Name! ToolUseID=%s\n", i, j, tr.ToolUseID)
+				}
+			}
+		}
+	}
+	ch := a.provider.ConverseStream(ctx, req)
 
 		var textBuf strings.Builder
+		var reasoningBuf strings.Builder
 		var toolCalls []pendingToolCall
 		var currentToolInput strings.Builder
-		var currentToolID, currentToolName string
+		var currentToolID, currentToolName, currentToolSig string
 
 		for event := range ch {
 			switch e := event.(type) {
@@ -208,9 +220,18 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 					cb(StreamEvent{Type: "text", Text: e.Text})
 				}
 
+			case provider.ReasoningDeltaEvent:
+				reasoningBuf.WriteString(e.Text)
+
+			case provider.ReasoningSignatureEvent:
+				currentToolSig = e.Signature
+
 			case provider.ToolUseStartEvent:
 				currentToolID = e.ToolUseID
 				currentToolName = e.Name
+				if e.ThoughtSignature != "" {
+					currentToolSig = e.ThoughtSignature
+				}
 				currentToolInput.Reset()
 				if cb != nil {
 					cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
@@ -226,9 +247,10 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 						input = json.RawMessage("{}")
 					}
 					toolCalls = append(toolCalls, pendingToolCall{
-						id:    currentToolID,
-						name:  currentToolName,
-						input: input,
+						id:               currentToolID,
+						name:             currentToolName,
+						input:            input,
+						thoughtSignature: currentToolSig,
 					})
 					currentToolName = ""
 					currentToolID = ""
@@ -251,14 +273,21 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 
 		// Build assistant message for history
 		var assistBlocks []provider.ContentBlock
+		if reasoningBuf.Len() > 0 {
+			assistBlocks = append(assistBlocks, provider.ReasoningBlock{
+				Text:      reasoningBuf.String(),
+				Signature: currentToolSig,
+			})
+		}
 		if textBuf.Len() > 0 {
 			assistBlocks = append(assistBlocks, provider.TextBlock{Text: textBuf.String()})
 		}
 		for _, tc := range toolCalls {
 			assistBlocks = append(assistBlocks, provider.ToolUseBlock{
-				ToolUseID: tc.id,
-				Name:      tc.name,
-				Input:     tc.input,
+				ToolUseID:        tc.id,
+				Name:             tc.name,
+				Input:            tc.input,
+				ThoughtSignature: tc.thoughtSignature,
 			})
 		}
 		if len(assistBlocks) > 0 {
@@ -318,6 +347,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 
 			resultBlocks = append(resultBlocks, provider.ToolResultBlock{
 				ToolUseID: tc.id,
+				Name:      tc.name,
 				Content:   result,
 				IsError:   isErr,
 			})

@@ -41,7 +41,9 @@ func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 		InputSchema: schema.MustSchema(&bashExecInput{}),
 		LlmContextHint: `Use bash_exec for system commands: building, testing, installing packages, running programs. Check exit codes in output for errors. Never run destructive commands (rm -rf /, DROP DATABASE) without explicit user permission.
 
-bash_exec is for: make, go build, go test, apt install, pip install, npm, docker, and other build/run/install operations with no dedicated tool.`,
+bash_exec is for: make, go build, go test, apt install, pip install, npm, docker, and other build/run/install operations with no dedicated tool.
+
+CRITICAL TIMEOUT GUIDANCE: The default timeout is 120s. For long-running commands (e.g., docker build, large dependency installations, heavy test suites), you MUST proactively set the 'timeout' parameter to 300, 600, or higher. Do not wait for a timeout failure to increase it.`,
 		Version: "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
