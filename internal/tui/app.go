@@ -374,24 +374,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.streamCh = nil
 					m.interruptPending = false
 					// Finalize any partial content as the response
-					if m.streamBuf.Len() > 0 {
-						content := m.streamBuf.String()
-						m.messages = append(m.messages, chatMessage{
-							role:    "assistant",
-							content: sanitizeModelText(content) + "\n\n*(interrupted)*",
-						})
-						m.history = append(m.history, provider.BuildAssistantMessage(
-							[]provider.ContentBlock{
-								provider.TextBlock{Text: content},
-							},
-						))
-						m.streamBuf.Reset()
-					} else if m.reasoningBuf.Len() > 0 {
-						m.messages = append(m.messages, chatMessage{
-							role:    "reasoning",
-							content: m.reasoningBuf.String(),
-						})
-						m.reasoningBuf.Reset()
+					if m.streamBuf.Len() > 0 || m.reasoningSignature != "" || m.reasoningBuf.Len() > 0 {
+						var blocks []provider.ContentBlock
+						if m.reasoningBuf.Len() > 0 {
+							blocks = append(blocks, provider.ReasoningBlock{
+								Text:      m.reasoningBuf.String(),
+								Signature: m.reasoningSignature,
+							})
+							m.messages = append(m.messages, chatMessage{
+								role:    "reasoning",
+								content: m.reasoningBuf.String(),
+							})
+							m.reasoningBuf.Reset()
+						} else if m.reasoningSignature != "" {
+							blocks = append(blocks, provider.ReasoningBlock{
+								Signature: m.reasoningSignature,
+							})
+						}
+
+						if m.streamBuf.Len() > 0 {
+							content := m.streamBuf.String()
+							m.messages = append(m.messages, chatMessage{
+								role:    "assistant",
+								content: sanitizeModelText(content) + "\n\n*(interrupted)*",
+							})
+							blocks = append(blocks, provider.TextBlock{Text: content})
+							m.streamBuf.Reset()
+						}
+
+						if len(blocks) > 0 {
+							m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+						}
 					}
 					m.inReasoning = false
 					m.pendingToolCalls = nil
@@ -557,48 +570,68 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// No tool calls — finalize streamed text as the assistant response
-		if m.streamBuf.Len() > 0 {
-			content := m.streamBuf.String()
-			// Try to extract a plan from the model's final response
-			m.maybeExtractPlan(content)
+		if m.streamBuf.Len() > 0 || m.reasoningSignature != "" || m.reasoningBuf.Len() > 0 {
+			var blocks []provider.ContentBlock
 
-			// For small models: detect when the model stopped to explain/ask
-			// permission instead of actually executing. If it looks like the model
-			// is narrating its next steps without using tools, auto-nudge it to
-			// continue by injecting a continuation prompt.
-			if m.needsGroundingAssist() && m.shouldAutoNudge(content) {
+			// Handle any dangling reasoning text (usually handled by StreamReasoningDoneMsg, but just in case)
+			if m.reasoningBuf.Len() > 0 {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Text:      m.reasoningBuf.String(),
+					Signature: m.reasoningSignature,
+				})
+				m.messages = append(m.messages, chatMessage{
+					role:    "reasoning",
+					content: m.reasoningBuf.String(),
+				})
+				m.reasoningBuf.Reset()
+				m.inReasoning = false
+			} else if m.reasoningSignature != "" {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Signature: m.reasoningSignature,
+				})
+			}
+
+			if m.streamBuf.Len() > 0 {
+				content := m.streamBuf.String()
+				// Try to extract a plan from the model's final response
+				m.maybeExtractPlan(content)
+
+				// For small models: detect when the model stopped to explain/ask
+				// permission instead of actually executing. If it looks like the model
+				// is narrating its next steps without using tools, auto-nudge it to
+				// continue by injecting a continuation prompt.
+				if m.needsGroundingAssist() && m.shouldAutoNudge(content) {
+					m.messages = append(m.messages, chatMessage{
+						role:    "assistant",
+						content: sanitizeModelText(content),
+					})
+					blocks = append(blocks, provider.TextBlock{Text: content})
+					m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+
+					m.streamBuf.Reset()
+					// Inject a synthetic user message to nudge it forward
+					nudge := "Continue. Execute the next step now — do not ask for permission."
+					m.history = append(m.history, provider.BuildUserTextMessage(nudge))
+					m.messages = append(m.messages, chatMessage{
+						role:    "system_nudge",
+						content: "↻ auto-continuing…",
+					})
+					m.viewport.SetContent(m.renderMessages())
+					m.viewport.GotoBottom()
+					return m, m.launchStream()
+				}
+
 				m.messages = append(m.messages, chatMessage{
 					role:    "assistant",
 					content: sanitizeModelText(content),
 				})
-				m.history = append(m.history, provider.BuildAssistantMessage(
-					[]provider.ContentBlock{
-						provider.TextBlock{Text: content},
-					},
-				))
+				blocks = append(blocks, provider.TextBlock{Text: content})
 				m.streamBuf.Reset()
-				// Inject a synthetic user message to nudge it forward
-				nudge := "Continue. Execute the next step now — do not ask for permission."
-				m.history = append(m.history, provider.BuildUserTextMessage(nudge))
-				m.messages = append(m.messages, chatMessage{
-					role:    "system_nudge",
-					content: "↻ auto-continuing…",
-				})
-				m.viewport.SetContent(m.renderMessages())
-				m.viewport.GotoBottom()
-				return m, m.launchStream()
 			}
 
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: sanitizeModelText(content),
-			})
-			m.history = append(m.history, provider.BuildAssistantMessage(
-				[]provider.ContentBlock{
-					provider.TextBlock{Text: content},
-				},
-			))
-			m.streamBuf.Reset()
+			if len(blocks) > 0 {
+				m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+			}
 		}
 
 		m.streaming = false
