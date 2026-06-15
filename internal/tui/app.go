@@ -101,8 +101,9 @@ type Model struct {
 	todoExpanded bool
 
 	// Session persistence
-	store     session.Store
-	sessionID string
+	store          session.Store
+	sessionID      string
+	lastSavedDraft string
 
 	// Stats
 	totalInputTokens          int32
@@ -833,6 +834,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 
+		// Save draft message if it changed
+		if m.input.Value() != m.lastSavedDraft {
+			m.lastSavedDraft = m.input.Value()
+			m.saveSession()
+		}
+
 		// If textarea height changed (dynamic grow/shrink), recalculate layout
 		if m.input.Height() != prevHeight {
 			m.recalcLayout()
@@ -1424,6 +1431,12 @@ func (m *Model) restoreSession() {
 		m.todos.Replace(state.Todos)
 	}
 
+	// Restore draft message if any
+	if state.DraftMessage != "" {
+		m.input.SetValue(state.DraftMessage)
+		m.lastSavedDraft = state.DraftMessage
+	}
+
 	// Rebuild state dictionary from session history for small-model grounding.
 	// Without this, resumed sessions have no "Current Task Context" block until
 	// the next user message — causing the model to lose its place.
@@ -1553,10 +1566,11 @@ func (m *Model) saveSession() {
 	meta.Stats.EstimatedCostUSD = m.estimateCost()
 
 	state := &session.SessionState{
-		Meta:     meta,
-		Messages: serialized,
-		Todos:    m.todos.Items(),
-		Inkwell:  []session.InkEntry{}, // TUI inkwell tracking can be added later
+		Meta:         meta,
+		Messages:     serialized,
+		Todos:        m.todos.Items(),
+		Inkwell:      []session.InkEntry{}, // TUI inkwell tracking can be added later
+		DraftMessage: m.input.Value(),
 	}
 
 	m.store.Save(m.sessionID, state)
