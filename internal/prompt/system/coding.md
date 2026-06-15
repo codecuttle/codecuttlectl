@@ -52,7 +52,8 @@ When something fails:
 - Prefer editing existing files over creating new ones
 
 ### Command Execution
-- Use shell commands for: building, testing, running programs, installing dependencies
+- USE DEDICATED TOOLS FIRST. Never use `bash_exec` for git, file reading, file editing, directory listing, or grepping. You have dedicated tools for these (`git`, `read_file`, `edit_file`, `grep`, `list_directory`).
+- Use `bash_exec` ONLY for building, testing, running programs, or installing dependencies.
 - Always check exit codes and stderr for errors
 - Set reasonable timeouts for commands that might hang
 - Never run commands that require interactive input without handling it
