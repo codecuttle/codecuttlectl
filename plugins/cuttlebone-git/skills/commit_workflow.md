@@ -84,24 +84,70 @@ Update README for github plugin (12 plugins, 17 tools)
 
 ### Title Format
 
-```
-[Feat] / [Fix] / [Docs] — Short description
-```
+Use conventional commit style matching the commit summary:
+- `fix: description` — bug fixes
+- `feat: description` — new features
+- `test: description` — test additions/updates
+- `docs: description` — documentation only
 
 Examples:
-- `[Feat] Add web search and URL fetch plugins via Exa MCP`
-- `[Fix] TUI text overflow — wrap content to terminal width`
-- `[Feat] TUI QoL: multi-line input, scroll/select toggle, esc interrupt`
+- `fix: comprehensive bedrock prompt caching optimizations`
+- `feat: auto-nudge small models that stop to ask permission`
+- `test: update cache tests to match no-advance-mid-turn strategy`
 
-### Body
+### Body Structure
 
-Descriptive but laconic. Cover:
-- **What** was done (1-2 sentence summary)
-- **Key changes** (bullet points for each major item)
-- **Numbers** when relevant: tool count, test count, lines changed
-- **Breaking changes** if any
+Follow this exact structure (use all sections that apply):
 
-Don't repeat what the diff shows. Focus on the why and the what-at-a-glance.
+```markdown
+## Problem
+
+1-3 sentences describing what's broken or missing.
+
+## Root Cause (if applicable)
+
+Numbered list of contributing factors. Use when the fix addresses
+multiple interacting issues.
+
+## Fix
+
+### `path/to/file.go`
+- **Change description** — brief explanation
+
+### `path/to/other_file.go`
+- **Change description** — brief explanation
+
+## Testing
+
+\```
+$ go build ./...  # Clean
+$ go test ./...   # All pass
+\```
+
+Additional test coverage notes if new tests were added.
+
+## Files Changed (optional, for larger PRs)
+
+| File | Change |
+|------|--------|
+| `path/to/file.go` | Brief description |
+```
+
+### Body Rules
+
+- Use real markdown — never pass literal `\n` escape sequences
+- Em-dashes (—) for inline descriptions, not hyphens
+- Code references in backticks: `functionName()`, `path/to/file.go`
+- Tables for file change summaries on PRs touching 4+ files
+- Keep it laconic — don't repeat what the diff shows
+- Always include a Testing section with build/test commands
+
+### CRITICAL: Markdown Formatting
+
+When creating PR bodies programmatically (via API), the body MUST be
+valid markdown with actual newline characters. Never use escaped `\n`
+literals in the body string — they render as visible `\n` text on GitHub
+instead of line breaks. Always use real newlines in the body content.
 
 ## Workflow
 

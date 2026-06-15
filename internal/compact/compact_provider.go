@@ -134,6 +134,7 @@ func compactProviderToolResults(content []provider.ContentBlock, cfg Config) ([]
 
 		newContent = append(newContent, provider.ToolResultBlock{
 			ToolUseID: tr.ToolUseID,
+			Name:      tr.Name,
 			Content:   summary,
 			IsError:   tr.IsError,
 		})

@@ -75,15 +75,20 @@ func (ReasoningBlock) contentBlock() {}
 
 // ToolUseBlock represents a tool call from the model.
 type ToolUseBlock struct {
-	ToolUseID string
-	Name      string
-	Input     json.RawMessage
+	ToolUseID      string
+	Name           string
+	Input          json.RawMessage
+	// ThoughtSignature is an opaque signature from Gemini 3 models that must be
+	// passed back in conversation history for function calling to work correctly.
+	// Only the first function call in a parallel set will have this populated.
+	ThoughtSignature string
 }
 
 func (ToolUseBlock) contentBlock() {}
 
 // ToolResultBlock represents the result of a tool execution.
 type ToolResultBlock struct {
+	Name      string
 	ToolUseID string
 	Content   string
 	IsError   bool
@@ -151,8 +156,11 @@ func (ReasoningSignatureEvent) streamEvent() {}
 
 // ToolUseStartEvent is emitted when the model begins a tool call.
 type ToolUseStartEvent struct {
-	ToolUseID string
-	Name      string
+	ToolUseID        string
+	Name             string
+	// ThoughtSignature is the opaque Gemini 3 thought signature attached to this
+	// function call. Must be preserved and sent back in conversation history.
+	ThoughtSignature string
 }
 
 func (ToolUseStartEvent) streamEvent() {}
@@ -198,4 +206,42 @@ func (StreamErrorEvent) streamEvent() {}
 type ContextWindowProvider interface {
 	// ContextWindow returns the maximum context window in tokens.
 	ContextWindow() int32
+}
+
+// CostEstimator is an optional interface that providers can implement
+// to estimate the dollar cost of the session based on token usage.
+type CostEstimator interface {
+	EstimateCost(usage Usage) float64
+}
+
+// Helper functions for building messages
+
+// BuildUserTextMessage creates a new message with the given text for the user.
+func BuildUserTextMessage(text string) Message {
+	return Message{
+		Role: RoleUser,
+		Content: []ContentBlock{
+			TextBlock{Text: text},
+		},
+	}
+}
+
+// BuildAssistantMessage creates a new message for the assistant with the given blocks.
+func BuildAssistantMessage(blocks []ContentBlock) Message {
+	return Message{
+		Role:    RoleAssistant,
+		Content: blocks,
+	}
+}
+
+// BuildToolResultMessage creates a new user message containing tool results.
+func BuildToolResultMessage(results []ToolResultBlock) Message {
+	var blocks []ContentBlock
+	for _, r := range results {
+		blocks = append(blocks, r)
+	}
+	return Message{
+		Role:    RoleUser,
+		Content: blocks,
+	}
 }

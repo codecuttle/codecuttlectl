@@ -14,9 +14,8 @@ codecuttlectl --profile my-aws-profile                    # Named AWS profile
 ```
 
 **Features exclusive to Bedrock:**
-- Prompt caching (3-tier incremental extension)
+- 3-tier incremental extension caching (evaluated per-request)
 - Cache keepalive pings (4-min TTL refresh)
-- Cost estimation in status bar
 - Extended thinking/reasoning mode (`--thinking`)
 
 ## Ollama (local models)
@@ -70,6 +69,48 @@ Local models have smaller parameter counts and benefit from additional harness s
 
 3. **Read-Only Grounding** — System prompt explicitly instructs models not to implement features found in design docs or backlogs when performing exploratory tasks.
 
+## Google AI (Gemini)
+
+Use Google's Gemini models directly via the `google.golang.org/genai` SDK.
+
+```bash
+# Explicit provider flag
+codecuttlectl --provider=google --model=gemini-2.5-pro
+
+# Use Flash for speed
+codecuttlectl --provider=google --model=gemini-2.5-flash
+
+# Adjust context caching threshold
+codecuttlectl --provider=google --model=gemini-2.5-pro --google-cache-threshold=16000
+
+# List available models
+codecuttlectl --provider=google --list-models
+```
+
+Requires `GEMINI_API_KEY` environment variable (or Application Default Credentials).
+
+**Features:**
+- Full streaming with tool calling (`ConverseStream` via `iter.Seq2`)
+- Context caching (automatic for system+tools > threshold, 5-min TTL with proactive refresh)
+- Per-model pricing tiers (Gemini 2.5 Pro, 2.5 Flash, 2.0 Flash, 1.5 Pro/Flash, 3.x series)
+- Cost estimation in status bar (includes cache read tokens)
+- Model aliases for convenience (e.g., `gemini-3.1-flash` → `gemini-3.1-flash-lite`)
+- Context window reporting (1M–2M tokens depending on model)
+- Cache cleanup on graceful shutdown (prevents zombie billing)
+
+**TUI integration:**
+- Status bar shows cost, tokens, cache hit %, and ctx% via `CostEstimator` and `ContextWindowProvider` interfaces
+- Context caching handled transparently — strips system/tools from requests when cache is active
+
+### Context Caching
+
+Google AI's Context Caching API caches the static prefix (system prompt + tool definitions) server-side:
+
+- Automatically created when estimated token count exceeds `--google-cache-threshold` (default: 32k)
+- 5-minute TTL with proactive refresh 1 minute before expiry
+- Cache is deleted on graceful shutdown to avoid per-hour storage billing
+- Falls back gracefully to uncached calls if cache creation fails
+
 ## Provider Interface
 
 All providers implement the `provider.Provider` interface:
@@ -85,6 +126,7 @@ type Provider interface {
 
 Optional interfaces:
 - `ContextWindowProvider` — reports context window size for accurate ctx% display
+- `CostEstimator` — estimates dollar cost from token usage for the status bar
 
 The provider abstraction lives in `internal/provider/`. Adding a new provider requires:
 1. Implement `Provider` interface in `internal/provider/<name>/`
@@ -96,7 +138,6 @@ The provider abstraction lives in `internal/provider/`. Adding a new provider re
 Candidates for future integration:
 - **Anthropic API** (direct, non-Bedrock)
 - **OpenAI** (GPT-4o, o1)
-- **Google AI** (Gemini via API)
 - **vLLM** (self-hosted inference servers)
 - **LM Studio** (OpenAI-compatible local servers)
 

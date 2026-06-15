@@ -290,8 +290,8 @@ def test_startup(tui: TUITester, results: TestResults, update_golden: bool):
         assert "codecuttlectl" in screen, "App name not visible"
         # Should show model info
         assert "opus" in screen.lower() or "claude" in screen.lower(), "Model not visible"
-        # Should show plugin count
-        assert "4p" in screen or "plugin" in screen.lower(), "Plugin info not visible"
+        # Should show plugin count (Np where N is the number of loaded plugins)
+        assert "p" in screen and any(f"{n}p" in screen for n in range(1, 20)), "Plugin info not visible"
         # Should show help bar
         assert "ctrl+c" in screen.lower(), "Help bar not visible"
         

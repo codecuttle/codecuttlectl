@@ -20,11 +20,15 @@ type Message struct {
 // ContentItem is a tagged union for serialized content blocks.
 // The Type field determines which other fields are populated.
 type ContentItem struct {
-	// Type discriminator: "text", "tool_use", "tool_result"
+	// Type discriminator: "text", "tool_use", "tool_result", "reasoning"
 	Type string `json:"type"`
 
 	// For Type=="text": the text content
 	Text string `json:"text,omitempty"`
+
+	// For Type=="reasoning": thought signature for Gemini 3 multi-turn continuity
+	// For Type=="tool_use": thought signature attached to function call (Gemini 3)
+	Signature string `json:"signature,omitempty"`
 
 	// For Type=="tool_use": the tool invocation details
 	ToolUseID string          `json:"tool_use_id,omitempty"`
@@ -64,6 +68,7 @@ func MarshalProviderHistory(messages []providerPkg.Message) ([]Message, error) {
 // the Bedrock SDK types as an intermediate step.
 func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 	var result []providerPkg.Message
+	toolNames := make(map[string]string) // ToolUseID -> Name
 
 	for _, msg := range messages {
 		var role providerPkg.Role
@@ -81,19 +86,31 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 			switch item.Type {
 			case "text":
 				blocks = append(blocks, providerPkg.TextBlock{Text: item.Text})
+			case "reasoning":
+				blocks = append(blocks, providerPkg.ReasoningBlock{
+					Text:      item.Text,
+					Signature: item.Signature,
+				})
 			case "tool_use":
 				input := json.RawMessage(item.Input)
 				if len(input) == 0 {
 					input = json.RawMessage("{}")
 				}
+				toolNames[item.ToolUseID] = item.Name
 				blocks = append(blocks, providerPkg.ToolUseBlock{
-					ToolUseID: item.ToolUseID,
-					Name:      item.Name,
-					Input:     input,
+					ToolUseID:        item.ToolUseID,
+					Name:             item.Name,
+					Input:            input,
+					ThoughtSignature: item.Signature,
 				})
 			case "tool_result":
+				name := item.Name
+				if name == "" {
+					name = toolNames[item.ResultFor]
+				}
 				blocks = append(blocks, providerPkg.ToolResultBlock{
 					ToolUseID: item.ResultFor,
+					Name:      name,
 					Content:   item.Content,
 					IsError:   item.Status == "error",
 				})
@@ -111,6 +128,8 @@ func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
 	switch b := block.(type) {
 	case providerPkg.TextBlock:
 		return ContentItem{Type: "text", Text: b.Text}
+	case providerPkg.ReasoningBlock:
+		return ContentItem{Type: "reasoning", Text: b.Text, Signature: b.Signature}
 	case providerPkg.ToolUseBlock:
 		input := json.RawMessage(b.Input)
 		if len(input) == 0 {
@@ -121,6 +140,7 @@ func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
 			ToolUseID: b.ToolUseID,
 			Name:      b.Name,
 			Input:     input,
+			Signature: b.ThoughtSignature,
 		}
 	case providerPkg.ToolResultBlock:
 		status := "success"
@@ -129,6 +149,7 @@ func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
 		}
 		return ContentItem{
 			Type:      "tool_result",
+			Name:      b.Name,
 			Content:   b.Content,
 			Status:    status,
 			ResultFor: b.ToolUseID,
