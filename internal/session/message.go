@@ -68,6 +68,7 @@ func MarshalProviderHistory(messages []providerPkg.Message) ([]Message, error) {
 // the Bedrock SDK types as an intermediate step.
 func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 	var result []providerPkg.Message
+	toolNames := make(map[string]string) // ToolUseID -> Name
 
 	for _, msg := range messages {
 		var role providerPkg.Role
@@ -95,6 +96,7 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 				if len(input) == 0 {
 					input = json.RawMessage("{}")
 				}
+				toolNames[item.ToolUseID] = item.Name
 				blocks = append(blocks, providerPkg.ToolUseBlock{
 					ToolUseID:        item.ToolUseID,
 					Name:             item.Name,
@@ -102,9 +104,13 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 					ThoughtSignature: item.Signature,
 				})
 			case "tool_result":
+				name := item.Name
+				if name == "" {
+					name = toolNames[item.ResultFor]
+				}
 				blocks = append(blocks, providerPkg.ToolResultBlock{
 					ToolUseID: item.ResultFor,
-					Name:      item.Name,
+					Name:      name,
 					Content:   item.Content,
 					IsError:   item.Status == "error",
 				})

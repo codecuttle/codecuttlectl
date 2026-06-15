@@ -13,6 +13,8 @@ import (
 // Used when loading saved sessions that were serialized in Bedrock format.
 func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 	var result []provider.Message
+	toolNames := make(map[string]string) // ToolUseID -> Name
+
 	for _, msg := range msgs {
 		var role provider.Role
 		switch msg.Role {
@@ -35,9 +37,12 @@ func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 					_ = b.Value.Input.UnmarshalSmithyDocument(&inputMap)
 				}
 				inputJSON, _ := json.Marshal(inputMap)
+				id := aws.ToString(b.Value.ToolUseId)
+				name := aws.ToString(b.Value.Name)
+				toolNames[id] = name
 				blocks = append(blocks, provider.ToolUseBlock{
-					ToolUseID: aws.ToString(b.Value.ToolUseId),
-					Name:      aws.ToString(b.Value.Name),
+					ToolUseID: id,
+					Name:      name,
 					Input:     inputJSON,
 				})
 			case *types.ContentBlockMemberToolResult:
@@ -47,8 +52,10 @@ func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 						content += text.Value
 					}
 				}
+				id := aws.ToString(b.Value.ToolUseId)
 				blocks = append(blocks, provider.ToolResultBlock{
-					ToolUseID: aws.ToString(b.Value.ToolUseId),
+					ToolUseID: id,
+					Name:      toolNames[id],
 					Content:   content,
 					IsError:   b.Value.Status == types.ToolResultStatusError,
 				})
