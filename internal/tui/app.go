@@ -83,6 +83,7 @@ type Model struct {
 	currentToolID    string
 	currentToolName  string
 	currentToolInput *strings.Builder
+	currentToolSig   string // ThoughtSignature for current tool being streamed
 	pendingToolCalls []pendingTool
 
 	// Active tool execution streaming state
@@ -156,9 +157,10 @@ const defaultContextWindowSize = 1_000_000
 const cacheKeepaliveInterval = 4 * time.Minute
 
 type pendingTool struct {
-	id    string
-	name  string
-	input json.RawMessage
+	id               string
+	name             string
+	input            json.RawMessage
+	thoughtSignature string // Gemini 3 thought signature for this function call
 }
 
 // New creates a new TUI Model.
@@ -477,6 +479,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.currentToolID = msg.ToolUseID
 		m.currentToolName = msg.Name
+		m.currentToolSig = msg.ThoughtSignature
 		m.currentToolInput.Reset()
 		m.messages = append(m.messages, chatMessage{
 			role:    "tool_call",
@@ -495,13 +498,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentToolName != "" {
 			input := []byte(m.currentToolInput.String())
 			m.pendingToolCalls = append(m.pendingToolCalls, pendingTool{
-				id:    m.currentToolID,
-				name:  m.currentToolName,
-				input: input,
+				id:               m.currentToolID,
+				name:             m.currentToolName,
+				input:            input,
+				thoughtSignature: m.currentToolSig,
 			})
 			m.currentToolName = ""
 			m.currentToolID = ""
 			m.currentToolInput.Reset()
+			m.currentToolSig = ""
 		}
 		return m, m.readNextStreamEvent()
 
@@ -539,9 +544,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			for _, tc := range m.pendingToolCalls {
 				blocks = append(blocks, provider.ToolUseBlock{
-					ToolUseID: tc.id,
-					Name:      tc.name,
-					Input:     tc.input,
+					ToolUseID:        tc.id,
+					Name:             tc.name,
+					Input:            tc.input,
+					ThoughtSignature: tc.thoughtSignature,
 				})
 			}
 			m.history = append(m.history, provider.BuildAssistantMessage(blocks))
@@ -1021,7 +1027,7 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 			case provider.ReasoningSignatureEvent:
 				return StreamReasoningDoneMsg{Signature: e.Signature}
 			case provider.ToolUseStartEvent:
-				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
+				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name, ThoughtSignature: e.ThoughtSignature}
 			case provider.ToolInputDeltaEvent:
 				return StreamToolInputMsg{Delta: e.Delta}
 			case provider.ToolUseStopEvent:

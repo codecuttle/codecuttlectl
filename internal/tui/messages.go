@@ -29,8 +29,9 @@ type StreamReasoningDoneMsg struct {
 
 // StreamToolStartMsg signals that the model is beginning a tool call.
 type StreamToolStartMsg struct {
-	ToolUseID string
-	Name      string
+	ToolUseID        string
+	Name             string
+	ThoughtSignature string
 }
 
 // StreamToolInputMsg carries partial tool input JSON.

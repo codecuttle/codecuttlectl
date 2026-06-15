@@ -27,6 +27,7 @@ type ContentItem struct {
 	Text string `json:"text,omitempty"`
 
 	// For Type=="reasoning": thought signature for Gemini 3 multi-turn continuity
+	// For Type=="tool_use": thought signature attached to function call (Gemini 3)
 	Signature string `json:"signature,omitempty"`
 
 	// For Type=="tool_use": the tool invocation details
@@ -95,9 +96,10 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 					input = json.RawMessage("{}")
 				}
 				blocks = append(blocks, providerPkg.ToolUseBlock{
-					ToolUseID: item.ToolUseID,
-					Name:      item.Name,
-					Input:     input,
+					ToolUseID:        item.ToolUseID,
+					Name:             item.Name,
+					Input:            input,
+					ThoughtSignature: item.Signature,
 				})
 			case "tool_result":
 				blocks = append(blocks, providerPkg.ToolResultBlock{
@@ -132,6 +134,7 @@ func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
 			ToolUseID: b.ToolUseID,
 			Name:      b.Name,
 			Input:     input,
+			Signature: b.ThoughtSignature,
 		}
 	case providerPkg.ToolResultBlock:
 		status := "success"

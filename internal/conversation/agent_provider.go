@@ -199,7 +199,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 		var textBuf strings.Builder
 		var toolCalls []pendingToolCall
 		var currentToolInput strings.Builder
-		var currentToolID, currentToolName string
+		var currentToolID, currentToolName, currentToolSig string
 
 		for event := range ch {
 			switch e := event.(type) {
@@ -212,6 +212,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			case provider.ToolUseStartEvent:
 				currentToolID = e.ToolUseID
 				currentToolName = e.Name
+				currentToolSig = e.ThoughtSignature
 				currentToolInput.Reset()
 				if cb != nil {
 					cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
@@ -227,12 +228,14 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 						input = json.RawMessage("{}")
 					}
 					toolCalls = append(toolCalls, pendingToolCall{
-						id:    currentToolID,
-						name:  currentToolName,
-						input: input,
+						id:               currentToolID,
+						name:             currentToolName,
+						input:            input,
+						thoughtSignature: currentToolSig,
 					})
 					currentToolName = ""
 					currentToolID = ""
+					currentToolSig = ""
 					currentToolInput.Reset()
 				}
 
@@ -257,9 +260,10 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 		}
 		for _, tc := range toolCalls {
 			assistBlocks = append(assistBlocks, provider.ToolUseBlock{
-				ToolUseID: tc.id,
-				Name:      tc.name,
-				Input:     tc.input,
+				ToolUseID:        tc.id,
+				Name:             tc.name,
+				Input:            tc.input,
+				ThoughtSignature: tc.thoughtSignature,
 			})
 		}
 		if len(assistBlocks) > 0 {

@@ -220,13 +220,18 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 				if len(b.Input) > 0 {
 					_ = json.Unmarshal(b.Input, &args)
 				}
-				parts = append(parts, &genai.Part{
+				part := &genai.Part{
 					FunctionCall: &genai.FunctionCall{
 						ID:   b.ToolUseID,
 						Name: b.Name,
 						Args: args,
 					},
-				})
+				}
+				// Gemini 3 requires ThoughtSignature on function call parts
+				if b.ThoughtSignature != "" {
+					part.ThoughtSignature = []byte(b.ThoughtSignature)
+				}
+				parts = append(parts, part)
 			case provider.ToolResultBlock:
 				parts = append(parts, &genai.Part{
 					FunctionResponse: &genai.FunctionResponse{
@@ -392,11 +397,24 @@ func (p *Provider) ConverseStream(ctx context.Context, req provider.Request) <-c
 
 						if part.Text != "" {
 							events <- provider.TextDeltaEvent{Text: part.Text}
+							// Text parts can also carry thought signatures (non-FC responses)
+							if len(part.ThoughtSignature) > 0 {
+								events <- provider.ReasoningSignatureEvent{
+									Signature: string(part.ThoughtSignature),
+								}
+							}
 						}
 						if part.FunctionCall != nil {
+							// Gemini 3 attaches ThoughtSignature directly to FunctionCall parts.
+							// We must capture and preserve it so it's sent back in history.
+							var sig string
+							if len(part.ThoughtSignature) > 0 {
+								sig = string(part.ThoughtSignature)
+							}
 							events <- provider.ToolUseStartEvent{
-								ToolUseID: part.FunctionCall.ID,
-								Name:      part.FunctionCall.Name,
+								ToolUseID:        part.FunctionCall.ID,
+								Name:             part.FunctionCall.Name,
+								ThoughtSignature: sig,
 							}
 
 							inputBytes, _ := json.Marshal(part.FunctionCall.Args)
