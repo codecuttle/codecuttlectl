@@ -31,7 +31,7 @@ const maxMisuseBlocks = 3 // Allow through after 3 blocked attempts
 type bashExecInput struct {
 	Command string        `json:"command" jsonschema:"required" jsonschema_description:"The bash command to execute"`
 	WorkDir string        `json:"workdir,omitempty" jsonschema_description:"Working directory for the command. Defaults to the session working directory."`
-	Timeout types.FlexInt `json:"timeout,omitempty" jsonschema_description:"Timeout in seconds. Default: 300"`
+	Timeout types.FlexInt `json:"timeout,omitempty" jsonschema_description:"Timeout in seconds. Default: 120"`
 }
 
 func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
@@ -94,7 +94,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}
 	timeout := params.Timeout.Int()
 	if timeout == 0 {
-		timeout = 300
+		timeout = 120
 	}
 
 	// Use working directory from params, fall back to request context
@@ -308,7 +308,7 @@ func (t *bashExecTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugi
 
 	timeout := params.Timeout.Int()
 	if timeout == 0 {
-		timeout = 300
+		timeout = 120
 	}
 
 	workDir := params.WorkDir
