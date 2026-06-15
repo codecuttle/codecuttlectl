@@ -2,7 +2,28 @@
 
 ## Overview
 
-codecuttlectl uses a 3-tier incremental extension caching strategy for AWS Bedrock to minimize API costs. When working correctly, cache hit rates should exceed 70-90% after the first turn, reducing per-turn input costs by 80-90%.
+codecuttlectl uses sophisticated caching strategies across its supported providers to minimize API costs and latency.
+
+- **AWS Bedrock**: 3-tier incremental extension caching (evaluated per-request).
+- **Google AI (Gemini)**: Server-side Context Caching API (managed lifecycle with TTL).
+
+When working correctly, cache hit rates should exceed 70-90% after the first turn, reducing per-turn input costs by 80-90%.
+
+## Google AI Context Caching
+
+Google AI uses a different caching architecture than Bedrock. Instead of per-request incremental evaluation, you explicitly create a `CachedContent` resource on Google's servers.
+
+**How it works in codecuttlectl:**
+- The system prefix (system prompt + tool definitions) is cached server-side.
+- Cache creation is triggered automatically when the prefix token count exceeds the `--google-cache-threshold` (default: 32,000 tokens).
+- The cache has a 5-minute TTL.
+- A proactive refresh mechanism updates the cache 1 minute before expiry.
+- The cache is gracefully deleted upon shutdown to prevent zombie per-hour storage billing.
+- When the cache is active, `Converse` and `ConverseStream` automatically strip the system prompt and tools from the request, relying on the cached resource.
+
+**Pricing (Gemini 2.5 Pro, 2.5 Flash):**
+- Cache Read tokens are typically 50% cheaper than standard Input tokens.
+- Storage is billed per-hour based on token count (not currently estimated in the TUI status bar).
 
 ## How Bedrock Prompt Caching Works
 

@@ -38,6 +38,11 @@ c3 --provider ollama --model gemma4:31b         # Explicit provider
 c3 --model ollama:gemma4:31b                    # Auto-detect from prefix
 c3 --provider ollama --model qwen3:32b          # Any Ollama model
 c3 --provider ollama --ollama-url http://remote:11434 --model gemma4:31b  # Remote server
+
+# Google AI (Gemini)
+c3 --provider google --model gemini-2.5-pro     # Explicit provider
+c3 --provider google --model gemini-2.5-flash   # Faster/cheaper
+c3 --provider google --list-models              # List available models
 ```
 
 ## Providers
@@ -47,6 +52,7 @@ codecuttlectl supports multiple LLM providers through a unified interface:
 | Provider | Flag | Models | Cost |
 |----------|------|--------|------|
 | **AWS Bedrock** (default) | `--provider bedrock` | Claude Opus 4.6, Sonnet, Haiku | Pay-per-token |
+| **Google AI** | `--provider google` | Gemini 2.5 Pro, Flash | Pay-per-token |
 | **Ollama** | `--provider ollama` | gemma4, llama3, qwen3, any local model | Free (local) |
 
 The provider is auto-detected from the model name prefix (e.g., `ollama:gemma4:31b`). See [`docs/providers.md`](docs/providers.md) for details.
@@ -64,7 +70,7 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Typed Schema** — auto-derived JSON Schema from Go structs | Done |
 | **Scaffold Generator** — plugin stub generation mid-session | Done |
 | **Context Compaction** — heuristic tool result summarization | Done |
-| **Multi-Provider** — Bedrock + Ollama via provider interface | Done |
+| **Multi-Provider** — Bedrock + Google + Ollama via provider interface | Done |
 | **State Dictionary** — ground-truth injection for local models | Done |
 | **Auto-Planning** — harness-managed task extraction from text | Done |
 | **Work Backlog** — cross-session deferred intent queue | Designed |
@@ -111,6 +117,8 @@ See [`docs/sessions-and-inkwell.md`](docs/sessions-and-inkwell.md).
 1. **Tools** (~12k tokens) — cached at end of `toolConfig` (never changes)
 2. **System prompt** (~6k tokens) — cached after stable base, dynamic injections after
 3. **Messages** — checkpoint on most recent message; prefix extends forward monotonically
+
+Google AI context caching is also supported for the system prompt and tools, automatically engaging when token counts exceed the `--google-cache-threshold`.
 
 The TUI status bar shows live metrics: `45.2k in  8.1k out  87% cache  ~$0.42`
 

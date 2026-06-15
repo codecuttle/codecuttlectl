@@ -14,9 +14,8 @@ codecuttlectl --profile my-aws-profile                    # Named AWS profile
 ```
 
 **Features exclusive to Bedrock:**
-- Prompt caching (3-tier incremental extension)
+- 3-tier incremental extension caching (evaluated per-request)
 - Cache keepalive pings (4-min TTL refresh)
-- Cost estimation in status bar
 - Extended thinking/reasoning mode (`--thinking`)
 
 ## Ollama (local models)
