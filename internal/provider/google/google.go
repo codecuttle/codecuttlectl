@@ -199,6 +199,8 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 			role = "model"
 		}
 		var parts []*genai.Part
+		var lastSignature []byte
+
 		for _, b := range m.Content {
 			switch b := b.(type) {
 			case provider.TextBlock:
@@ -213,6 +215,9 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 				}
 				if b.Signature != "" {
 					part.ThoughtSignature = []byte(b.Signature)
+					lastSignature = part.ThoughtSignature
+				} else if len(lastSignature) > 0 {
+					part.ThoughtSignature = lastSignature
 				}
 				parts = append(parts, part)
 			case provider.ToolUseBlock:
@@ -230,6 +235,9 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 				// Gemini 3 requires ThoughtSignature on function call parts
 				if b.ThoughtSignature != "" {
 					part.ThoughtSignature = []byte(b.ThoughtSignature)
+					lastSignature = part.ThoughtSignature
+				} else if len(lastSignature) > 0 {
+					part.ThoughtSignature = lastSignature
 				}
 				parts = append(parts, part)
 			case provider.ToolResultBlock:
@@ -243,6 +251,9 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 						},
 					},
 				})
+				if b.Name == "" {
+					log.Printf("CRITICAL: b.Name is empty for ToolResultBlock! ToolUseID: %s", b.ToolUseID)
+				}
 			}
 		}
 		if len(parts) > 0 {
