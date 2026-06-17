@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 
@@ -29,8 +29,8 @@ import (
 // Config holds the configuration needed to create the TUI app.
 type Config struct {
 	Client         *bedrock.Client
-	Pool           *bedrock.ModelPool // Multi-model pool (if set, Client is ignored for primary)
-	Provider       provider.Provider  // Provider interface (used when Client is nil)
+	Pool           provider.Pool     // Multi-model pool (if set, Client is ignored for primary)
+	Provider       provider.Provider // Provider interface (used when Client is nil)
 	PluginMgr      *pluginhost.Manager
 	System         string // Rendered system prompt
 	WorkDir        string
@@ -53,7 +53,7 @@ type Model struct {
 
 	// Configuration
 	client         *bedrock.Client
-	pool           *bedrock.ModelPool
+	pool           provider.Pool
 	llmProvider    provider.Provider // Provider interface (non-nil for Ollama, etc.)
 	pluginMgr      *pluginhost.Manager
 	system         string
@@ -62,15 +62,15 @@ type Model struct {
 	thinkingBudget int
 
 	// Conversation state
-	history   []provider.Message
-	messages  []chatMessage
-	streaming bool
-	streamBuf *strings.Builder
-	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
-	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
-	stateDict  *stateDict // State dictionary for small-model grounding (nil for large models)
-	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
-	autoNudgeCount int // Number of auto-nudges in this turn (capped to prevent infinite loops)
+	history           []provider.Message
+	messages          []chatMessage
+	streaming         bool
+	streamBuf         *strings.Builder
+	streamCh          <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
+	streamStep        int                         // Counts consecutive tool-use rounds in this turn (for grounding)
+	stateDict         *stateDict                  // State dictionary for small-model grounding (nil for large models)
+	lastExecutedTools []pendingTool               // Tools from the last execution (for state dict tracking)
+	autoNudgeCount    int                         // Number of auto-nudges in this turn (capped to prevent infinite loops)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -89,14 +89,14 @@ type Model struct {
 	pendingToolCalls []pendingTool
 
 	// Active tool execution streaming state
-	activeToolName   string          // Name of currently executing tool
+	activeToolName   string           // Name of currently executing tool
 	activeToolOutput *strings.Builder // Rolling output buffer for live preview
 
 	// Approval gate state
-	approvalPending  *approval.Request // Non-nil when awaiting user approval
-	approvalTool     *pendingTool      // The tool awaiting approval
-	approvalRemaining []pendingTool    // Tools queued behind the approval gate
-	autoApprove      bool              // When true, skip confirmation prompts
+	approvalPending   *approval.Request // Non-nil when awaiting user approval
+	approvalTool      *pendingTool      // The tool awaiting approval
+	approvalRemaining []pendingTool     // Tools queued behind the approval gate
+	autoApprove       bool              // When true, skip confirmation prompts
 
 	// Todo state
 	todos        *todo.List
@@ -108,21 +108,21 @@ type Model struct {
 	lastSavedDraft string
 
 	// Stats
-	totalInputTokens          int32
-	totalOutputTokens         int32
-	totalCacheReadInputTokens int32
+	totalInputTokens           int32
+	totalOutputTokens          int32
+	totalCacheReadInputTokens  int32
 	totalCacheWriteInputTokens int32
 
 	// Per-call stats (most recent API call — used for context window %)
-	lastCallInputTokens          int32
-	lastCallCacheReadInputTokens int32
+	lastCallInputTokens           int32
+	lastCallCacheReadInputTokens  int32
 	lastCallCacheWriteInputTokens int32
 
 	// Context window size for this provider (tokens)
 	contextWindow int32
 
-	spinnerColorIdx   int
-	spinnerTickCount  int
+	spinnerColorIdx  int
+	spinnerTickCount int
 
 	// Layout
 	width  int
@@ -221,7 +221,9 @@ func New(cfg Config) Model {
 
 	// If pool is provided, use its primary client
 	if m.pool != nil && m.client == nil {
-		m.client = m.pool.Primary()
+		if bp, ok := m.pool.(interface{ BedrockPool() *bedrock.ModelPool }); ok {
+			m.client = bp.BedrockPool().Primary()
+		}
 	}
 
 	// If no bedrock client but we have a provider, create a wrapper for provider-aware streaming
@@ -271,7 +273,7 @@ func (m Model) SessionID() string {
 }
 
 // Pool returns the model pool (may be nil if constructed without one).
-func (m Model) Pool() *bedrock.ModelPool {
+func (m Model) Pool() provider.Pool {
 	return m.pool
 }
 
@@ -765,7 +767,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Build result for the denied tool and execute remaining tools normally
 		return m, m.executeDeniedToolAndRemaining(tool, remaining)
 
-
 	case ContinueStreamMsg:
 		// Process any todo updates safely in the Update handler (single-threaded)
 		todoIdx := 0
@@ -1186,7 +1187,7 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	m.viewport.SetContent(m.renderMessages())
 	m.viewport.GotoBottom()
 
-	m.streamStep = 0 // Reset step counter for new user turn
+	m.streamStep = 0     // Reset step counter for new user turn
 	m.autoNudgeCount = 0 // Reset auto-nudge counter for new user turn
 	// Initialize or update state dictionary for small-model grounding
 	if m.needsGroundingAssist() {
@@ -1223,7 +1224,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 					ToolUseID: tool.id,
 					Name:      tool.name,
 					Content:   "", // placeholder, filled in by Update
-					IsError: false,
+					IsError:   false,
 				})
 				continue
 			}
@@ -1273,7 +1274,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 				ToolUseID: tool.id,
 				Name:      tool.name,
 				Content:   output,
-				IsError: status,
+				IsError:   status,
 			})
 		}
 
@@ -1305,7 +1306,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 			ToolUseID: tool.id,
 			Name:      tool.name,
 			Content:   output,
-			IsError: status,
+			IsError:   status,
 		})
 
 		// Execute remaining tools (they may also need approval)
@@ -1316,7 +1317,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 					ToolUseID: rt.id,
 					Name:      rt.name,
 					Content:   "",
-					IsError: false,
+					IsError:   false,
 				})
 				continue
 			}
@@ -1359,7 +1360,7 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 				ToolUseID: rt.id,
 				Name:      rt.name,
 				Content:   rtOutput,
-				IsError: rtStatus,
+				IsError:   rtStatus,
 			})
 		}
 
@@ -1383,7 +1384,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 			ToolUseID: tool.id,
 			Name:      tool.name,
 			Content:   "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.",
-			IsError: true,
+			IsError:   true,
 		})
 
 		// Execute remaining tools normally
@@ -1394,7 +1395,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 					ToolUseID: rt.id,
 					Name:      rt.name,
 					Content:   "",
-					IsError: false,
+					IsError:   false,
 				})
 				continue
 			}
@@ -1437,7 +1438,7 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 				ToolUseID: rt.id,
 				Name:      rt.name,
 				Content:   rtOutput,
-				IsError: rtStatus,
+				IsError:   rtStatus,
 			})
 		}
 
@@ -1629,8 +1630,10 @@ func (m *Model) renderStatusBar() string {
 	modelName := ""
 	region := ""
 	if m.pool != nil {
-		modelName = m.pool.Info(bedrock.RolePrimary).DisplayName
-		region = m.pool.Region()
+		modelName = m.pool.Info(string(bedrock.RolePrimary)).DisplayName
+		if bp, ok := m.pool.(interface{ BedrockPool() *bedrock.ModelPool }); ok {
+			region = bp.BedrockPool().Region()
+		}
 	} else if m.client != nil {
 		modelName = m.client.ModelID()
 		region = m.client.Region()
@@ -1725,7 +1728,7 @@ func (m *Model) estimateCost() float64 {
 		// token usage and aggregate costs across roles. See docs/multi-model-design.md
 		// "Cost Tracking Changes" section for the per-role TokenStats design.
 		return m.pool.EstimateCost(
-			bedrock.RolePrimary,
+			string(bedrock.RolePrimary),
 			int64(m.totalInputTokens),
 			int64(m.totalOutputTokens),
 			int64(m.totalCacheReadInputTokens),

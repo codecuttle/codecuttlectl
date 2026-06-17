@@ -26,16 +26,16 @@ import (
 
 // Agent orchestrates the conversation between the user, the LLM, and the tool system.
 type Agent struct {
-	client       *bedrock.Client    // Bedrock client (nil when using provider interface)
-	pool         *bedrock.ModelPool // Multi-model pool (nil when using provider interface)
-	provider     provider.Provider  // Provider interface (used when client/pool is nil)
+	client       *bedrock.Client   // Bedrock client (nil when using provider interface)
+	pool         provider.Pool     // Multi-model pool (nil when using provider interface)
+	provider     provider.Provider // Provider interface (used when client/pool is nil)
 	promptMgr    *prompt.Manager
 	pluginMgr    *pluginhost.Manager
 	systemPrompt string
 	workDir      string
 	pluginDir    string
-	history      []types.Message         // Bedrock SDK messages (used when client != nil)
-	provHistory  []provider.Message      // Provider-agnostic messages (used when provider != nil)
+	history      []types.Message    // Bedrock SDK messages (used when client != nil)
+	provHistory  []provider.Message // Provider-agnostic messages (used when provider != nil)
 	todos        *todo.List
 	maxSteps     int
 	verbose      bool
@@ -61,9 +61,9 @@ type Agent struct {
 
 // Config holds configuration for creating an Agent.
 type Config struct {
-	Client    *bedrock.Client    // Bedrock client (nil when using Provider)
-	Pool      *bedrock.ModelPool // Multi-model pool (if set, Client is ignored)
-	Provider  provider.Provider  // Provider interface (takes precedence over Client when non-nil)
+	Client    *bedrock.Client   // Bedrock client (nil when using Provider)
+	Pool      provider.Pool     // Multi-model pool (if set, Client is ignored)
+	Provider  provider.Provider // Provider interface (takes precedence over Client when non-nil)
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
 	WorkDir   string
@@ -72,8 +72,8 @@ type Config struct {
 	Verbose   bool   // Print debug info
 
 	// Safety
-	AutoApprove    bool                       // When true, skip destructive op confirmation
-	ApprovalFunc   func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
+	AutoApprove  bool                                              // When true, skip destructive op confirmation
+	ApprovalFunc func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
 
 	// Audit
 	AuditLogger *audit.Logger // Structured event logger (nil = no structured logs)
@@ -91,7 +91,11 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 	// Resolve client from pool if not provided directly
 	if cfg.Client == nil && cfg.Pool != nil {
-		cfg.Client = cfg.Pool.Primary()
+		if bp, ok := cfg.Pool.(interface{ BedrockPool() *bedrock.ModelPool }); ok {
+			cfg.Client = bp.BedrockPool().Primary()
+		} else if primary := cfg.Pool.Primary(); primary != nil {
+			cfg.Provider = primary
+		}
 	}
 
 	var systemPrompt string
@@ -685,9 +689,9 @@ func (a *Agent) handleGetSkill(input json.RawMessage) string {
 
 func (a *Agent) handleScaffoldPlugin(input json.RawMessage) (string, types.ToolResultStatus) {
 	var params struct {
-		Title                string `json:"title"`
-		Description          string `json:"description"`
-		Params               []struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Params      []struct {
 			Name        string   `json:"name"`
 			Type        string   `json:"type"`
 			Description string   `json:"description"`
