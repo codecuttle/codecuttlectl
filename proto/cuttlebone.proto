@@ -55,6 +55,12 @@ message DescribeResponse {
   // prompt based on trigger expressions evaluated against session state.
   // Companion plugins may ship only skills (no tool) for pure knowledge injection.
   repeated Skill skills = 7;
+
+  // command_patterns are shell command patterns that this tool claims ownership of.
+  // These are passed to other plugins (e.g., bash_exec) via ExecuteRequest.available_tools
+  // to enable dynamic tool discipline enforcement. See ToolInfo.command_patterns for syntax.
+  // An empty list means this tool does not claim any shell command patterns.
+  repeated string command_patterns = 8;
 }
 
 // Skill represents a unit of knowledge, workflow, or behavioral guidance
@@ -128,6 +134,31 @@ message ExecuteRequest {
 
   // request_id is a unique identifier for this invocation (for tracing/telemetry).
   string request_id = 3;
+
+  // available_tools provides the full tool registry to the executing plugin.
+  // This enables plugins (especially bash_exec) to dynamically enforce tool
+  // discipline by knowing what other tools are loaded and what they handle.
+  repeated ToolInfo available_tools = 4;
+}
+
+// ToolInfo provides minimal metadata about a loaded tool, passed to plugins
+// via ExecuteRequest so they can make context-aware decisions (e.g., bash_exec
+// can dynamically detect when the agent should be using a dedicated tool).
+message ToolInfo {
+  // name is the tool's unique identifier (e.g., "git", "github", "webfetch").
+  string name = 1;
+
+  // description is the tool's purpose summary.
+  string description = 2;
+
+  // command_patterns are shell command patterns that this tool claims ownership of.
+  // bash_exec uses these to detect when a command should be routed to this tool.
+  // Patterns support simple glob-style matching:
+  //   "git *"              - any command starting with "git "
+  //   "*api.github.com*"   - any command containing "api.github.com"
+  //   "curl *"             - any command starting with "curl "
+  // An empty list means this tool does not claim any shell command patterns.
+  repeated string command_patterns = 3;
 }
 
 // ExecuteResponse contains the result of a tool invocation.

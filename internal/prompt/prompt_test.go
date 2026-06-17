@@ -45,7 +45,7 @@ func TestRenderSystem(t *testing.T) {
 		{Name: "write_file", Description: "Write a file"},
 	}
 
-	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", tools)
+	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools)
 	if err != nil {
 		t.Fatalf("RenderSystem() error: %v", err)
 	}
@@ -62,13 +62,54 @@ func TestRenderSystem(t *testing.T) {
 	}
 }
 
+func TestRenderSystemWithParams(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	tools := []ToolDef{
+		{
+			Name:        "bash_exec",
+			Description: "Execute a bash command and return its stdout and stderr.",
+			Parameters: []ToolParam{
+				{Name: "command", Type: "string", Required: true, Description: "The bash command to execute"},
+				{Name: "timeout", Type: "integer|string", Required: false, Description: "Timeout in seconds. Default: 120"},
+				{Name: "workdir", Type: "string", Required: false, Description: "Working directory for the command."},
+			},
+		},
+	}
+
+	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools)
+	if err != nil {
+		t.Fatalf("RenderSystem() error: %v", err)
+	}
+
+	// Verify parameters are rendered in the system prompt.
+	if !strings.Contains(result, "bash_exec") {
+		t.Error("expected tool name 'bash_exec' in rendered prompt")
+	}
+	if !strings.Contains(result, "`command`") {
+		t.Error("expected parameter 'command' in rendered prompt")
+	}
+	if !strings.Contains(result, "required") {
+		t.Error("expected 'required' marker in rendered prompt")
+	}
+	if !strings.Contains(result, "`timeout`") {
+		t.Error("expected parameter 'timeout' in rendered prompt")
+	}
+	if !strings.Contains(result, "integer|string") {
+		t.Error("expected oneOf type 'integer|string' in rendered prompt")
+	}
+}
+
 func TestRenderDefault(t *testing.T) {
 	mgr, err := NewManager()
 	if err != nil {
 		t.Fatalf("NewManager() error: %v", err)
 	}
 
-	ctx := DefaultContext("/work", "test-model", nil)
+	ctx := DefaultContext("/work", "test-model", "bedrock", nil)
 	result, err := mgr.Render("system/default.md", ctx)
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)

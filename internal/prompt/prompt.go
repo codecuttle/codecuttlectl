@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"runtime"
 	"text/template"
-	"time"
 )
 
 //go:embed all:system all:tools
@@ -18,8 +17,8 @@ var promptFS embed.FS
 type Context struct {
 	WorkingDirectory string
 	Platform         string
-	Date             string
 	Model            string
+	Provider         string
 	Tools            []ToolDef
 }
 
@@ -85,19 +84,19 @@ func (m *Manager) Render(name string, ctx Context) (string, error) {
 }
 
 // DefaultContext builds a Context with standard runtime information.
-func DefaultContext(workDir, model string, tools []ToolDef) Context {
+func DefaultContext(workDir, model, providerName string, tools []ToolDef) Context {
 	return Context{
 		WorkingDirectory: workDir,
 		Platform:         runtime.GOOS + "/" + runtime.GOARCH,
-		Date:             time.Now().Format("Mon Jan 2 2006"),
 		Model:            model,
+		Provider:         providerName,
 		Tools:            tools,
 	}
 }
 
 // RenderSystem renders the main system prompt with environment context.
-func (m *Manager) RenderSystem(workDir, model string, tools []ToolDef) (string, error) {
-	ctx := DefaultContext(workDir, model, tools)
+func (m *Manager) RenderSystem(workDir, model, providerName string, tools []ToolDef) (string, error) {
+	ctx := DefaultContext(workDir, model, providerName, tools)
 	return m.Render("system/coding.md", ctx)
 }
 

@@ -19,17 +19,23 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/conversation"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
+	googleprov "github.com/codecuttle/codecuttlectl/internal/provider/google"
+	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
 )
 
 func main() {
 	var (
-		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID or alias (opus, sonnet, haiku)")
+		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID or alias (opus, sonnet, haiku, or model name when --provider is set)")
 		auxModel  = flag.String("aux-model", "", "Auxiliary model for summaries/titles (default: auto-selected)")
 		planModel = flag.String("plan-model", "", "Planning model for mid-tier tasks (default: auto-selected)")
 		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
 		profile   = flag.String("profile", "", "AWS profile name")
+		providerF = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
+		ollamaURL = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
+		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
 		workDir   = flag.String("workdir", "", "Working directory (default: current directory)")
 		pluginDir = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
 		verbose   = flag.Bool("verbose", false, "Enable verbose/debug output")
@@ -41,6 +47,7 @@ func main() {
 		// Session management
 		sessionID     = flag.String("session", "", "Resume an existing session by ID")
 		listSessions  = flag.Bool("list-sessions", false, "Show recent sessions and exit")
+		listModels    = flag.Bool("list-models", false, "List available models for the selected provider and exit")
 		sessionLimit  = flag.Int("session-limit", 20, "Number of sessions to show in list")
 		pruneSessions = flag.Int("prune-sessions", 0, "Delete sessions older than N days and exit")
 
@@ -89,6 +96,12 @@ func main() {
 		return
 	}
 
+	// Handle --list-models
+	if *listModels {
+		runListModels(*providerF, *modelID)
+		return
+	}
+
 	// Handle --prune-sessions
 	if *pruneSessions > 0 {
 		runPruneSessions(store, *pruneSessions)
@@ -106,27 +119,75 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize Bedrock model pool (primary + auxiliary + planning)
-	resolvedModel := bedrock.ResolveModelID(*modelID)
-	pool, err := bedrock.NewPool(ctx, bedrock.PoolConfig{
-		Region:    *region,
-		Profile:   *profile,
-		Primary:   resolvedModel,
-		Auxiliary: *auxModel,
-		Planning:  *planModel,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
-		os.Exit(1)
-	}
-	client := pool.Primary()
+	// Initialize LLM provider
+	var llmProvider provider.Provider
+	var bedrockClient *bedrock.Client // Non-nil only for Bedrock (needed for Bedrock-specific features)
+	var bedrockPool *bedrock.ModelPool
 
-	if *verbose {
-		fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
-			pool.Info(bedrock.RolePrimary).DisplayName,
-			pool.Info(bedrock.RoleAuxiliary).DisplayName,
-			pool.Info(bedrock.RolePlanning).DisplayName,
-		)
+	providerName := *providerF
+	// Auto-detect provider from model name prefix (e.g., "ollama:gemma4")
+	if providerName == "" && strings.HasPrefix(*modelID, "ollama:") {
+		providerName = "ollama"
+		*modelID = strings.TrimPrefix(*modelID, "ollama:")
+	}
+	if providerName == "" {
+		providerName = "bedrock"
+	}
+
+	switch providerName {
+	case "ollama":
+		ollamaClient := ollama.New(ollama.Config{
+			BaseURL: *ollamaURL,
+			Model:   *modelID,
+		})
+		llmProvider = ollamaClient
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "[provider] ollama model=%s url=%s\n", *modelID, ollamaClient.ID())
+		}
+
+	case "google":
+		googleClient, err := googleprov.New(ctx, googleprov.Config{
+			Model:          *modelID,
+			CacheThreshold: *googleCacheThreshold,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing Google client: %v\n", err)
+			os.Exit(1)
+		}
+		llmProvider = googleClient
+		// Ensure cache cleanup on shutdown
+		defer googleClient.Close(context.Background())
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "[provider] google model=%s cache-threshold=%d\n", *modelID, *googleCacheThreshold)
+		}
+
+	case "bedrock":
+		resolvedModel := bedrock.ResolveModelID(*modelID)
+		pool, err := bedrock.NewPool(ctx, bedrock.PoolConfig{
+			Region:    *region,
+			Profile:   *profile,
+			Primary:   resolvedModel,
+			Auxiliary: *auxModel,
+			Planning:  *planModel,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
+			os.Exit(1)
+		}
+		bedrockPool = pool
+		bedrockClient = pool.Primary()
+		llmProvider = nil // TUI/Agent still use bedrockClient directly for now
+		if *verbose {
+			fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
+				pool.Info(bedrock.RolePrimary).DisplayName,
+				pool.Info(bedrock.RoleAuxiliary).DisplayName,
+				pool.Info(bedrock.RolePlanning).DisplayName,
+			)
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama)\n", providerName)
+		os.Exit(1)
 	}
 
 	// Initialize prompt manager
@@ -153,9 +214,16 @@ func main() {
 		promptTools = append(promptTools, prompt.ToolDef{
 			Name:        def.Name,
 			Description: def.Description,
+			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 		})
 	}
-	systemPrompt, err := promptMgr.RenderSystem(*workDir, client.ModelID(), promptTools)
+	modelDisplayID := *modelID
+	if bedrockClient != nil {
+		modelDisplayID = bedrockClient.ModelID()
+	} else if llmProvider != nil {
+		modelDisplayID = llmProvider.Name()
+	}
+	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error rendering system prompt: %v\n", err)
 		os.Exit(1)
@@ -167,20 +235,21 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, client, pool, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
+		runOneShot(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, client, pool, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
+		runPlainREPL(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
 		return
 	}
 
 	// Full-screen TUI mode
 	model := tui.New(tui.Config{
-		Client:         client,
-		Pool:           pool,
+		Client:         bedrockClient,
+		Pool:           bedrockPool,
+		Provider:       llmProvider,
 		PluginMgr:      pluginMgr,
 		System:         systemPrompt,
 		WorkDir:        *workDir,
@@ -205,10 +274,11 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
+		Provider:    llmProvider,
 		PromptMgr:   nil, // Not needed, system prompt already rendered
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
@@ -227,7 +297,15 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.Model
 
 	// Create a new session if not resuming
 	if sessionID == "" {
-		id, err := agent.InitSession(client.ModelID(), client.Region(), workDir)
+		modelID := ""
+		region := ""
+		if client != nil {
+			modelID = client.ModelID()
+			region = client.Region()
+		} else if llmProvider != nil {
+			modelID = llmProvider.ID()
+		}
+		id, err := agent.InitSession(modelID, region, workDir)
 		if err != nil && verbose {
 			fmt.Fprintf(os.Stderr, "Warning: session creation failed: %v\n", err)
 		}
@@ -258,8 +336,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.Model
 	printSessionExit(agent.SessionID())
 }
 
-// runPlainREPL runs the old-style plain text REPL (fallback for non-TTY environments).
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -276,6 +353,7 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.Mod
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:       client,
 		Pool:         pool,
+		Provider:     llmProvider,
 		PromptMgr:    nil,
 		PluginMgr:    pluginMgr,
 		WorkDir:      workDir,
@@ -294,8 +372,16 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.Mod
 	agent.SetSystemPrompt(system)
 
 	// Create a new session if not resuming
+	modelID := ""
+	region := ""
+	if client != nil {
+		modelID = client.ModelID()
+		region = client.Region()
+	} else if llmProvider != nil {
+		modelID = llmProvider.ID()
+	}
 	if sessionID == "" {
-		id, _ := agent.InitSession(client.ModelID(), client.Region(), workDir)
+		id, _ := agent.InitSession(modelID, region, workDir)
 		if id != "" {
 			fmt.Printf("Session: %s\n", id)
 		}
@@ -304,7 +390,7 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.Mod
 	}
 
 	fmt.Println("codecuttlectl - Codecuttle Meta-Harness Agent (plain mode)")
-	fmt.Printf("Model: %s | Region: %s | Plugins: %d\n", client.ModelID(), client.Region(), pluginMgr.Count())
+	fmt.Printf("Model: %s | Plugins: %d\n", modelID, pluginMgr.Count())
 	fmt.Println("Type your message and press Enter. Type 'exit' or Ctrl+C to quit.")
 	fmt.Println()
 
@@ -414,6 +500,68 @@ func runPruneSessions(store session.Store, days int) {
 		os.Exit(1)
 	}
 	fmt.Printf("Pruned %d session(s) older than %d days.\n", deleted, days)
+}
+
+// runListModels lists available models for the given provider.
+func runListModels(providerName, currentModel string) {
+	// Resolve provider name
+	if providerName == "" {
+		if strings.HasPrefix(currentModel, "ollama:") {
+			providerName = "ollama"
+		} else {
+			providerName = "bedrock"
+		}
+	}
+
+	switch providerName {
+	case "google":
+		runListGoogleModels()
+	case "ollama":
+		fmt.Println("Ollama models — use 'ollama list' to see locally available models.")
+	case "bedrock":
+		fmt.Println("AWS Bedrock models (common Anthropic models):")
+		fmt.Println("  us.anthropic.claude-opus-4-6-v1          (Claude Opus 4)")
+		fmt.Println("  us.anthropic.claude-sonnet-4-20250514-v1:0 (Claude Sonnet 4)")
+		fmt.Println("  us.anthropic.claude-3-7-sonnet-20250219-v1:0 (Claude 3.7 Sonnet)")
+		fmt.Println("  us.anthropic.claude-3-5-haiku-20241022-v1:0  (Claude 3.5 Haiku)")
+		fmt.Println("\n  Use AWS CLI: aws bedrock list-foundation-models --region us-west-2")
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown provider: %s\n", providerName)
+		os.Exit(1)
+	}
+}
+
+func runListGoogleModels() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	client, err := googleprov.NewClientForListing(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error connecting to Google AI: %v\n", err)
+		os.Exit(1)
+	}
+
+	models, err := googleprov.ListModels(ctx, client)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing models: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Available Google AI models:")
+	fmt.Println()
+	for _, m := range models {
+		fmt.Printf("  %s\n", m)
+	}
+
+	// Show aliases
+	aliases := googleprov.ModelAliases()
+	if len(aliases) > 0 {
+		fmt.Println()
+		fmt.Println("Aliases (shortcuts):")
+		for alias, canonical := range aliases {
+			fmt.Printf("  %s -> %s\n", alias, canonical)
+		}
+	}
 }
 
 // formatAge returns a human-readable age string.

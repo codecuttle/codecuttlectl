@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	providerPkg "github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
 // Message is the JSON-serializable representation of a conversation message.
@@ -19,11 +20,15 @@ type Message struct {
 // ContentItem is a tagged union for serialized content blocks.
 // The Type field determines which other fields are populated.
 type ContentItem struct {
-	// Type discriminator: "text", "tool_use", "tool_result"
+	// Type discriminator: "text", "tool_use", "tool_result", "reasoning"
 	Type string `json:"type"`
 
 	// For Type=="text": the text content
 	Text string `json:"text,omitempty"`
+
+	// For Type=="reasoning": thought signature for Gemini 3 multi-turn continuity
+	// For Type=="tool_use": thought signature attached to function call (Gemini 3)
+	Signature string `json:"signature,omitempty"`
 
 	// For Type=="tool_use": the tool invocation details
 	ToolUseID string          `json:"tool_use_id,omitempty"`
@@ -34,6 +39,124 @@ type ContentItem struct {
 	Content   string `json:"content,omitempty"`   // Result text
 	Status    string `json:"status,omitempty"`    // "success" or "error"
 	ResultFor string `json:"result_for,omitempty"` // ToolUseID this result corresponds to
+}
+
+// MarshalProviderHistory converts provider-agnostic messages into the session
+// serializable format. This enables session persistence for non-Bedrock providers
+// (Ollama, etc.) which use provider.Message instead of Bedrock SDK types.
+func MarshalProviderHistory(messages []providerPkg.Message) ([]Message, error) {
+	result := make([]Message, 0, len(messages))
+
+	for _, msg := range messages {
+		serialized := Message{
+			Role: string(msg.Role),
+		}
+
+		for _, block := range msg.Content {
+			item := marshalProviderBlock(block)
+			serialized.Blocks = append(serialized.Blocks, item)
+		}
+
+		result = append(result, serialized)
+	}
+
+	return result, nil
+}
+
+// UnmarshalProviderHistory converts session messages into provider-agnostic format.
+// This enables session resume for non-Bedrock providers without going through
+// the Bedrock SDK types as an intermediate step.
+func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
+	var result []providerPkg.Message
+	toolNames := make(map[string]string) // ToolUseID -> Name
+
+	for _, msg := range messages {
+		var role providerPkg.Role
+		switch msg.Role {
+		case "user":
+			role = providerPkg.RoleUser
+		case "assistant":
+			role = providerPkg.RoleAssistant
+		default:
+			role = providerPkg.Role(msg.Role)
+		}
+
+		var blocks []providerPkg.ContentBlock
+		for _, item := range msg.Blocks {
+			switch item.Type {
+			case "text":
+				blocks = append(blocks, providerPkg.TextBlock{Text: item.Text})
+			case "reasoning":
+				blocks = append(blocks, providerPkg.ReasoningBlock{
+					Text:      item.Text,
+					Signature: item.Signature,
+				})
+			case "tool_use":
+				input := json.RawMessage(item.Input)
+				if len(input) == 0 {
+					input = json.RawMessage("{}")
+				}
+				toolNames[item.ToolUseID] = item.Name
+				blocks = append(blocks, providerPkg.ToolUseBlock{
+					ToolUseID:        item.ToolUseID,
+					Name:             item.Name,
+					Input:            input,
+					ThoughtSignature: item.Signature,
+				})
+			case "tool_result":
+				name := item.Name
+				if name == "" {
+					name = toolNames[item.ResultFor]
+				}
+				blocks = append(blocks, providerPkg.ToolResultBlock{
+					ToolUseID: item.ResultFor,
+					Name:      name,
+					Content:   item.Content,
+					IsError:   item.Status == "error",
+				})
+			}
+		}
+
+		result = append(result, providerPkg.Message{Role: role, Content: blocks})
+	}
+
+	return result
+}
+
+// marshalProviderBlock converts a provider ContentBlock to a session ContentItem.
+func marshalProviderBlock(block providerPkg.ContentBlock) ContentItem {
+	switch b := block.(type) {
+	case providerPkg.TextBlock:
+		return ContentItem{Type: "text", Text: b.Text}
+	case providerPkg.ReasoningBlock:
+		return ContentItem{Type: "reasoning", Text: b.Text, Signature: b.Signature}
+	case providerPkg.ToolUseBlock:
+		input := json.RawMessage(b.Input)
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		return ContentItem{
+			Type:      "tool_use",
+			ToolUseID: b.ToolUseID,
+			Name:      b.Name,
+			Input:     input,
+			Signature: b.ThoughtSignature,
+		}
+	case providerPkg.ToolResultBlock:
+		status := "success"
+		if b.IsError {
+			status = "error"
+		}
+		return ContentItem{
+			Type:      "tool_result",
+			Name:      b.Name,
+			Content:   b.Content,
+			Status:    status,
+			ResultFor: b.ToolUseID,
+		}
+	default:
+		return ContentItem{Type: "text", Text: "[unsupported content block]"}
+	}
 }
 
 // MarshalHistory converts Bedrock SDK message types into our serializable format.

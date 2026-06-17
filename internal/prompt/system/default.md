@@ -29,6 +29,10 @@ After receiving tool results, either:
 - Invoke another tool if the task requires further steps
 - Report completion with a brief summary of what was accomplished
 
+### Timeouts
+- Default tool timeout is 120 seconds.
+- CRITICAL: You must proactively use your best judgment to set a longer `timeout` (e.g., 300, 600) for operations that involve substantial provisioning, downloading, or slow tests. Do not wait for a timeout to occur before increasing the limit.
+
 ## Output Format
 
 - Use plain text or markdown for responses to the user.
@@ -39,4 +43,3 @@ After receiving tool results, either:
 
 {{if .WorkingDirectory}}Working directory: {{.WorkingDirectory}}{{end}}
 {{if .Platform}}Platform: {{.Platform}}{{end}}
-{{if .Date}}Date: {{.Date}}{{end}}

@@ -11,6 +11,14 @@
 
 **Why not use a third-party LLM SDK (LangChain, etc.)?** Direct SDK gives us full control over the Converse API, streaming event handling, and extended thinking — without abstraction layers that add latency or hide failures.
 
+### Core: Google AI (Gemini)
+
+| Package | Why |
+|---------|-----|
+| `google.golang.org/genai` | Official Google Gen AI SDK (v1.60.0). Supports `GenerateContent`, `GenerateContentStream` (returns `iter.Seq2`), context caching API, and model listing. Handles ADC and API key auth. |
+
+**Why the official SDK?** The `genai` package provides first-class support for Google's Context Caching API, `iter.Seq2`-based streaming, and typed function calling — all features we use directly. Third-party wrappers (e.g., LangChain) would add abstraction without adding value.
+
 ### Core: Plugin System
 
 | Package | Why |

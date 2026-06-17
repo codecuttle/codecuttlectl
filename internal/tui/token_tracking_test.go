@@ -1,8 +1,37 @@
 package tui
 
 import (
+	"context"
 	"testing"
+
+	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
+
+// mockBedrockProvider implements provider.Provider and provider.CostEstimator
+// with Bedrock-like pricing for testing purposes.
+type mockBedrockProvider struct{}
+
+func (p *mockBedrockProvider) ID() string   { return "test:mock" }
+func (p *mockBedrockProvider) Name() string { return "mock" }
+func (p *mockBedrockProvider) Converse(ctx context.Context, req provider.Request) (*provider.Response, error) {
+	return nil, nil
+}
+func (p *mockBedrockProvider) ConverseStream(ctx context.Context, req provider.Request) <-chan provider.StreamEvent {
+	return nil
+}
+func (p *mockBedrockProvider) EstimateCost(usage provider.Usage) float64 {
+	const (
+		inputPer1M      = 5.00
+		outputPer1M     = 25.00
+		cacheWritePer1M = 6.25
+		cacheReadPer1M  = 0.50
+	)
+	input := float64(usage.InputTokens) / 1_000_000 * inputPer1M
+	output := float64(usage.OutputTokens) / 1_000_000 * outputPer1M
+	cacheWrite := float64(usage.CacheWriteTokens) / 1_000_000 * cacheWritePer1M
+	cacheRead := float64(usage.CacheReadTokens) / 1_000_000 * cacheReadPer1M
+	return input + output + cacheWrite + cacheRead
+}
 
 func TestFormatTokenCount(t *testing.T) {
 	tests := []struct {
@@ -33,7 +62,9 @@ func TestFormatTokenCount(t *testing.T) {
 }
 
 func TestEstimateCost(t *testing.T) {
-	m := &Model{}
+	m := &Model{
+		llmProvider: &mockBedrockProvider{},
+	}
 
 	// Zero tokens = zero cost
 	cost := m.estimateCost()
@@ -136,7 +167,7 @@ func TestContextWindowPercentage(t *testing.T) {
 			ctxUsed := tt.input + tt.cacheRead + tt.cacheWrite
 			got := 0
 			if ctxUsed > 0 {
-				got = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+				got = int(float64(ctxUsed) / float64(defaultContextWindowSize) * 100)
 			}
 			if got != tt.wantPct {
 				t.Errorf("context window %% = %d, want %d", got, tt.wantPct)

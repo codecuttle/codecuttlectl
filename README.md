@@ -25,13 +25,37 @@ echo 'alias c3="codecuttlectl -plugin-dir /usr/local/lib/codecuttlectl/plugins"'
 ## Usage
 
 ```bash
+# Bedrock (default provider)
 c3                              # TUI
 c3 -no-tui                      # Streaming REPL
 c3 -message "Fix the build"    # One-shot
 c3 --session ses_abc123         # Resume
 c3 --list-sessions              # Recent sessions
 c3 -thinking                    # Extended reasoning
+
+# Ollama (local models)
+c3 --provider ollama --model gemma4:31b         # Explicit provider
+c3 --model ollama:gemma4:31b                    # Auto-detect from prefix
+c3 --provider ollama --model qwen3:32b          # Any Ollama model
+c3 --provider ollama --ollama-url http://remote:11434 --model gemma4:31b  # Remote server
+
+# Google AI (Gemini)
+c3 --provider google --model gemini-2.5-pro     # Explicit provider
+c3 --provider google --model gemini-2.5-flash   # Faster/cheaper
+c3 --provider google --list-models              # List available models
 ```
+
+## Providers
+
+codecuttlectl supports multiple LLM providers through a unified interface:
+
+| Provider | Flag | Models | Cost |
+|----------|------|--------|------|
+| **AWS Bedrock** (default) | `--provider bedrock` | Claude Opus 4.6, Sonnet, Haiku | Pay-per-token |
+| **Google AI** | `--provider google` | Gemini 2.5 Pro, Flash | Pay-per-token |
+| **Ollama** | `--provider ollama` | gemma4, llama3, qwen3, any local model | Free (local) |
+
+The provider is auto-detected from the model name prefix (e.g., `ollama:gemma4:31b`). See [`docs/providers.md`](docs/providers.md) for details.
 
 ## Architecture
 
@@ -46,6 +70,9 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Typed Schema** — auto-derived JSON Schema from Go structs | Done |
 | **Scaffold Generator** — plugin stub generation mid-session | Done |
 | **Context Compaction** — heuristic tool result summarization | Done |
+| **Multi-Provider** — Bedrock + Google + Ollama via provider interface | Done |
+| **State Dictionary** — ground-truth injection for local models | Done |
+| **Auto-Planning** — harness-managed task extraction from text | Done |
 | **Work Backlog** — cross-session deferred intent queue | Designed |
 | **Chromatophore Engine** — Chomsky hierarchy routing | Planned |
 | **Optic Lobe** — PostgreSQL + pgvector + AGE memory | Planned |
@@ -91,7 +118,11 @@ See [`docs/sessions-and-inkwell.md`](docs/sessions-and-inkwell.md).
 2. **System prompt** (~6k tokens) — cached after stable base, dynamic injections after
 3. **Messages** — checkpoint on most recent message; prefix extends forward monotonically
 
+Google AI context caching is also supported for the system prompt and tools, automatically engaging when token counts exceed the `--google-cache-threshold`.
+
 The TUI status bar shows live metrics: `45.2k in  8.1k out  87% cache  ~$0.42`
+
+For local models (Ollama), the status bar shows tokens and context window % without cost: `5.7k in  0.8k out  2% ctx`
 
 Session cost tracking persists across resumes. `--list-sessions` shows per-session cost estimates. `--audit-log` emits structured JSON events for external cost monitoring.
 
@@ -101,7 +132,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 
 ## Not yet implemented
 
-- Multi-model support (Haiku/Sonnet for auxiliary tasks — [design doc](docs/multi-model-design.md))
+- Multi-model routing (Haiku/Sonnet for auxiliary tasks — [design doc](docs/multi-model-design.md), PR #25 ready)
 - Chomsky routing (dynamic complexity classification — depends on multi-model)
 - Optic Lobe (cross-session semantic memory)
 - Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)

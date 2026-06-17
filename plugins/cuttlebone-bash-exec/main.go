@@ -41,16 +41,12 @@ func (t *bashExecTool) Describe(ctx context.Context) (*pb.DescribeResponse, erro
 		InputSchema: schema.MustSchema(&bashExecInput{}),
 		LlmContextHint: `Use bash_exec for system commands: building, testing, installing packages, running programs. Check exit codes in output for errors. Never run destructive commands (rm -rf /, DROP DATABASE) without explicit user permission.
 
-IMPORTANT: Do NOT use bash_exec for operations that have a dedicated tool:
-- Git operations → use the 'git' tool (not 'git commit' via bash)
-- GitHub API → use the 'github' tool (not curl to api.github.com)
-- File read/write/edit → use read_file, write_file, edit_file
-- File search → use grep, glob
-- Directory listing → use list_directory
-- Web search/fetch → use websearch, webfetch
+CRITICAL TOOL DISCIPLINE: DO NOT use this tool for git commands (use 'git'), reading files (use 'read_file'), editing files (use 'edit_file'), grepping (use 'grep'), or listing directories (use 'list_directory'). Your request will be blocked if you attempt to bypass dedicated tools.
 
-bash_exec is for: make, go build, go test, apt install, pip install, npm, docker, and other build/run/install operations with no dedicated tool.`,
-		Version:         "1.0.0",
+bash_exec is for: make, go build, go test, apt install, pip install, npm, docker, and other build/run/install operations with no dedicated tool.
+
+CRITICAL TIMEOUT GUIDANCE: The default timeout is 120s. For long-running commands (e.g., docker build, large dependency installations, heavy test suites), you MUST proactively set the 'timeout' parameter to 300, 600, or higher. Do not wait for a timeout failure to increase it.`,
+		Version: "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: true,
 			SupportsStreaming:    true,
@@ -75,12 +71,9 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 		}, nil
 	}
 
-	// Self-monitoring: detect when bash_exec is being used for operations
-	// that have dedicated tools. Block the command up to 3 times to give
-	// the agent a chance to self-correct. After 3 blocks, allow through
-	// with heavy telemetry for later analysis.
-	if warning := detectToolMisuse(params.Command); warning != "" {
-		// Track by the detected pattern (not exact command, to catch variations)
+	// Dynamic tool discipline: check if this command should be handled by
+	// a dedicated tool, using command_patterns from the available_tools registry.
+	if warning := detectToolMisuseDynamic(params.Command, req.AvailableTools); warning != "" {
 		patternKey := warning
 		misuseTracker.counts[patternKey]++
 		attempts := misuseTracker.counts[patternKey]
@@ -91,16 +84,15 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 				ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE (attempt %d/%d): %s\n\nThe command was NOT executed. Use the appropriate tool instead. After %d failed attempts, the command will be allowed through.",
 					attempts, maxMisuseBlocks, warning, maxMisuseBlocks),
 				Metadata: map[string]string{
-					"tool_misuse":    "true",
-					"blocked_cmd":    params.Command,
-					"attempt":        fmt.Sprintf("%d", attempts),
-					"max_attempts":   fmt.Sprintf("%d", maxMisuseBlocks),
+					"tool_misuse":  "true",
+					"blocked_cmd":  params.Command,
+					"attempt":      fmt.Sprintf("%d", attempts),
+					"max_attempts": fmt.Sprintf("%d", maxMisuseBlocks),
 				},
 			}, nil
 		}
 
 		// After maxMisuseBlocks attempts, allow through but emit telemetry
-		// The command will execute below, but we tag the response heavily.
 		fmt.Fprintf(os.Stderr, "[TELEMETRY] TOOL_DISCIPLINE_OVERRIDE: command=%q warning=%q attempts=%d\n",
 			params.Command, warning, attempts)
 	}
@@ -168,7 +160,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	metadata["exit_code"] = "0"
 
 	// If this command was allowed through after repeated blocks, tag the output
-	if warning := detectToolMisuse(params.Command); warning != "" {
+	if warning := detectToolMisuseDynamic(params.Command, req.AvailableTools); warning != "" {
 		metadata["tool_misuse_override"] = "true"
 		metadata["override_reason"] = warning
 		metadata["total_attempts"] = fmt.Sprintf("%d", misuseTracker.counts[warning])
@@ -185,8 +177,71 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 	}, nil
 }
 
-// detectToolMisuse checks if a bash command is doing something that a
-// dedicated tool should handle. Returns a warning message if detected.
+// detectToolMisuseDynamic checks if a bash command matches any command_patterns
+// declared by other loaded tools. This enables fully dynamic tool discipline —
+// no hardcoded tool names or patterns in bash_exec itself.
+// Returns a warning message if a match is found, empty string otherwise.
+func detectToolMisuseDynamic(command string, tools []*pb.ToolInfo) string {
+	if len(tools) == 0 {
+		// Fallback to legacy detection if no tool registry provided.
+		return detectToolMisuse(command)
+	}
+
+	cmd := strings.TrimSpace(command)
+	lower := strings.ToLower(cmd)
+
+	for _, tool := range tools {
+		if tool.Name == "bash_exec" {
+			continue // Don't match against ourselves
+		}
+		for _, pattern := range tool.CommandPatterns {
+			if matchCommandPattern(lower, strings.ToLower(pattern)) {
+				return fmt.Sprintf("Use the '%s' tool instead of bash_exec for this operation. The '%s' tool provides safety checks and proper error handling.",
+					tool.Name, tool.Name)
+			}
+		}
+	}
+
+	return ""
+}
+
+// matchCommandPattern checks if a command matches a glob-style pattern.
+// Supported syntax:
+//
+//	"git *"              → prefix match (anything starting with "git ")
+//	"*api.github.com*"  → contains match
+//	"curl *"            → prefix match
+//
+// Patterns with leading and trailing * are treated as "contains".
+// Patterns with only trailing * are treated as "starts with".
+// Patterns with only leading * are treated as "ends with".
+// Exact patterns (no *) are treated as exact prefix match.
+func matchCommandPattern(command, pattern string) bool {
+	// Handle *...*  (contains)
+	if strings.HasPrefix(pattern, "*") && strings.HasSuffix(pattern, "*") && len(pattern) > 2 {
+		inner := pattern[1 : len(pattern)-1]
+		return strings.Contains(command, inner)
+	}
+
+	// Handle ...* (starts with)
+	if strings.HasSuffix(pattern, "*") {
+		prefix := pattern[:len(pattern)-1]
+		return strings.HasPrefix(command, prefix)
+	}
+
+	// Handle *... (ends with)
+	if strings.HasPrefix(pattern, "*") {
+		suffix := pattern[1:]
+		return strings.HasSuffix(command, suffix)
+	}
+
+	// Exact match (or prefix if you want loose matching)
+	return strings.HasPrefix(command, pattern)
+}
+
+// detectToolMisuse is the legacy hardcoded detection used as fallback when
+// no available_tools registry is provided (e.g., during testing or if the
+// orchestrator hasn't been updated yet).
 func detectToolMisuse(command string) string {
 	cmd := strings.TrimSpace(command)
 	lower := strings.ToLower(cmd)
@@ -239,7 +294,7 @@ func (t *bashExecTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugi
 	}
 
 	// Tool discipline check (same as Execute)
-	if warning := detectToolMisuse(params.Command); warning != "" {
+	if warning := detectToolMisuseDynamic(params.Command, req.AvailableTools); warning != "" {
 		patternKey := warning
 		misuseTracker.counts[patternKey]++
 		attempts := misuseTracker.counts[patternKey]

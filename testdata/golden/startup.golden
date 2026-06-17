@@ -1,4 +1,4 @@
- codecuttlectl  us.anthropic.claude-opus-4-6-v1  us-east-1  4p                                                  0/0 tok
+ codecuttlectl  us.anthropic.claude-opus-4-6-v1  us-west-2  12p                       0 in 0 out 0% cache 0% ctx ~$0.00
 
 
 
@@ -37,4 +37,4 @@
 │ Type a message...                                                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  no active tasks                                                                                          ctrl+t tasks
- enter send   ctrl+r thinking   ctrl+t tasks   ctrl+c quit
+ enter send   shift+enter newline   ctrl+m mouse   ctrl+r thinking   ctrl+t tasks   ctrl+c quit

@@ -15,12 +15,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
+	"github.com/codecuttle/codecuttlectl/internal/conversation"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
+	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
@@ -29,6 +30,7 @@ import (
 type Config struct {
 	Client         *bedrock.Client
 	Pool           *bedrock.ModelPool // Multi-model pool (if set, Client is ignored for primary)
+	Provider       provider.Provider  // Provider interface (used when Client is nil)
 	PluginMgr      *pluginhost.Manager
 	System         string // Rendered system prompt
 	WorkDir        string
@@ -52,6 +54,7 @@ type Model struct {
 	// Configuration
 	client         *bedrock.Client
 	pool           *bedrock.ModelPool
+	llmProvider    provider.Provider // Provider interface (non-nil for Ollama, etc.)
 	pluginMgr      *pluginhost.Manager
 	system         string
 	workDir        string
@@ -59,11 +62,15 @@ type Model struct {
 	thinkingBudget int
 
 	// Conversation state
-	history   []types.Message
+	history   []provider.Message
 	messages  []chatMessage
 	streaming bool
 	streamBuf *strings.Builder
-	streamCh  <-chan bedrock.StreamEvent // Active stream channel
+	streamCh  <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
+	streamStep int // Counts consecutive tool-use rounds in this turn (for grounding)
+	stateDict  *stateDict // State dictionary for small-model grounding (nil for large models)
+	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
+	autoNudgeCount int // Number of auto-nudges in this turn (capped to prevent infinite loops)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -78,6 +85,7 @@ type Model struct {
 	currentToolID    string
 	currentToolName  string
 	currentToolInput *strings.Builder
+	currentToolSig   string // ThoughtSignature for current tool being streamed
 	pendingToolCalls []pendingTool
 
 	// Active tool execution streaming state
@@ -95,8 +103,9 @@ type Model struct {
 	todoExpanded bool
 
 	// Session persistence
-	store     session.Store
-	sessionID string
+	store          session.Store
+	sessionID      string
+	lastSavedDraft string
 
 	// Stats
 	totalInputTokens          int32
@@ -108,6 +117,9 @@ type Model struct {
 	lastCallInputTokens          int32
 	lastCallCacheReadInputTokens int32
 	lastCallCacheWriteInputTokens int32
+
+	// Context window size for this provider (tokens)
+	contextWindow int32
 
 	spinnerColorIdx   int
 	spinnerTickCount  int
@@ -139,7 +151,8 @@ type chatMessage struct {
 
 // contextWindowSize is the maximum input context window for Claude Opus 4.6 on Bedrock (1M tokens).
 // This went GA in March 2026 — no beta header required.
-const contextWindowSize = 1_000_000
+// Used as default; overridden by provider-specific context window when available.
+const defaultContextWindowSize = 1_000_000
 
 // cacheKeepaliveInterval is how often the keepalive ticker fires. Set to 4 minutes
 // to stay well within the 5-minute Bedrock cache TTL. If no real API call has been
@@ -147,9 +160,10 @@ const contextWindowSize = 1_000_000
 const cacheKeepaliveInterval = 4 * time.Minute
 
 type pendingTool struct {
-	id    string
-	name  string
-	input json.RawMessage
+	id               string
+	name             string
+	input            json.RawMessage
+	thoughtSignature string // Gemini 3 thought signature for this function call
 }
 
 // New creates a new TUI Model.
@@ -185,6 +199,7 @@ func New(cfg Config) Model {
 		spinner:          sp,
 		client:           cfg.Client,
 		pool:             cfg.Pool,
+		llmProvider:      cfg.Provider,
 		pluginMgr:        cfg.PluginMgr,
 		system:           cfg.System,
 		workDir:          cfg.WorkDir,
@@ -209,14 +224,36 @@ func New(cfg Config) Model {
 		m.client = m.pool.Primary()
 	}
 
+	// If no bedrock client but we have a provider, create a wrapper for provider-aware streaming
+	if m.llmProvider == nil && m.client != nil {
+		m.llmProvider = bedrockprov.New(m.client)
+	}
+
+	// Discover context window size from provider
+	if m.llmProvider != nil {
+		if cwp, ok := m.llmProvider.(provider.ContextWindowProvider); ok {
+			if cw := cwp.ContextWindow(); cw > 0 {
+				m.contextWindow = cw
+			}
+		}
+	}
+
 	// If resuming a session, restore conversation history
 	if cfg.Store != nil && cfg.SessionID != "" {
 		m.restoreSession()
 	} else if cfg.Store != nil {
 		// Create a new session
+		modelName := ""
+		region := ""
+		if cfg.Client != nil {
+			modelName = cfg.Client.ModelID()
+			region = cfg.Client.Region()
+		} else if cfg.Provider != nil {
+			modelName = cfg.Provider.ID()
+		}
 		meta := session.SessionMeta{
-			Model:   cfg.Client.ModelID(),
-			Region:  cfg.Client.Region(),
+			Model:   modelName,
+			Region:  region,
 			WorkDir: cfg.WorkDir,
 		}
 		id, err := cfg.Store.Create(meta)
@@ -350,24 +387,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.streamCh = nil
 					m.interruptPending = false
 					// Finalize any partial content as the response
-					if m.streamBuf.Len() > 0 {
-						content := m.streamBuf.String()
-						m.messages = append(m.messages, chatMessage{
-							role:    "assistant",
-							content: sanitizeModelText(content) + "\n\n*(interrupted)*",
-						})
-						m.history = append(m.history, bedrock.BuildAssistantMessage(
-							[]types.ContentBlock{
-								&types.ContentBlockMemberText{Value: content},
-							},
-						))
-						m.streamBuf.Reset()
-					} else if m.reasoningBuf.Len() > 0 {
-						m.messages = append(m.messages, chatMessage{
-							role:    "reasoning",
-							content: m.reasoningBuf.String(),
-						})
-						m.reasoningBuf.Reset()
+					if m.streamBuf.Len() > 0 || m.reasoningSignature != "" || m.reasoningBuf.Len() > 0 {
+						var blocks []provider.ContentBlock
+						if m.reasoningBuf.Len() > 0 {
+							blocks = append(blocks, provider.ReasoningBlock{
+								Text:      m.reasoningBuf.String(),
+								Signature: m.reasoningSignature,
+							})
+							m.messages = append(m.messages, chatMessage{
+								role:    "reasoning",
+								content: m.reasoningBuf.String(),
+							})
+							m.reasoningBuf.Reset()
+						} else if m.reasoningSignature != "" {
+							blocks = append(blocks, provider.ReasoningBlock{
+								Signature: m.reasoningSignature,
+							})
+						}
+
+						if m.streamBuf.Len() > 0 {
+							content := m.streamBuf.String()
+							m.messages = append(m.messages, chatMessage{
+								role:    "assistant",
+								content: sanitizeModelText(content) + "\n\n*(interrupted)*",
+							})
+							blocks = append(blocks, provider.TextBlock{Text: content})
+							m.streamBuf.Reset()
+						}
+
+						if len(blocks) > 0 {
+							m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+						}
 					}
 					m.inReasoning = false
 					m.pendingToolCalls = nil
@@ -456,6 +506,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.currentToolID = msg.ToolUseID
 		m.currentToolName = msg.Name
+		m.currentToolSig = msg.ThoughtSignature
 		m.currentToolInput.Reset()
 		m.messages = append(m.messages, chatMessage{
 			role:    "tool_call",
@@ -472,15 +523,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StreamToolStopMsg:
 		if m.currentToolName != "" {
-			input := bedrock.CollectToolInput([]string{m.currentToolInput.String()})
+			input := []byte(m.currentToolInput.String())
 			m.pendingToolCalls = append(m.pendingToolCalls, pendingTool{
-				id:    m.currentToolID,
-				name:  m.currentToolName,
-				input: input,
+				id:               m.currentToolID,
+				name:             m.currentToolName,
+				input:            input,
+				thoughtSignature: m.currentToolSig,
 			})
 			m.currentToolName = ""
 			m.currentToolID = ""
 			m.currentToolInput.Reset()
+			m.currentToolSig = ""
 		}
 		return m, m.readNextStreamEvent()
 
@@ -488,38 +541,110 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If we have pending tool calls, build a single assistant message
 		// containing any text AND the tool_use blocks, then execute tools.
 		if len(m.pendingToolCalls) > 0 {
-			var blocks []types.ContentBlock
+			var blocks []provider.ContentBlock
+			// For Gemini 3 models: include reasoning/thought blocks with signatures
+			// so that the thought context is preserved across multi-turn function calling.
+			if m.reasoningBuf.Len() > 0 {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Text:      m.reasoningBuf.String(),
+					Signature: m.reasoningSignature,
+				})
+				m.messages = append(m.messages, chatMessage{
+					role:    "reasoning",
+					content: m.reasoningBuf.String(),
+				})
+				m.reasoningBuf.Reset()
+				m.inReasoning = false
+			} else if m.reasoningSignature != "" {
+				// We have a signature but no buffered text (reasoning was already
+				// finalized via StreamReasoningDoneMsg). Still include it.
+				blocks = append(blocks, provider.ReasoningBlock{
+					Signature: m.reasoningSignature,
+				})
+			}
 			// Include any text that was streamed before/between tool calls
 			if m.streamBuf.Len() > 0 {
-				blocks = append(blocks, &types.ContentBlockMemberText{Value: m.streamBuf.String()})
+				// Try to extract a plan from the model's text for the task panel
+				m.maybeExtractPlan(m.streamBuf.String())
+				blocks = append(blocks, provider.TextBlock{Text: m.streamBuf.String()})
 				m.streamBuf.Reset()
 			}
 			for _, tc := range m.pendingToolCalls {
-				blocks = append(blocks, &types.ContentBlockMemberToolUse{
-					Value: types.ToolUseBlock{
-						ToolUseId: &tc.id,
-						Name:      &tc.name,
-						Input:     document.NewLazyDocument(jsonToMap(tc.input)),
-					},
+				blocks = append(blocks, provider.ToolUseBlock{
+					ToolUseID:        tc.id,
+					Name:             tc.name,
+					Input:            tc.input,
+					ThoughtSignature: tc.thoughtSignature,
 				})
 			}
-			m.history = append(m.history, bedrock.BuildAssistantMessage(blocks))
+			m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+			m.lastExecutedTools = m.pendingToolCalls // Save for state dict tracking
 			return m, m.executePendingTools()
 		}
 
 		// No tool calls — finalize streamed text as the assistant response
-		if m.streamBuf.Len() > 0 {
-			content := m.streamBuf.String()
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: sanitizeModelText(content),
-			})
-			m.history = append(m.history, bedrock.BuildAssistantMessage(
-				[]types.ContentBlock{
-					&types.ContentBlockMemberText{Value: content},
-				},
-			))
-			m.streamBuf.Reset()
+		if m.streamBuf.Len() > 0 || m.reasoningSignature != "" || m.reasoningBuf.Len() > 0 {
+			var blocks []provider.ContentBlock
+
+			// Handle any dangling reasoning text (usually handled by StreamReasoningDoneMsg, but just in case)
+			if m.reasoningBuf.Len() > 0 {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Text:      m.reasoningBuf.String(),
+					Signature: m.reasoningSignature,
+				})
+				m.messages = append(m.messages, chatMessage{
+					role:    "reasoning",
+					content: m.reasoningBuf.String(),
+				})
+				m.reasoningBuf.Reset()
+				m.inReasoning = false
+			} else if m.reasoningSignature != "" {
+				blocks = append(blocks, provider.ReasoningBlock{
+					Signature: m.reasoningSignature,
+				})
+			}
+
+			if m.streamBuf.Len() > 0 {
+				content := m.streamBuf.String()
+				// Try to extract a plan from the model's final response
+				m.maybeExtractPlan(content)
+
+				// For small models: detect when the model stopped to explain/ask
+				// permission instead of actually executing. If it looks like the model
+				// is narrating its next steps without using tools, auto-nudge it to
+				// continue by injecting a continuation prompt.
+				if m.needsGroundingAssist() && m.shouldAutoNudge(content) {
+					m.messages = append(m.messages, chatMessage{
+						role:    "assistant",
+						content: sanitizeModelText(content),
+					})
+					blocks = append(blocks, provider.TextBlock{Text: content})
+					m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+
+					m.streamBuf.Reset()
+					// Inject a synthetic user message to nudge it forward
+					nudge := "Continue. Execute the next step now — do not ask for permission."
+					m.history = append(m.history, provider.BuildUserTextMessage(nudge))
+					m.messages = append(m.messages, chatMessage{
+						role:    "system_nudge",
+						content: "↻ auto-continuing…",
+					})
+					m.viewport.SetContent(m.renderMessages())
+					m.viewport.GotoBottom()
+					return m, m.launchStream()
+				}
+
+				m.messages = append(m.messages, chatMessage{
+					role:    "assistant",
+					content: sanitizeModelText(content),
+				})
+				blocks = append(blocks, provider.TextBlock{Text: content})
+				m.streamBuf.Reset()
+			}
+
+			if len(blocks) > 0 {
+				m.history = append(m.history, provider.BuildAssistantMessage(blocks))
+			}
 		}
 
 		m.streaming = false
@@ -664,7 +789,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Display tool results in the chat
 		for _, r := range msg.Messages {
-			isErr := r.Status == types.ToolResultStatusError
+			isErr := r.IsError
 			m.messages = append(m.messages, chatMessage{
 				role:    "tool_result",
 				content: truncateToolResult(r.Content, 500),
@@ -674,8 +799,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		// Add tool results to history and start new stream
-		m.history = append(m.history, bedrock.BuildToolResultMessage(msg.Messages))
+		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
+		m.streamStep++ // Track consecutive tool-use rounds for grounding
+
+		// Update state dictionary with tool execution results
+		if m.stateDict != nil {
+			for _, r := range msg.Messages {
+				// Find the matching pending tool call to get the name/input
+				for _, tc := range m.lastExecutedTools {
+					if tc.id == r.ToolUseID {
+						m.stateDict.recordToolResult(tc.name, tc.input, r.IsError)
+						break
+					}
+				}
+			}
+		}
+
 		return m, m.launchStream()
 
 	case TodoUpdatedMsg:
@@ -684,8 +824,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CacheKeepaliveTickMsg:
 		// Only ping if we have history (something worth caching) and we're
-		// not currently streaming (a stream already refreshes the cache).
-		if !m.streaming && len(m.history) > 0 {
+		// not currently streaming (or if we are waiting at an approval gate,
+		// where streaming is 'true' but we are blocked).
+		if (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
 			elapsed := time.Since(m.lastAPICallTime)
 			if elapsed >= cacheKeepaliveInterval {
 				// Time to refresh — fire a ping in the background.
@@ -694,8 +835,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				history := m.history
 				tools := m.pluginMgr.Definitions()
 				cmd := func() tea.Msg {
-					err := client.PingCache(context.Background(), system, history, tools)
-					return CacheKeepaliveDoneMsg{Err: err}
+					if client != nil {
+						// Convert provider messages to bedrock types for cache keepalive
+						bedrockHistory := providerToBedrockMessages(history)
+						err := client.PingCache(context.Background(), system, bedrockHistory, tools)
+						return CacheKeepaliveDoneMsg{Err: err}
+					}
+					return CacheKeepaliveDoneMsg{}
 				}
 				return m, tea.Batch(cmd, m.cacheKeepaliveTick())
 			}
@@ -733,6 +879,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+
+		// Save draft message if it changed
+		if m.input.Value() != m.lastSavedDraft {
+			m.lastSavedDraft = m.input.Value()
+			m.saveSession()
+		}
 
 		// If textarea height changed (dynamic grow/shrink), recalculate layout
 		if m.input.Height() != prevHeight {
@@ -823,13 +975,39 @@ func (m *Model) launchStream() tea.Cmd {
 	m.maybeCompact()
 
 	ctx := context.Background()
-	var streamCfg bedrock.StreamConfig
-	if m.enableThinking {
-		streamCfg.EnableThinking = true
-		streamCfg.ThinkingBudget = m.thinkingBudget
+
+	// Determine the effective system prompt. For smaller/local models that
+	// struggle with long agentic loops, append grounding context after several
+	// consecutive tool-use rounds. This prevents the model from "resetting"
+	// (re-introducing itself) when the original user message gets buried under
+	// large tool results in the context window.
+	//
+	// Only applies to models that need it (small context window ≤ 512k).
+	// Large frontier models (Opus 4.6 etc.) maintain their own world state.
+	//
+	// We inject on EVERY step after the first 2 (not just every 3rd) because
+	// smaller models lose the thread extremely quickly once large tool results
+	// accumulate. The system prompt is re-sent on every API call anyway, so
+	// there's no context window cost to always including it.
+	effectiveSystem := m.system
+	if m.streamStep >= 2 && m.stateDict != nil {
+		effectiveSystem += "\n\n" + m.stateDict.render()
 	}
-	ch := m.client.ConverseStream(ctx, m.system, m.history, m.pluginMgr.Definitions(), streamCfg)
-	m.streamCh = ch
+
+	// Use the provider interface for streaming
+	if m.llmProvider != nil {
+		req := provider.Request{
+			System:   effectiveSystem,
+			Messages: m.history,
+			Tools:    m.providerToolDefs(),
+			Config: provider.InferenceConfig{
+				EnableThinking: m.enableThinking,
+				ThinkingBudget: m.thinkingBudget,
+			},
+		}
+		ch := m.llmProvider.ConverseStream(ctx, req)
+		m.streamCh = ch
+	}
 
 	// Return a cmd that reads the first event from the stream
 	return tea.Batch(m.spinner.Tick, m.readNextStreamEvent())
@@ -850,18 +1028,24 @@ func (m *Model) launchStream() tea.Cmd {
 func (m *Model) maybeCompact() {
 	cfg := compact.DefaultConfig()
 
-	// If context usage is high, compact more aggressively (preserve fewer turns)
-	lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
-	if compact.ShouldCompact(lastCallTotal, contextWindowSize, cfg) {
-		cfg.PreserveRecentTurns = 3 // Aggressive: reduce from 7 to 3
+	// For small models, use aggressive compaction settings — these models lose
+	// the thread when large tool results accumulate in context.
+	if m.needsGroundingAssist() {
+		cfg = compact.SmallModelConfig()
+	} else {
+		// If context usage is high on large models, compact more aggressively
+		lastCallTotal := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
+		if compact.ShouldCompact(lastCallTotal, m.contextWindowSize(), cfg) {
+			cfg.PreserveRecentTurns = 3
+		}
 	}
 
 	// Count user text messages to determine current turn
 	turn := 0
 	for _, msg := range m.history {
-		if msg.Role == types.ConversationRoleUser {
+		if msg.Role == provider.RoleUser {
 			for _, block := range msg.Content {
-				if _, ok := block.(*types.ContentBlockMemberText); ok {
+				if _, ok := block.(provider.TextBlock); ok {
 					turn++
 					break
 				}
@@ -870,7 +1054,7 @@ func (m *Model) maybeCompact() {
 	}
 
 	// Always compact stale results (older than PreserveRecentTurns)
-	result := compact.Compact(m.history, turn, cfg)
+	result := compact.CompactProvider(m.history, turn, cfg)
 	if result.Compacted > 0 {
 		m.history = result.Messages
 	}
@@ -889,31 +1073,31 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 				return StreamDoneMsg{StopReason: "end_turn"}
 			}
 			switch e := event.(type) {
-			case bedrock.TextDeltaEvent:
+			case provider.TextDeltaEvent:
 				return StreamTextMsg{Text: e.Text}
-			case bedrock.ReasoningDeltaEvent:
+			case provider.ReasoningDeltaEvent:
 				return StreamReasoningMsg{Text: e.Text}
-			case bedrock.ReasoningSignatureEvent:
+			case provider.ReasoningSignatureEvent:
 				return StreamReasoningDoneMsg{Signature: e.Signature}
-			case bedrock.ToolUseStartEvent:
-				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name}
-			case bedrock.ToolInputDeltaEvent:
+			case provider.ToolUseStartEvent:
+				return StreamToolStartMsg{ToolUseID: e.ToolUseID, Name: e.Name, ThoughtSignature: e.ThoughtSignature}
+			case provider.ToolInputDeltaEvent:
 				return StreamToolInputMsg{Delta: e.Delta}
-			case bedrock.ToolUseStopEvent:
+			case provider.ToolUseStopEvent:
 				return StreamToolStopMsg{}
-			case bedrock.MessageStopEvent:
+			case provider.MessageStopEvent:
 				// Don't return yet — keep reading to consume the UsageEvent
-				// that Bedrock emits after MessageStop. StreamDoneMsg will be
-				// emitted when the channel closes (handled by !ok above).
+				// that may follow. StreamDoneMsg will be emitted when the
+				// channel closes (handled by !ok above).
 				continue
-			case bedrock.UsageEvent:
+			case provider.UsageEvent:
 				return StreamUsageMsg{
 					InputTokens:           e.InputTokens,
 					OutputTokens:          e.OutputTokens,
-					CacheReadInputTokens:  e.CacheReadInputTokens,
-					CacheWriteInputTokens: e.CacheWriteInputTokens,
+					CacheReadInputTokens:  e.CacheReadTokens,
+					CacheWriteInputTokens: e.CacheWriteTokens,
 				}
-			case bedrock.StreamErrorEvent:
+			case provider.StreamErrorEvent:
 				return StreamErrorMsg{Err: e.Err}
 			default:
 				return StreamDoneMsg{StopReason: "unknown"}
@@ -998,10 +1182,23 @@ func (m *Model) submitMessage(text string) tea.Cmd {
 	}
 
 	m.messages = append(m.messages, chatMessage{role: "user", content: text})
-	m.history = append(m.history, bedrock.BuildUserTextMessage(text))
+	m.history = append(m.history, provider.BuildUserTextMessage(text))
 	m.viewport.SetContent(m.renderMessages())
 	m.viewport.GotoBottom()
 
+	m.streamStep = 0 // Reset step counter for new user turn
+	m.autoNudgeCount = 0 // Reset auto-nudge counter for new user turn
+	// Initialize or update state dictionary for small-model grounding
+	if m.needsGroundingAssist() {
+		if m.stateDict == nil {
+			m.stateDict = newStateDict(text)
+		} else {
+			// Preserve accumulated state across turns; just update the goal
+			m.stateDict.updateGoal(text)
+		}
+	} else {
+		m.stateDict = nil
+	}
 	return m.launchStream()
 }
 
@@ -1013,7 +1210,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 	autoApprove := m.autoApprove
 
 	return func() tea.Msg {
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 		ctx := context.Background()
 
@@ -1022,10 +1219,11 @@ func (m *Model) executePendingTools() tea.Cmd {
 				// Defer todo mutation to the Update handler (thread-safe).
 				// Put a placeholder result; the Update handler will replace it.
 				todoInputs = append(todoInputs, tool.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: tool.id,
+					Name:      tool.name,
 					Content:   "", // placeholder, filled in by Update
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1063,18 +1261,19 @@ func (m *Model) executePendingTools() tea.Cmd {
 			}
 
 			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-			status := types.ToolResultStatusSuccess
+			status := false
 			if err != nil {
 				if output == "" {
 					output = fmt.Sprintf("Error: %s", err.Error())
 				}
-				status = types.ToolResultStatusError
+				status = true
 			}
 
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: tool.id,
+				Name:      tool.name,
 				Content:   output,
-				Status:    status,
+				IsError: status,
 			})
 		}
 
@@ -1090,32 +1289,34 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 
 		// Execute the approved tool
 		output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-		status := types.ToolResultStatusSuccess
+		status := false
 		if err != nil {
 			if output == "" {
 				output = fmt.Sprintf("Error: %s", err.Error())
 			}
-			status = types.ToolResultStatusError
+			status = true
 		}
-		results = append(results, bedrock.ToolResult{
+		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
+			Name:      tool.name,
 			Content:   output,
-			Status:    status,
+			IsError: status,
 		})
 
 		// Execute remaining tools (they may also need approval)
 		for i, rt := range remaining {
 			if rt.name == "todo_manage" {
 				todoInputs = append(todoInputs, rt.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
+					Name:      rt.name,
 					Content:   "",
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1147,17 +1348,18 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 			}
 
 			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
-			rtStatus := types.ToolResultStatusSuccess
+			rtStatus := false
 			if rtErr != nil {
 				if rtOutput == "" {
 					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
 				}
-				rtStatus = types.ToolResultStatusError
+				rtStatus = true
 			}
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
+				Name:      rt.name,
 				Content:   rtOutput,
-				Status:    rtStatus,
+				IsError: rtStatus,
 			})
 		}
 
@@ -1173,24 +1375,26 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		var results []bedrock.ToolResult
+		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 
 		// Denied tool gets an error result
-		results = append(results, bedrock.ToolResult{
+		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
+			Name:      tool.name,
 			Content:   "Operation denied by user. The destructive command was NOT executed. Choose a safer alternative or ask the user for guidance.",
-			Status:    types.ToolResultStatusError,
+			IsError: true,
 		})
 
 		// Execute remaining tools normally
 		for i, rt := range remaining {
 			if rt.name == "todo_manage" {
 				todoInputs = append(todoInputs, rt.input)
-				results = append(results, bedrock.ToolResult{
+				results = append(results, provider.ToolResultBlock{
 					ToolUseID: rt.id,
+					Name:      rt.name,
 					Content:   "",
-					Status:    types.ToolResultStatusSuccess,
+					IsError: false,
 				})
 				continue
 			}
@@ -1222,17 +1426,18 @@ func (m *Model) executeDeniedToolAndRemaining(tool *pendingTool, remaining []pen
 			}
 
 			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
-			rtStatus := types.ToolResultStatusSuccess
+			rtStatus := false
 			if rtErr != nil {
 				if rtOutput == "" {
 					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
 				}
-				rtStatus = types.ToolResultStatusError
+				rtStatus = true
 			}
-			results = append(results, bedrock.ToolResult{
+			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,
+				Name:      rt.name,
 				Content:   rtOutput,
-				Status:    rtStatus,
+				IsError: rtStatus,
 			})
 		}
 
@@ -1254,11 +1459,12 @@ func (m *Model) restoreSession() {
 	}
 
 	// Restore conversation history for the model
-	messages, err := session.UnmarshalHistory(state.Messages)
+	bedrockMessages, err := session.UnmarshalHistory(state.Messages)
 	if err != nil {
 		return
 	}
-	m.history = messages
+	// Convert bedrock types to provider messages
+	m.history = bedrockToProviderMessages(bedrockMessages)
 
 	// Restore token stats (so resumed sessions accumulate correctly)
 	m.totalInputTokens = state.Meta.Stats.InputTokens
@@ -1269,6 +1475,24 @@ func (m *Model) restoreSession() {
 	// Restore todos
 	if len(state.Todos) > 0 {
 		m.todos.Replace(state.Todos)
+	}
+
+	// Restore draft message if any
+	if state.DraftMessage != "" {
+		m.input.SetValue(state.DraftMessage)
+		m.lastSavedDraft = state.DraftMessage
+	}
+
+	// Rebuild state dictionary from session history for small-model grounding.
+	// Without this, resumed sessions have no "Current Task Context" block until
+	// the next user message — causing the model to lose its place.
+	if m.needsGroundingAssist() {
+		m.rebuildStateDictFromHistory(state.Messages)
+		// Set streamStep to reflect that this is a resumed session with prior tool use.
+		// This enables auto-nudge on the very first response after resume.
+		if m.stateDict != nil && m.stateDict.toolCalls > 0 {
+			m.streamStep = m.stateDict.toolCalls
+		}
 	}
 
 	// Rebuild display messages from the serialized history
@@ -1298,13 +1522,76 @@ func (m *Model) restoreSession() {
 	}
 }
 
+// rebuildStateDictFromHistory reconstructs the state dictionary by replaying
+// tool executions from the serialized session messages. This ensures resumed
+// sessions have accurate grounding context from the start.
+func (m *Model) rebuildStateDictFromHistory(messages []session.Message) {
+	// Find the first substantial user message as the original goal
+	var originalGoal string
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			for _, block := range msg.Blocks {
+				if block.Type == "text" && len(block.Text) >= 20 {
+					originalGoal = block.Text
+					break
+				}
+			}
+			if originalGoal != "" {
+				break
+			}
+		}
+	}
+	if originalGoal == "" {
+		// Fall back to any user text
+		for _, msg := range messages {
+			if msg.Role == "user" {
+				for _, block := range msg.Blocks {
+					if block.Type == "text" {
+						originalGoal = block.Text
+						break
+					}
+				}
+				if originalGoal != "" {
+					break
+				}
+			}
+		}
+	}
+
+	sd := newStateDict(originalGoal)
+
+	// Replay all tool_use and tool_result blocks to rebuild state
+	for _, msg := range messages {
+		for _, block := range msg.Blocks {
+			switch block.Type {
+			case "tool_use":
+				// Record as a tool call with the input
+				sd.recordToolResult(block.Name, block.Input, false)
+			case "tool_result":
+				// If it was an error, adjust the error count
+				// (recordToolResult already counted this tool call from tool_use,
+				// so we only need to fixup errors here)
+				if block.Status == "error" {
+					sd.errors++
+				}
+			}
+		}
+	}
+
+	// Correct for double-counting: tool_use blocks record the call,
+	// but we don't want to also count from tool_result. The tool_calls
+	// count comes purely from tool_use blocks via recordToolResult.
+
+	m.stateDict = sd
+}
+
 // saveSession persists current TUI state to disk.
 func (m *Model) saveSession() {
 	if m.store == nil || m.sessionID == "" {
 		return
 	}
 
-	serialized, err := session.MarshalHistory(m.history)
+	serialized, err := session.MarshalProviderHistory(m.history)
 	if err != nil {
 		return
 	}
@@ -1325,10 +1612,11 @@ func (m *Model) saveSession() {
 	meta.Stats.EstimatedCostUSD = m.estimateCost()
 
 	state := &session.SessionState{
-		Meta:     meta,
-		Messages: serialized,
-		Todos:    m.todos.Items(),
-		Inkwell:  []session.InkEntry{}, // TUI inkwell tracking can be added later
+		Meta:         meta,
+		Messages:     serialized,
+		Todos:        m.todos.Items(),
+		Inkwell:      []session.InkEntry{}, // TUI inkwell tracking can be added later
+		DraftMessage: m.input.Value(),
 	}
 
 	m.store.Save(m.sessionID, state)
@@ -1338,23 +1626,19 @@ func (m *Model) saveSession() {
 
 func (m *Model) renderStatusBar() string {
 	label := StatusLabelStyle.Render("codecuttlectl")
-
-	// Show primary model display name from pool if available
-	var modelDisplay string
+	modelName := ""
+	region := ""
 	if m.pool != nil {
-		modelDisplay = m.pool.Info(bedrock.RolePrimary).DisplayName
-	} else {
-		modelDisplay = m.client.ModelID()
+		modelName = m.pool.Info(bedrock.RolePrimary).DisplayName
+		region = m.pool.Region()
+	} else if m.client != nil {
+		modelName = m.client.ModelID()
+		region = m.client.Region()
+	} else if m.llmProvider != nil {
+		modelName = m.llmProvider.Name()
 	}
-	model := StatusModelStyle.Render(modelDisplay)
-
-	var regionStr string
-	if m.pool != nil {
-		regionStr = m.pool.Region()
-	} else {
-		regionStr = m.client.Region()
-	}
-	region := StatusDimStyle.Render(regionStr)
+	model := StatusModelStyle.Render(modelName)
+	regionStr := StatusDimStyle.Render(region)
 	plugins := StatusDimStyle.Render(fmt.Sprintf("%dp", m.pluginMgr.Count()))
 
 	// Token display: show total input (including cache), output, cache hit rate, and estimated cost
@@ -1371,7 +1655,7 @@ func (m *Model) renderStatusBar() string {
 	ctxUsed := m.lastCallInputTokens + m.lastCallCacheReadInputTokens + m.lastCallCacheWriteInputTokens
 	ctxPct := 0
 	if ctxUsed > 0 {
-		ctxPct = int(float64(ctxUsed) / float64(contextWindowSize) * 100)
+		ctxPct = int(float64(ctxUsed) / float64(m.contextWindowSize()) * 100)
 	}
 
 	// Color the ctx% indicator based on usage level
@@ -1386,12 +1670,23 @@ func (m *Model) renderStatusBar() string {
 		ctxStyled = StatusDimStyle.Render(ctxStr)
 	}
 
-	tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
-		formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
-	tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
+	// Build right-side status: tokens in/out, ctx%, and optionally cost
+	var right string
+	if _, ok := m.llmProvider.(provider.CostEstimator); ok {
+		// Provider with cost API
+		tokenStr := fmt.Sprintf("%s in %s out %d%% cache ",
+			formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens), cacheHitPct)
+		tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled + StatusTokenStyle.Render(fmt.Sprintf(" ~$%.2f", cost))
+		right = tokens + " "
+	} else {
+		// Local provider (Ollama): show tokens and ctx%, no cost
+		tokenStr := fmt.Sprintf("%s in %s out ",
+			formatTokenCount(totalIn), formatTokenCount(m.totalOutputTokens))
+		tokens := StatusTokenStyle.Render(tokenStr) + ctxStyled
+		right = tokens + " "
+	}
 
-	left := " " + label + "  " + model + "  " + region + "  " + plugins
-	right := tokens + " "
+	left := " " + label + "  " + model + "  " + regionStr + "  " + plugins
 
 	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(right)
@@ -1421,8 +1716,9 @@ func formatTokenCount(tokens int32) string {
 }
 
 // estimateCost calculates an estimated dollar cost for the session's token usage.
+// Returns 0 for local providers (Ollama) since they have no API cost.
 // If a ModelPool is available, uses per-model pricing from the registry.
-// Otherwise falls back to Opus 4.x pricing.
+// Otherwise falls back to provider estimation.
 func (m *Model) estimateCost() float64 {
 	if m.pool != nil {
 		return m.pool.EstimateCost(
@@ -1433,20 +1729,18 @@ func (m *Model) estimateCost() float64 {
 			int64(m.totalCacheWriteInputTokens),
 		)
 	}
-	// Fallback: hardcoded Opus pricing
-	const (
-		inputPer1M      = 5.00
-		outputPer1M     = 25.00
-		cacheWritePer1M = 6.25
-		cacheReadPer1M  = 0.50
-	)
-
-	input := float64(m.totalInputTokens) / 1_000_000 * inputPer1M
-	output := float64(m.totalOutputTokens) / 1_000_000 * outputPer1M
-	cacheWrite := float64(m.totalCacheWriteInputTokens) / 1_000_000 * cacheWritePer1M
-	cacheRead := float64(m.totalCacheReadInputTokens) / 1_000_000 * cacheReadPer1M
-
-	return input + output + cacheWrite + cacheRead
+	if m.llmProvider == nil {
+		return 0
+	}
+	if ce, ok := m.llmProvider.(provider.CostEstimator); ok {
+		return ce.EstimateCost(provider.Usage{
+			InputTokens:      int32(m.totalInputTokens),
+			OutputTokens:     int32(m.totalOutputTokens),
+			CacheWriteTokens: int32(m.totalCacheWriteInputTokens),
+			CacheReadTokens:  int32(m.totalCacheReadInputTokens),
+		})
+	}
+	return 0
 }
 
 func (m *Model) renderInput() string {
@@ -1780,4 +2074,182 @@ func sanitizeModelText(text string) string {
 		cleaned = strings.ReplaceAll(cleaned, "\n\n\n", "\n\n")
 	}
 	return cleaned
+}
+
+// providerToolDefs returns tool definitions in provider-agnostic format.
+func (m *Model) providerToolDefs() []provider.ToolDefinition {
+	defs := m.pluginMgr.Definitions()
+	var result []provider.ToolDefinition
+	for _, d := range defs {
+		result = append(result, provider.ToolDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
+	}
+	return result
+}
+
+// maybeExtractPlan checks if the model's text output contains a plan and
+// automatically populates the todo list if the list is currently empty.
+// This enables harness-managed planning for all providers (Bedrock + Ollama).
+func (m *Model) maybeExtractPlan(text string) {
+	if !m.todos.IsEmpty() {
+		return
+	}
+
+	steps := conversation.ExtractPlanFromText(text)
+	if steps == nil || len(steps) < 2 {
+		return
+	}
+
+	// Cap at 7 steps
+	if len(steps) > 7 {
+		steps = steps[:7]
+	}
+
+	items := make([]todo.Item, len(steps))
+	for i, step := range steps {
+		status := todo.StatusPending
+		if i == 0 {
+			status = todo.StatusInProgress
+		}
+		items[i] = todo.Item{
+			Content:  step,
+			Status:   status,
+			Priority: todo.PriorityMedium,
+		}
+	}
+
+	m.todos.Replace(items)
+}
+
+// contextWindowSize returns the effective context window size for the current provider.
+func (m *Model) contextWindowSize() int32 {
+	if m.contextWindow > 0 {
+		return m.contextWindow
+	}
+	return defaultContextWindowSize
+}
+
+// needsGroundingAssist returns true if the current model benefits from periodic
+// grounding reminders. Large frontier models don't need this; smaller/local models do.
+func (m *Model) needsGroundingAssist() bool {
+	// If we have a bedrock client (non-nil), it's a frontier model — skip grounding
+	if m.client != nil && m.llmProvider != nil {
+		// Check if it's the bedrockprov wrapper (frontier model)
+		if m.contextWindow > 512_000 {
+			return false
+		}
+	}
+
+	// Check provider's context window
+	if m.contextWindow > 512_000 {
+		return false
+	}
+
+	return true // Small/local model — inject grounding
+}
+
+// extractLastUserText finds the most recent user text message in history.
+func (m *Model) extractLastUserText() string {
+	// Walk backward to find the last user message with text content
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].Role == provider.RoleUser {
+			for _, block := range m.history[i].Content {
+				if text, ok := block.(provider.TextBlock); ok {
+					return text.Text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// shouldAutoNudge returns true if the model's text-only response (no tool calls)
+// looks like it's explaining/asking permission instead of executing. This is common
+// with smaller models that narrate plans then wait for confirmation.
+//
+// Only applies to small models (gated by needsGroundingAssist). Capped at 3 nudges
+// per turn to prevent infinite loops if the model genuinely cannot proceed.
+func (m *Model) shouldAutoNudge(content string) bool {
+	// Safety cap: don't nudge more than 3 times in one user turn
+	if m.autoNudgeCount >= 3 {
+		return false
+	}
+
+	// Short responses are likely genuine completions or errors
+	if len(content) < 50 {
+		return false
+	}
+
+	// On the very first response (streamStep == 0), only nudge if this is a resumed
+	// session with existing history. Otherwise wait until at least 1 tool round.
+	if m.streamStep < 1 && len(m.history) < 4 {
+		return false
+	}
+
+	// Check for patterns that indicate the model is asking permission or narrating
+	// a plan instead of executing it
+	lower := strings.ToLower(content)
+
+	// Permission-seeking patterns
+	permissionPatterns := []string{
+		"shall i",
+		"should i",
+		"would you like me to",
+		"do you want me to",
+		"let me know if",
+		"want me to proceed",
+		"ready to proceed",
+		"i can proceed",
+		"i'll proceed if",
+		"proceed with",
+		"like me to continue",
+		"want me to go ahead",
+		"shall we",
+		"if you'd like",
+		"if you want",
+		"let me know",
+		"i'd recommend",
+		"here's what i suggest",
+		"i suggest we",
+	}
+	for _, p := range permissionPatterns {
+		if strings.Contains(lower, p) {
+			m.autoNudgeCount++
+			return true
+		}
+	}
+
+	// Plan-narration patterns: model describes numbered steps without executing
+	// Only trigger if the response ends without a concrete action
+	planIndicators := 0
+	if strings.Contains(lower, "here's my plan") || strings.Contains(lower, "here is my plan") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "i will:") || strings.Contains(lower, "i'll:") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "step 1") || strings.Contains(lower, "1.") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "next steps") || strings.Contains(lower, "my approach") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "first, i") || strings.Contains(lower, "first i") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "then i") || strings.Contains(lower, "then, i") {
+		planIndicators++
+	}
+	if strings.Contains(lower, "finally") || strings.Contains(lower, "lastly") {
+		planIndicators++
+	}
+	if planIndicators >= 2 {
+		m.autoNudgeCount++
+		return true
+	}
+
+	return false
 }
