@@ -29,6 +29,7 @@ import (
 // Config holds the configuration needed to create the TUI app.
 type Config struct {
 	Client         *bedrock.Client
+	Pool           *bedrock.ModelPool // Multi-model pool (if set, Client is ignored for primary)
 	Provider       provider.Provider  // Provider interface (used when Client is nil)
 	PluginMgr      *pluginhost.Manager
 	System         string // Rendered system prompt
@@ -52,6 +53,7 @@ type Model struct {
 
 	// Configuration
 	client         *bedrock.Client
+	pool           *bedrock.ModelPool
 	llmProvider    provider.Provider // Provider interface (non-nil for Ollama, etc.)
 	pluginMgr      *pluginhost.Manager
 	system         string
@@ -196,6 +198,7 @@ func New(cfg Config) Model {
 		input:            ta,
 		spinner:          sp,
 		client:           cfg.Client,
+		pool:             cfg.Pool,
 		llmProvider:      cfg.Provider,
 		pluginMgr:        cfg.PluginMgr,
 		system:           cfg.System,
@@ -214,6 +217,11 @@ func New(cfg Config) Model {
 		mdRenderer:       renderer,
 		store:            cfg.Store,
 		sessionID:        cfg.SessionID,
+	}
+
+	// If pool is provided, use its primary client
+	if m.pool != nil && m.client == nil {
+		m.client = m.pool.Primary()
 	}
 
 	// If no bedrock client but we have a provider, create a wrapper for provider-aware streaming
@@ -260,6 +268,11 @@ func New(cfg Config) Model {
 // SessionID returns the current session ID for display on exit.
 func (m Model) SessionID() string {
 	return m.sessionID
+}
+
+// Pool returns the model pool (may be nil if constructed without one).
+func (m Model) Pool() *bedrock.ModelPool {
+	return m.pool
 }
 
 func (m Model) Init() tea.Cmd {
@@ -1615,7 +1628,10 @@ func (m *Model) renderStatusBar() string {
 	label := StatusLabelStyle.Render("codecuttlectl")
 	modelName := ""
 	region := ""
-	if m.client != nil {
+	if m.pool != nil {
+		modelName = m.pool.Info(bedrock.RolePrimary).DisplayName
+		region = m.pool.Region()
+	} else if m.client != nil {
 		modelName = m.client.ModelID()
 		region = m.client.Region()
 	} else if m.llmProvider != nil {
@@ -1701,12 +1717,21 @@ func formatTokenCount(tokens int32) string {
 
 // estimateCost calculates an estimated dollar cost for the session's token usage.
 // Returns 0 for local providers (Ollama) since they have no API cost.
-// Uses Claude Opus 4.x pricing on Bedrock (as of 2026):
-//   - Input tokens (uncached): $5.00 / 1M tokens
-//   - Output tokens: $25.00 / 1M tokens
-//   - Cache write (5m TTL): $6.25 / 1M tokens (1.25x input)
-//   - Cache read: $0.50 / 1M tokens (0.1x input)
+// If a ModelPool is available, uses per-model pricing from the registry.
+// Otherwise falls back to provider estimation.
 func (m *Model) estimateCost() float64 {
+	if m.pool != nil {
+		// TODO(multi-model): When auxiliary calls are wired (Phase 4+), track per-role
+		// token usage and aggregate costs across roles. See docs/multi-model-design.md
+		// "Cost Tracking Changes" section for the per-role TokenStats design.
+		return m.pool.EstimateCost(
+			bedrock.RolePrimary,
+			int64(m.totalInputTokens),
+			int64(m.totalOutputTokens),
+			int64(m.totalCacheReadInputTokens),
+			int64(m.totalCacheWriteInputTokens),
+		)
+	}
 	if m.llmProvider == nil {
 		return 0
 	}

@@ -27,7 +27,8 @@ import (
 // Agent orchestrates the conversation between the user, the LLM, and the tool system.
 type Agent struct {
 	client       *bedrock.Client    // Bedrock client (nil when using provider interface)
-	provider     provider.Provider  // Provider interface (used when client is nil)
+	pool         *bedrock.ModelPool // Multi-model pool (nil when using provider interface)
+	provider     provider.Provider  // Provider interface (used when client/pool is nil)
 	promptMgr    *prompt.Manager
 	pluginMgr    *pluginhost.Manager
 	systemPrompt string
@@ -61,6 +62,7 @@ type Agent struct {
 // Config holds configuration for creating an Agent.
 type Config struct {
 	Client    *bedrock.Client    // Bedrock client (nil when using Provider)
+	Pool      *bedrock.ModelPool // Multi-model pool (if set, Client is ignored)
 	Provider  provider.Provider  // Provider interface (takes precedence over Client when non-nil)
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
@@ -85,6 +87,11 @@ type Config struct {
 func NewAgent(cfg Config) (*Agent, error) {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 25
+	}
+
+	// Resolve client from pool if not provided directly
+	if cfg.Client == nil && cfg.Pool != nil {
+		cfg.Client = cfg.Pool.Primary()
 	}
 
 	var systemPrompt string
@@ -115,6 +122,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 	agent := &Agent{
 		client:       cfg.Client,
+		pool:         cfg.Pool,
 		provider:     cfg.Provider,
 		promptMgr:    cfg.PromptMgr,
 		pluginMgr:    cfg.PluginMgr,

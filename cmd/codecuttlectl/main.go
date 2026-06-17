@@ -28,7 +28,9 @@ import (
 
 func main() {
 	var (
-		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID (or model name when --provider is set)")
+		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID or alias (opus, sonnet, haiku, or model name when --provider is set)")
+		auxModel  = flag.String("aux-model", "", "Auxiliary model for summaries/titles (default: auto-selected)")
+		planModel = flag.String("plan-model", "", "Planning model for mid-tier tasks (default: auto-selected)")
 		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
 		profile   = flag.String("profile", "", "AWS profile name")
 		providerF = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
@@ -120,6 +122,7 @@ func main() {
 	// Initialize LLM provider
 	var llmProvider provider.Provider
 	var bedrockClient *bedrock.Client // Non-nil only for Bedrock (needed for Bedrock-specific features)
+	var bedrockPool *bedrock.ModelPool
 
 	providerName := *providerF
 	// Auto-detect provider from model name prefix (e.g., "ollama:gemma4")
@@ -159,19 +162,27 @@ func main() {
 		}
 
 	case "bedrock":
-		var err error
-		bedrockClient, err = bedrock.NewClient(ctx, bedrock.Config{
-			Region:  *region,
-			ModelID: *modelID,
-			Profile: *profile,
+		resolvedModel := bedrock.ResolveModelID(*modelID)
+		pool, err := bedrock.NewPool(ctx, bedrock.PoolConfig{
+			Region:    *region,
+			Profile:   *profile,
+			Primary:   resolvedModel,
+			Auxiliary: *auxModel,
+			Planning:  *planModel,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error initializing Bedrock client: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
 			os.Exit(1)
 		}
+		bedrockPool = pool
+		bedrockClient = pool.Primary()
 		llmProvider = nil // TUI/Agent still use bedrockClient directly for now
 		if *verbose {
-			fmt.Fprintf(os.Stderr, "[provider] bedrock model=%s region=%s\n", bedrockClient.ModelID(), bedrockClient.Region())
+			fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
+				pool.Info(bedrock.RolePrimary).DisplayName,
+				pool.Info(bedrock.RoleAuxiliary).DisplayName,
+				pool.Info(bedrock.RolePlanning).DisplayName,
+			)
 		}
 
 	default:
@@ -224,19 +235,20 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, bedrockClient, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
+		runOneShot(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, bedrockClient, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
+		runPlainREPL(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
 		return
 	}
 
 	// Full-screen TUI mode
 	model := tui.New(tui.Config{
 		Client:         bedrockClient,
+		Pool:           bedrockPool,
 		Provider:       llmProvider,
 		PluginMgr:      pluginMgr,
 		System:         systemPrompt,
@@ -262,10 +274,12 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
+		Pool:        pool,
 		Provider:    llmProvider,
+		PromptMgr:   nil, // Not needed, system prompt already rendered
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
 		MaxSteps:    maxSteps,
@@ -322,8 +336,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, llmProvider provide
 	printSessionExit(agent.SessionID())
 }
 
-// runPlainREPL runs the old-style plain text REPL (fallback for non-TTY environments).
-func runPlainREPL(ctx context.Context, client *bedrock.Client, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -339,7 +352,9 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, llmProvider provi
 
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:       client,
+		Pool:         pool,
 		Provider:     llmProvider,
+		PromptMgr:    nil,
 		PluginMgr:    pluginMgr,
 		WorkDir:      workDir,
 		MaxSteps:     maxSteps,
