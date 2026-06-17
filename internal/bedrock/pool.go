@@ -99,17 +99,26 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*ModelPool, error) {
 	}
 
 	// Verify auxiliary/planning model access with a lightweight probe.
+	// Probes run concurrently to avoid sequential cold-start penalties.
 	// If access is denied, silently fall back to primary for that role.
+	var wg sync.WaitGroup
 	for _, role := range []ModelRole{RoleAuxiliary, RolePlanning} {
 		if pool.infos[role].ModelID == pool.infos[RolePrimary].ModelID {
 			continue // Same model, no need to probe
 		}
-		if err := pool.clients[role].probeAccess(ctx); err != nil {
-			// Access denied or other error — fall back to primary
-			pool.clients[role] = pool.clients[RolePrimary]
-			pool.infos[role] = pool.infos[RolePrimary]
-		}
+		wg.Add(1)
+		go func(r ModelRole) {
+			defer wg.Done()
+			if err := pool.clients[r].probeAccess(ctx); err != nil {
+				// Access denied or other error — fall back to primary
+				pool.mu.Lock()
+				pool.clients[r] = pool.clients[RolePrimary]
+				pool.infos[r] = pool.infos[RolePrimary]
+				pool.mu.Unlock()
+			}
+		}(role)
 	}
+	wg.Wait()
 
 	return pool, nil
 }

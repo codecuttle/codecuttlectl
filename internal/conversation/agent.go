@@ -140,11 +140,6 @@ func NewAgent(cfg Config) (*Agent, error) {
 		sessionID:    cfg.SessionID,
 	}
 
-	// If Pool is provided, use its primary client
-	if agent.pool != nil && agent.client == nil {
-		agent.client = agent.pool.Primary()
-	}
-
 	// Initialize audit trail with model info and session start time
 	modelID := ""
 	if cfg.Client != nil {

@@ -1721,6 +1721,9 @@ func formatTokenCount(tokens int32) string {
 // Otherwise falls back to provider estimation.
 func (m *Model) estimateCost() float64 {
 	if m.pool != nil {
+		// TODO(multi-model): When auxiliary calls are wired (Phase 4+), track per-role
+		// token usage and aggregate costs across roles. See docs/multi-model-design.md
+		// "Cost Tracking Changes" section for the per-role TokenStats design.
 		return m.pool.EstimateCost(
 			bedrock.RolePrimary,
 			int64(m.totalInputTokens),
