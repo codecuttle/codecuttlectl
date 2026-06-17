@@ -58,7 +58,7 @@ type ProviderPool struct {
 The registry now tracks both cloud and local models, providing metadata for cost estimation and capability matching.
 
 ```go
-type ModelMetadata struct {
+type ModelInfo struct {
     ID             string
     Provider       string  // "bedrock" | "ollama"
     ContextWindow  int32
@@ -67,7 +67,7 @@ type ModelMetadata struct {
     SupportsTools  bool
 }
 
-var GlobalRegistry = map[string]ModelMetadata{
+var GlobalRegistry = map[string]ModelInfo{
     "opus-4-6": {
         ID: "us.anthropic.claude-opus-4-6-v1",
         Provider: "bedrock",

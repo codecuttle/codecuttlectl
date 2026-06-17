@@ -22,27 +22,28 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	googleprov "github.com/codecuttle/codecuttlectl/internal/provider/google"
 	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
+	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
 )
 
 func main() {
 	var (
-		modelID   = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID or alias (opus, sonnet, haiku, or model name when --provider is set)")
-		auxModel  = flag.String("aux-model", "", "Auxiliary model for summaries/titles (default: auto-selected)")
-		planModel = flag.String("plan-model", "", "Planning model for mid-tier tasks (default: auto-selected)")
-		region    = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
-		profile   = flag.String("profile", "", "AWS profile name")
-		providerF = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
-		ollamaURL = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
+		modelID              = flag.String("model", "us.anthropic.claude-opus-4-6-v1", "Bedrock model ID or alias (opus, sonnet, haiku, or model name when --provider is set)")
+		auxModel             = flag.String("aux-model", "", "Auxiliary model for summaries/titles (transitional, will be superseded by --morph)")
+		planModel            = flag.String("plan-model", "", "Planning model for mid-tier tasks (transitional, will be superseded by --morph)")
+		region               = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
+		profile              = flag.String("profile", "", "AWS profile name")
+		providerF            = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
+		ollamaURL            = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
 		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
-		workDir   = flag.String("workdir", "", "Working directory (default: current directory)")
-		pluginDir = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
-		verbose   = flag.Bool("verbose", false, "Enable verbose/debug output")
-		maxSteps  = flag.Int("max-steps", 25, "Maximum tool-use iterations per turn")
-		thinking  = flag.Bool("thinking", false, "Enable extended thinking/reasoning (model must support it)")
-		oneShot   = flag.String("message", "", "Single message mode: send this message and exit (no TUI)")
-		noTUI     = flag.Bool("no-tui", false, "Disable TUI, use plain REPL mode")
+		workDir              = flag.String("workdir", "", "Working directory (default: current directory)")
+		pluginDir            = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
+		verbose              = flag.Bool("verbose", false, "Enable verbose/debug output")
+		maxSteps             = flag.Int("max-steps", 25, "Maximum tool-use iterations per turn")
+		thinking             = flag.Bool("thinking", false, "Enable extended thinking/reasoning (model must support it)")
+		oneShot              = flag.String("message", "", "Single message mode: send this message and exit (no TUI)")
+		noTUI                = flag.Bool("no-tui", false, "Disable TUI, use plain REPL mode")
 
 		// Session management
 		sessionID     = flag.String("session", "", "Resume an existing session by ID")
@@ -52,8 +53,8 @@ func main() {
 		pruneSessions = flag.Int("prune-sessions", 0, "Delete sessions older than N days and exit")
 
 		// Safety
-		autoApprove   = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
-		auditLog      = flag.Bool("audit-log", false, "Emit structured JSON audit events to stderr")
+		autoApprove = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
+		auditLog    = flag.Bool("audit-log", false, "Emit structured JSON audit events to stderr")
 	)
 	flag.Parse()
 
@@ -122,7 +123,7 @@ func main() {
 	// Initialize LLM provider
 	var llmProvider provider.Provider
 	var bedrockClient *bedrock.Client // Non-nil only for Bedrock (needed for Bedrock-specific features)
-	var bedrockPool *bedrock.ModelPool
+	var bedrockPool provider.Pool
 
 	providerName := *providerF
 	// Auto-detect provider from model name prefix (e.g., "ollama:gemma4")
@@ -174,14 +175,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
 			os.Exit(1)
 		}
-		bedrockPool = pool
+		bedrockPool = bedrockprov.NewPool(pool)
 		bedrockClient = pool.Primary()
 		llmProvider = nil // TUI/Agent still use bedrockClient directly for now
 		if *verbose {
 			fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
-				pool.Info(bedrock.RolePrimary).DisplayName,
-				pool.Info(bedrock.RoleAuxiliary).DisplayName,
-				pool.Info(bedrock.RolePlanning).DisplayName,
+				bedrockPool.Info(string(bedrock.RolePrimary)).DisplayName,
+				bedrockPool.Info(string(bedrock.RoleAuxiliary)).DisplayName,
+				bedrockPool.Info(string(bedrock.RolePlanning)).DisplayName,
 			)
 		}
 
@@ -274,7 +275,7 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
@@ -336,7 +337,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool *bedrock.Model
 	printSessionExit(agent.SessionID())
 }
 
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pool *bedrock.ModelPool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)

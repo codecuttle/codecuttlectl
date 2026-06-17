@@ -101,6 +101,7 @@ PR #25 introduced the concept of multi-model routing via a Bedrock-specific `Mod
 3. **CLI Updates:**
    * Introduce a `--morph <path.yaml>` flag. 
    * When `--morph` is used, the system overrides standard `--model` and `--provider` flags, initializing the full swarm defined in the file.
+   * *Note: The existing `--aux-model` and `--plan-model` flags are considered transitional convenience flags and will be superseded by morphology files.*
 
 4. **Agent Orchestration (`internal/conversation/agent.go`):**
    * The `Agent` struct will be updated to handle the active `Morphology`.

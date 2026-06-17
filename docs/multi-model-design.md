@@ -55,11 +55,11 @@ const (
 type ModelPool struct {
     mu      sync.RWMutex
     clients map[ModelRole]*Client
-    configs map[ModelRole]ModelConfig
+    configs map[ModelRole]ModelInfo
 }
 
-// ModelConfig describes one model in the pool.
-type ModelConfig struct {
+// ModelInfo describes one model in the pool.
+type ModelInfo struct {
     Role          ModelRole
     ModelID       string
     ContextWindow int32  // Max input tokens
@@ -102,18 +102,18 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*ModelPool, error) {
 
     pool := &ModelPool{
         clients: make(map[ModelRole]*Client),
-        configs: make(map[ModelRole]ModelConfig),
+        configs: make(map[ModelRole]ModelInfo),
     }
 
     // Initialize all three roles
     pool.clients[RolePrimary] = newClientFromAWSConfig(awsCfg, cfg.Primary)
-    pool.configs[RolePrimary] = lookupModelConfig(cfg.Primary)
+    pool.configs[RolePrimary] = lookupModelInfo(cfg.Primary)
 
     pool.clients[RoleAuxiliary] = newClientFromAWSConfig(awsCfg, cfg.Auxiliary)
-    pool.configs[RoleAuxiliary] = lookupModelConfig(cfg.Auxiliary)
+    pool.configs[RoleAuxiliary] = lookupModelInfo(cfg.Auxiliary)
 
     pool.clients[RolePlanning] = newClientFromAWSConfig(awsCfg, cfg.Planning)
-    pool.configs[RolePlanning] = lookupModelConfig(cfg.Planning)
+    pool.configs[RolePlanning] = lookupModelInfo(cfg.Planning)
 
     return pool, nil
 }
@@ -130,7 +130,7 @@ func (p *ModelPool) Get(role ModelRole) *Client {
 }
 
 // Config returns the model config for the given role.
-func (p *ModelPool) Config(role ModelRole) ModelConfig {
+func (p *ModelPool) Config(role ModelRole) ModelInfo {
     p.mu.RLock()
     defer p.mu.RUnlock()
     if c, ok := p.configs[role]; ok {
@@ -147,7 +147,7 @@ A built-in registry maps model IDs to their known capabilities and pricing:
 ```go
 // registry.go
 
-var knownModels = map[string]ModelConfig{
+var knownModels = map[string]ModelInfo{
     "us.anthropic.claude-opus-4-8": {
         ModelID:        "us.anthropic.claude-opus-4-8",
         ContextWindow:  1_000_000,
@@ -196,12 +196,12 @@ var knownModels = map[string]ModelConfig{
 
 // LookupModel returns the known config for a model ID, or a zero-value
 // config with just the ModelID set for unknown models.
-func LookupModel(modelID string) ModelConfig {
+func LookupModel(modelID string) ModelInfo {
     if cfg, ok := knownModels[modelID]; ok {
         return cfg
     }
     // Unknown model — return minimal config
-    return ModelConfig{
+    return ModelInfo{
         ModelID:       modelID,
         ContextWindow: 200_000, // Conservative default
         MaxOutput:     8_192,
@@ -497,7 +497,7 @@ Session persistence includes per-model cost breakdowns:
 
 | Phase | What | Effort | Depends on |
 |-------|------|--------|------------|
-| **1** | `ModelPool` + `ModelConfig` + registry | Small | Nothing |
+| **1** | `ModelPool` + `ModelInfo` + registry | Small | Nothing |
 | **2** | `--aux-model` / `--plan-model` CLI flags | Small | Phase 1 |
 | **3** | Wire pool into TUI + Agent (replace single `*Client`) | Medium | Phase 1 |
 | **4** | Move title generation to auxiliary | Tiny | Phase 3 |
