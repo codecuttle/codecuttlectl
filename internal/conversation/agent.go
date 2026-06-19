@@ -57,6 +57,9 @@ type Agent struct {
 	inkwell   []session.InkEntry
 	turn      int
 	dirty     bool // true when state needs flushing to disk
+
+	// Sandbox
+	workbench []string
 }
 
 // Config holds configuration for creating an Agent.
@@ -74,6 +77,7 @@ type Config struct {
 	// Safety
 	AutoApprove  bool                                              // When true, skip destructive op confirmation
 	ApprovalFunc func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
+	Workbench    []string                                          // List of allowed tools (nil/empty or ["*"] means all tools)
 
 	// Audit
 	AuditLogger *audit.Logger // Structured event logger (nil = no structured logs)
@@ -102,6 +106,9 @@ func NewAgent(cfg Config) (*Agent, error) {
 	if cfg.PromptMgr != nil && cfg.Client != nil {
 		var promptTools []prompt.ToolDef
 		for _, def := range cfg.PluginMgr.Definitions() {
+			if !isToolAllowed(def.Name, cfg.Workbench) {
+				continue
+			}
 			promptTools = append(promptTools, prompt.ToolDef{
 				Name:        def.Name,
 				Description: def.Description,
@@ -142,6 +149,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
+		workbench:    cfg.Workbench,
 	}
 
 	// Initialize audit trail with model info and session start time
@@ -164,6 +172,19 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	return agent, nil
+}
+
+// isToolAllowed checks if a tool name is permitted by the workbench.
+func isToolAllowed(toolName string, workbench []string) bool {
+	if len(workbench) == 0 {
+		return true // Default: all tools allowed
+	}
+	for _, allowed := range workbench {
+		if allowed == "*" || allowed == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // SetSystemPrompt overrides the system prompt (used when prompt is pre-rendered externally).
@@ -502,6 +523,12 @@ func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
 
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
+	// Security Gate: Workbench Sandboxing
+	if !isToolAllowed(name, a.workbench) {
+		errorMsg := fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", name, a.workbench)
+		return errorMsg, types.ToolResultStatusError
+	}
+
 	// Built-in: todo_manage
 	if name == "todo_manage" {
 		result := a.handleTodoTool(input)
@@ -821,15 +848,31 @@ func (a *Agent) buildSkillContext() skills.Context {
 	return ctx
 }
 
-// allToolDefs returns combined tool definitions from plugins + built-in tools.
+// allToolDefs returns combined tool definitions from plugins + built-in tools,
+// filtered by the agent's workbench sandbox.
 func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
-	defs := a.pluginMgr.Definitions()
-	defs = append(defs, todoToolDefinition())
-	defs = append(defs, toolInfoDefinition())
-	defs = append(defs, getSkillDefinition())
-	defs = append(defs, scaffoldPluginDefinition())
-	defs = append(defs, reloadPluginsDefinition())
-	return defs
+	var filtered []bedrock.ToolDefinition
+	for _, def := range a.pluginMgr.Definitions() {
+		if isToolAllowed(def.Name, a.workbench) {
+			filtered = append(filtered, def)
+		}
+	}
+
+	builtins := []bedrock.ToolDefinition{
+		todoToolDefinition(),
+		toolInfoDefinition(),
+		getSkillDefinition(),
+		scaffoldPluginDefinition(),
+		reloadPluginsDefinition(),
+	}
+
+	for _, def := range builtins {
+		if isToolAllowed(def.Name, a.workbench) {
+			filtered = append(filtered, def)
+		}
+	}
+
+	return filtered
 }
 
 func todoToolDefinition() bedrock.ToolDefinition {
