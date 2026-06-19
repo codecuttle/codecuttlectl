@@ -43,6 +43,19 @@ func (p *PoolWrapper) EstimateCost(role string, input, output, cacheRead, cacheW
 	return p.pool.EstimateCost(bedrock.ModelRole(role), input, output, cacheRead, cacheWrite)
 }
 
+func (p *PoolWrapper) GetNode(nodeID string) (provider.Provider, bool) {
+	switch nodeID {
+	case string(bedrock.RolePrimary):
+		return p.Primary(), true
+	case string(bedrock.RoleAuxiliary):
+		return p.Auxiliary(), true
+	case string(bedrock.RolePlanning):
+		return p.Planning(), true
+	default:
+		return nil, false
+	}
+}
+
 // BedrockPool returns the underlying bedrock.ModelPool, in case Bedrock-specific methods are needed.
 func (p *PoolWrapper) BedrockPool() *bedrock.ModelPool {
 	return p.pool
