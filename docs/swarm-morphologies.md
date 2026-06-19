@@ -23,6 +23,7 @@ A swarm is composed of multiple discrete agents, referred to as **Nodes**. Each 
 *   **Model ID:** The specific model identifier for that provider.
 *   **System Prompt:** A tailored prompt giving the node its persona and instructions.
 *   **Workbench (Skills):** A strictly scoped execution sandbox containing only the tools the node is explicitly allowed to use. For example, a "reviewer" node might only have read-only tools like `read_file` and `git diff`. This prevents unauthorized cross-contamination or hallucinated destructive actions by generalist models.
+*   **Max Concurrency:** Defines the maximum number of parallel instances of this node that can be spawned for asynchronous tasks (default: 1). This prevents local resource exhaustion (e.g., spinning up 50 parallel Ollama models) and rate-limit triggers.
 
 ### 2. Presentation Modes & Epistemic Transparency
 A morphology can present itself to the user in different ways to solve the "trust calibration problem":
@@ -30,10 +31,15 @@ A morphology can present itself to the user in different ways to solve the "trus
 *   **Transparent Swarm:** The TUI actively displays the swarm dynamics in real-time.
 *   **Progressive Disclosure (Default):** A hybrid approach. The TUI streams the primary agent's consensus by default but provides interactive toggles (similar to our current `<thinking>` blocks) to expand and inspect specific agent critiques, chronological thought paths, or dissenting opinions on demand.
 
-### 3. Topologies & Dynamic Handoffs
-Instead of brittle, static sequential pipelines, `codecuttlectl` utilizes **Explicit Handoffs** (inspired by the OpenAI Agents SDK and LangGraph's Command object).
-*   A node has conversational authority until it yields control.
-*   A node can invoke a native `handoff` tool to dynamically transfer execution (and the full conversation state) to another specialized node based on real-time needs.
+### 3. Topologies, Handoffs, and Asynchronous Delegation
+Instead of brittle, static sequential pipelines, `codecuttlectl` utilizes dynamic routing:
+*   **Synchronous Handoffs:** A node has conversational authority until it yields control. It can invoke a native `handoff` tool to dynamically transfer execution (and the full conversation state) to another specialized node based on real-time needs. The caller sleeps until the target finishes.
+*   **Asynchronous Delegation (The Swarm Backlog):** For "fan-out" parallel work (e.g., scraping 5 different API docs simultaneously), nodes interact with the Swarm Backlog (a supercharged version of the `todo_manage` tool). A node can create tasks, flag them as `async: true`, and assign them to other nodes (e.g., `researcher`). The Orchestrator does not block; it continues talking to the user while background Goroutines (or remote Arm Nodes) execute the tasks, eventually injecting completion events back into the Orchestrator's context window.
+
+### 4. Event Triggers (Continuous Background Processing)
+Morphologies can define global event triggers that spawn asynchronous node tasks based on system activity.
+To prevent trigger storms (e.g., firing a "Review Code" task on every single file write during a massive refactor), triggers support debouncing and logical grouping.
+*   *Example:* Trigger the `reviewer` node on `event: "git_commit"` rather than raw file writes, ensuring the reviewer only critiques logical, completed chunks of work.
 
 ### 4. Resilience & Fallbacks
 Multi-agent swarms face compounding probabilities of failure. Morphologies encode graceful degradation:
@@ -74,6 +80,7 @@ nodes:
     model: "qwen2.5-coder:32b"
     system_prompt: "Review code diffs and suggest optimizations."
     workbench: ["git"]
+    max_concurrency: 1 # Ensure we don't blow up local VRAM
 
 # Define routing rules and allowed handoffs
 topology:
@@ -82,6 +89,10 @@ topology:
     orchestrator: ["planner", "reviewer"]
     planner: ["orchestrator"]
     reviewer: ["orchestrator"]
+  triggers:
+    - event: "git_commit"
+      assign_to: "reviewer"
+      action: "Review the latest commit and suggest improvements."
 ```
 
 ## Migration from PR #25 (`ModelPool`)

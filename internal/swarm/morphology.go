@@ -20,12 +20,13 @@ type Morphology struct {
 
 // Node represents a single agent within the swarm.
 type Node struct {
-	Provider     string   `yaml:"provider"`
-	Model        string   `yaml:"model"`
-	SystemPrompt string   `yaml:"system_prompt"`
-	Workbench    []string `yaml:"workbench"`
-	IsPrimary    bool     `yaml:"is_primary"`
-	Fallbacks    []struct {
+	Provider       string   `yaml:"provider"`
+	Model          string   `yaml:"model"`
+	SystemPrompt   string   `yaml:"system_prompt"`
+	Workbench      []string `yaml:"workbench"`
+	IsPrimary      bool     `yaml:"is_primary"`
+	MaxConcurrency int      `yaml:"max_concurrency"`
+	Fallbacks      []struct {
 		Provider string `yaml:"provider"`
 		Model    string `yaml:"model"`
 	} `yaml:"fallbacks,omitempty"`
@@ -33,8 +34,16 @@ type Node struct {
 
 // Topology defines the routing rules for the swarm.
 type Topology struct {
-	Type  string              `yaml:"type"` // e.g., "handoff"
-	Rules map[string][]string `yaml:"rules"`
+	Type     string              `yaml:"type"` // e.g., "handoff"
+	Rules    map[string][]string `yaml:"rules"`
+	Triggers []EventTrigger      `yaml:"triggers,omitempty"`
+}
+
+// EventTrigger maps a system event to an asynchronous node task.
+type EventTrigger struct {
+	Event    string `yaml:"event"`
+	AssignTo string `yaml:"assign_to"`
+	Action   string `yaml:"action"`
 }
 
 // ParseMorphology reads and parses a morphology YAML configuration from the given reader.

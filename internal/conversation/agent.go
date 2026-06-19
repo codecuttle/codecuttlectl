@@ -890,7 +890,9 @@ func todoToolDefinition() bedrock.ToolDefinition {
 						"properties": {
 							"content": {"type": "string", "description": "Brief description of the task"},
 							"status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"], "description": "Current status"},
-							"priority": {"type": "string", "enum": ["high", "medium", "low"], "description": "Priority level"}
+							"priority": {"type": "string", "enum": ["high", "medium", "low"], "description": "Priority level"},
+							"assignee": {"type": "string", "description": "(Swarm) The Node ID to assign this task to for execution."},
+							"async": {"type": "boolean", "description": "(Swarm) If true, delegating to the assignee does not block the orchestrator."}
 						},
 						"required": ["content", "status", "priority"]
 					}
