@@ -250,6 +250,7 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 							"isError": b.IsError,
 						},
 					},
+					ThoughtSignature: lastSignature, // Inject last seen thought signature
 				})
 				if b.Name == "" {
 					log.Printf("CRITICAL: b.Name is empty for ToolResultBlock! ToolUseID: %s", b.ToolUseID)
