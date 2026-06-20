@@ -45,7 +45,7 @@ if ! command -v xdotool &>/dev/null; then
 fi
 
 # Clean frame directory
-rm -rf "${FRAME_DIR}"
+# rm -rf "${FRAME_DIR}"
 mkdir -p "${FRAME_DIR}"
 
 # --- Helper Functions ---
@@ -77,7 +77,7 @@ launch_terminal() {
 
     echo "[test] Terminal window: $TERM_WID (PID: $TERM_PID)"
     xdotool windowfocus "$TERM_WID"
-    xdotool windowactivate "$TERM_WID"
+    # xdotool windowactivate "$TERM_WID"  # disabled: fails without window manager
     sleep 0.5
 }
 
