@@ -110,7 +110,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 	if cfg.PromptMgr != nil && cfg.Client != nil {
 		var promptTools []prompt.ToolDef
 		for _, def := range cfg.PluginMgr.Definitions() {
-			if !isToolAllowed(def.Name, cfg.Workbench) {
+			if !IsToolAllowed(def.Name, cfg.Workbench) {
 				continue
 			}
 			promptTools = append(promptTools, prompt.ToolDef{
@@ -190,8 +190,8 @@ func NewAgent(cfg Config) (*Agent, error) {
 	return agent, nil
 }
 
-// isToolAllowed checks if a tool name is permitted by the workbench.
-func isToolAllowed(toolName string, workbench []string) bool {
+// IsToolAllowed checks if a tool name is permitted by the workbench.
+func IsToolAllowed(toolName string, workbench []string) bool {
 	if len(workbench) == 0 {
 		return true // Default: all tools allowed
 	}
@@ -540,7 +540,7 @@ func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
 	// Security Gate: Workbench Sandboxing
-	if !isToolAllowed(name, a.workbench) {
+	if !IsToolAllowed(name, a.workbench) {
 		errorMsg := fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", name, a.workbench)
 		return errorMsg, types.ToolResultStatusError
 	}
@@ -663,7 +663,7 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 	if a.promptMgr != nil {
 		promptTools := []prompt.ToolDef{}
 		for _, def := range a.pluginMgr.Definitions() {
-			if !isToolAllowed(def.Name, a.workbench) {
+			if !IsToolAllowed(def.Name, a.workbench) {
 				continue
 			}
 			promptTools = append(promptTools, prompt.ToolDef{
@@ -941,7 +941,7 @@ func (a *Agent) buildSkillContext() skills.Context {
 func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	var filtered []bedrock.ToolDefinition
 	for _, def := range a.pluginMgr.Definitions() {
-		if isToolAllowed(def.Name, a.workbench) {
+		if IsToolAllowed(def.Name, a.workbench) {
 			filtered = append(filtered, def)
 		}
 	}
@@ -955,12 +955,12 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	}
 
 	for _, def := range builtins {
-		if isToolAllowed(def.Name, a.workbench) {
+		if IsToolAllowed(def.Name, a.workbench) {
 			filtered = append(filtered, def)
 		}
 	}
 
-	if a.morph != nil && isToolAllowed("handoff", a.workbench) {
+	if a.morph != nil && IsToolAllowed("handoff", a.workbench) {
 		filtered = append(filtered, handoffToolDefinition())
 	}
 

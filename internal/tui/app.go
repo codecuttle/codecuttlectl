@@ -24,6 +24,8 @@ import (
 	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
+	"github.com/codecuttle/codecuttlectl/internal/prompt"
+	"github.com/codecuttle/codecuttlectl/internal/swarm"
 )
 
 // Config holds the configuration needed to create the TUI app.
@@ -42,6 +44,7 @@ type Config struct {
 	// Session persistence
 	Store     session.Store
 	SessionID string // If set, resume this session
+	Morph     *swarm.Morphology // Pass down morph config
 }
 
 // Model is the main Bubble Tea application model.
@@ -60,6 +63,7 @@ type Model struct {
 	workDir        string
 	enableThinking bool
 	thinkingBudget int
+	morph          *swarm.Morphology
 
 	// Conversation state
 	history           []provider.Message
@@ -217,6 +221,7 @@ func New(cfg Config) Model {
 		mdRenderer:       renderer,
 		store:            cfg.Store,
 		sessionID:        cfg.SessionID,
+		morph:            cfg.Morph,
 	}
 
 	// If pool is provided, use its primary client
@@ -1240,9 +1245,10 @@ func (m *Model) executePendingTools() tea.Cmd {
 					var remaining []pendingToolForApproval
 					for _, rt := range tools[i+1:] {
 						remaining = append(remaining, pendingToolForApproval{
-							ID:    rt.id,
-							Name:  rt.name,
-							Input: rt.input,
+							ID:               rt.id,
+							Name:             rt.name,
+							Input:            rt.input,
+							ThoughtSignature: rt.thoughtSignature,
 						})
 					}
 					// Return an approval request to the TUI — execution pauses here.
@@ -1250,6 +1256,7 @@ func (m *Model) executePendingTools() tea.Cmd {
 						ToolIndex:        i,
 						ToolName:         tool.name,
 						ToolUseID:        tool.id,
+						ThoughtSignature: tool.thoughtSignature,
 						Input:            tool.input,
 						Command:          req.Command,
 						Reason:           req.Reason,
@@ -1259,6 +1266,95 @@ func (m *Model) executePendingTools() tea.Cmd {
 						RemainingTools:   remaining,
 					}
 				}
+			}
+
+			// Handle native Swarm handoff
+			if tool.name == "handoff" {
+				if m.morph == nil {
+					results = append(results, provider.ToolResultBlock{
+						ToolUseID: tool.id,
+						Name:      tool.name,
+						Content:   "Error: Morphology is not enabled. Cannot handoff.",
+						IsError:   true,
+					})
+					continue
+				}
+
+				var payload struct {
+					Target       string `json:"target"`
+					Instructions string `json:"instructions"`
+				}
+				if err := json.Unmarshal(tool.input, &payload); err != nil {
+					results = append(results, provider.ToolResultBlock{
+						ToolUseID: tool.id,
+						Name:      tool.name,
+						Content:   fmt.Sprintf("Error parsing handoff input: %v", err),
+						IsError:   true,
+					})
+					continue
+				}
+
+				targetNode, ok := m.morph.Nodes[payload.Target]
+				if !ok {
+					results = append(results, provider.ToolResultBlock{
+						ToolUseID: tool.id,
+						Name:      tool.name,
+						Content:   fmt.Sprintf("Error: Node %q does not exist in the active morphology.", payload.Target),
+						IsError:   true,
+					})
+					continue
+				}
+
+				targetProv, ok := m.pool.GetNode(payload.Target)
+				if !ok {
+					results = append(results, provider.ToolResultBlock{
+						ToolUseID: tool.id,
+						Name:      tool.name,
+						Content:   fmt.Sprintf("Error: Provider for node %q failed to initialize.", payload.Target),
+						IsError:   true,
+					})
+					continue
+				}
+
+				// Apply Persona Shift
+				m.llmProvider = targetProv
+				m.client = nil // Disconnect direct bedrock client to force interface usage
+
+				// Re-render System Prompt for new Persona
+				// We need a promptMgr locally since TUI doesn't keep it
+				promptMgr, err := prompt.NewManager()
+				if err == nil {
+					promptTools := []prompt.ToolDef{}
+					for _, def := range m.pluginMgr.Definitions() {
+						if !conversation.IsToolAllowed(def.Name, targetNode.Workbench) {
+							continue
+						}
+						promptTools = append(promptTools, prompt.ToolDef{
+							Name:        def.Name,
+							Description: def.Description,
+							Parameters:  prompt.SchemaToToolParams(def.InputSchema),
+						})
+					}
+					
+					newSysPrompt, err := promptMgr.RenderSystem(m.workDir, targetNode.Model, targetNode.Provider, promptTools)
+					if err == nil {
+						if hints := m.pluginMgr.LLMHints(); hints != "" {
+							newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints
+						}
+						if targetNode.SystemPrompt != "" {
+							newSysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
+						}
+						m.system = newSysPrompt
+					}
+				}
+
+				results = append(results, provider.ToolResultBlock{
+					ToolUseID: tool.id,
+					Name:      tool.name,
+					Content:   fmt.Sprintf("Handoff successful. You are now operating as the %q node. Instructions from caller: %s", payload.Target, payload.Instructions),
+					IsError:   false,
+				})
+				continue
 			}
 
 			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)

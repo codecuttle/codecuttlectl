@@ -26,9 +26,9 @@ func TestIsToolAllowed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isToolAllowed(tc.tool, tc.workbench)
+			got := IsToolAllowed(tc.tool, tc.workbench)
 			if got != tc.want {
-				t.Errorf("isToolAllowed(%q, %v) = %v, want %v", tc.tool, tc.workbench, got, tc.want)
+				t.Errorf("IsToolAllowed(%q, %v) = %v, want %v", tc.tool, tc.workbench, got, tc.want)
 			}
 		})
 	}
