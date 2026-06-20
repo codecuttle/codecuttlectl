@@ -174,6 +174,11 @@ type Manager struct {
 	logger        hclog.Logger
 	skills        *skills.Registry
 	validateInput bool // When true, validate tool input against schema before execution
+
+	// fileLocks provides fine-grained locking for concurrent file operations.
+	// Keys are absolute file paths.
+	fileLocks   map[string]*sync.RWMutex
+	fileLocksMu sync.Mutex
 }
 
 // NewManager creates a new plugin manager.
@@ -191,6 +196,7 @@ func NewManager(verbose bool) *Manager {
 		}),
 		skills:        skills.NewRegistry(skills.DefaultBudget),
 		validateInput: true, // Enabled by default
+		fileLocks:     make(map[string]*sync.RWMutex),
 	}
 }
 
@@ -340,6 +346,9 @@ func (m *Manager) Execute(ctx context.Context, name string, input json.RawMessag
 // Use this when you need access to stderr, exit codes, or other metadata
 // for telemetry/Inkwell recording.
 func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMessage, workDir string) (ExecuteResult, error) {
+	unlock := m.acquireFileLock(name, input, workDir)
+	defer unlock()
+
 	m.mu.RLock()
 	p, ok := m.plugins[name]
 	m.mu.RUnlock()
@@ -463,12 +472,16 @@ func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.Raw
 
 	// Call streaming RPC
 	execCtx, cancel := context.WithTimeout(ctx, p.MaxTimeout)
+	
+	unlock := m.acquireFileLock(name, input, workDir)
+	
 	eventCh, err := p.rpcClient.ExecuteStream(execCtx, &pb.ExecuteRequest{
 		Input:            string(input),
 		WorkingDirectory: workDir,
 		AvailableTools:   m.toolInfoList(),
 	})
 	if err != nil {
+		unlock()
 		cancel()
 		// Fall back to non-streaming on RPC error
 		m.logger.Debug("ExecuteStream RPC failed, falling back to Execute", "plugin", name, "error", err)
@@ -490,6 +503,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.Raw
 	// Wrap the event channel to handle cancellation
 	wrappedCh := make(chan ToolStreamEvent, 64)
 	go func() {
+		defer unlock()
 		defer close(wrappedCh)
 		defer cancel()
 		for event := range eventCh {
@@ -682,4 +696,56 @@ func (m *Manager) SetValidateInput(enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.validateInput = enabled
+}
+
+func (m *Manager) getFileLock(path string) *sync.RWMutex {
+	m.fileLocksMu.Lock()
+	defer m.fileLocksMu.Unlock()
+	if lock, ok := m.fileLocks[path]; ok {
+		return lock
+	}
+	lock := &sync.RWMutex{}
+	m.fileLocks[path] = lock
+	return lock
+}
+
+func (m *Manager) acquireFileLock(name string, input json.RawMessage, workDir string) (unlock func()) {
+	// Parse input for "path"
+	var inputMap map[string]interface{}
+	if err := json.Unmarshal(input, &inputMap); err != nil {
+		return func() {} // Do nothing if input isn't JSON
+	}
+
+	pathVal, ok := inputMap["path"].(string)
+	if !ok || pathVal == "" {
+		return func() {} // No path to lock
+	}
+
+	absPath := pathVal
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(workDir, absPath)
+	}
+	absPath = filepath.Clean(absPath)
+
+	lock := m.getFileLock(absPath)
+
+	// Determine if this tool requires a Write lock or Read lock
+	isWrite := false
+	switch name {
+	case "edit_file", "write_file", "bash_exec", "git":
+		isWrite = true
+	case "read_file", "grep", "list_directory", "glob":
+		isWrite = false
+	default:
+		// Unknown tool with a "path" param? Assume write to be safe.
+		isWrite = true
+	}
+
+	if isWrite {
+		lock.Lock()
+		return func() { lock.Unlock() }
+	}
+
+	lock.RLock()
+	return func() { lock.RUnlock() }
 }
