@@ -385,6 +385,6 @@ Searching by tag surfaces items from any project: `list_work(tag="needs-research
 | 3 | CLI subcommand: `codecuttlectl backlog list/show/approve/reject` | Phase 1 | ⬜ |
 | 4 | Integration: Inkwell CapabilityGap detection | Phase 1, Inkwell | ⬜ |
 | 5 | Integration: `on_turn:first` skill surfacing approved items | Phase 1, Skills | ⬜ |
-| 6 | `refine_work` + `complete_work` tools | Phase 2 | ⬜ |
-| 7 | `--backlog-auto-approve` flag + scaffold integration | Phase 2, Scaffold | ⬜ |
+| 6 | `refine_work` + `complete_work` tools | Phase 3 | ⬜ |
+| 7 | `--backlog-auto-approve` flag + scaffold integration | Phase 3, Scaffold | ⬜ |
 | 8 | CloudStore implementation (S3/GCS) | Phase 1 interface | ⬜ |
