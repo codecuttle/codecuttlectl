@@ -308,6 +308,13 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 				log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
 			}
 
+			if a.dispatcher != nil {
+				a.dispatcher.Dispatch(swarm.TaskProgressMsg{
+					Assignee: a.activeNode,
+					Progress: fmt.Sprintf("Calling %s...", toolUse.Name),
+				})
+			}
+
 			start := time.Now()
 			result, status := a.executeTool(ctx, toolUse.Name, toolUse.Input)
 			duration := time.Since(start)

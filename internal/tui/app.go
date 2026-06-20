@@ -149,6 +149,8 @@ type Model struct {
 	swarmMgr            *swarm.Manager
 	swarmEventCh        chan any
 	pendingAsyncResults []string
+	activeSwarmTasks    int
+	swarmProgress       map[string]string // assignee -> current progress
 }
 
 type chatMessage struct {
@@ -237,6 +239,7 @@ func New(cfg Config) Model {
 		morph:            cfg.Morph,
 		agent:            cfg.Agent,
 		swarmEventCh:     make(chan any, 100),
+		swarmProgress:    make(map[string]string),
 	}
 
 	if m.morph != nil {
@@ -480,12 +483,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Stream event handling ---
 
 	case swarm.TaskStartedMsg:
+		m.activeSwarmTasks++
+		m.swarmProgress[msg.Assignee] = "Initializing..."
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
 			content: fmt.Sprintf("↻ [Swarm] Background task started: %q (Node: %s)", msg.TaskID, msg.Assignee),
 		})
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
+		
+		var cmd tea.Cmd
+		if m.activeSwarmTasks == 1 && !m.streaming {
+			cmd = m.spinner.Tick
+		}
+		return m, tea.Batch(m.listenSwarmEvents(), cmd)
+
+	case swarm.TaskProgressMsg:
+		m.swarmProgress[msg.Assignee] = msg.Progress
 		return m, m.listenSwarmEvents()
 
 	case swarm.TokenUsageMsg:
@@ -496,6 +510,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.listenSwarmEvents()
 
 	case swarm.TaskCompletedMsg:
+		m.activeSwarmTasks--
+		if m.activeSwarmTasks < 0 {
+			m.activeSwarmTasks = 0
+		}
+		delete(m.swarmProgress, msg.Assignee)
+		
 		// Mark the task as completed in the Todo list
 		items := m.todos.Items()
 		for i, item := range items {
@@ -515,16 +535,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.streaming || m.approvalPending != nil {
 			m.pendingAsyncResults = append(m.pendingAsyncResults, resultText)
+			return m, m.listenSwarmEvents()
 		} else {
 			m.history = append(m.history, provider.BuildUserTextMessage(resultText))
 			m.messages = append(m.messages, chatMessage{
 				role:    "system",
 				content: resultText,
 			})
+			
+			// Auto-nudge the idle model so it immediately reviews the background task results
+			nudge := "A background task has completed. Review the injected results above and incorporate them into your response or notify the user."
+			m.history = append(m.history, provider.BuildUserTextMessage(nudge))
+			m.messages = append(m.messages, chatMessage{
+				role:    "system_nudge",
+				content: "↻ auto-continuing to review background task...",
+			})
 			m.viewport.SetContent(m.renderMessages())
 			m.viewport.GotoBottom()
+			
+			return m, tea.Batch(m.listenSwarmEvents(), m.launchStream())
 		}
-		return m, m.listenSwarmEvents()
 
 	case StreamTextMsg:
 		// Clear interrupt pending on new content (user didn't confirm)
@@ -1051,7 +1081,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.streaming {
+		if m.streaming || m.activeSwarmTasks > 0 {
 			// Smooth color transition: cycle every 4th tick, interpolate between colors
 			m.spinnerTickCount++
 			if m.spinnerTickCount%4 == 0 {
@@ -2106,6 +2136,19 @@ func (m *Model) renderTodoBar() string {
 		content = StatusDimStyle.Render("no active tasks")
 	} else {
 		content = m.todos.Summary()
+	}
+
+	if m.activeSwarmTasks > 0 {
+		var msgs []string
+		for assignee, prog := range m.swarmProgress {
+			msgs = append(msgs, fmt.Sprintf("%s: %s", assignee, prog))
+		}
+		
+		bgMsg := fmt.Sprintf(" %d background tasks (%s)", m.activeSwarmTasks, strings.Join(msgs, ", "))
+		if m.activeSwarmTasks == 1 {
+			bgMsg = fmt.Sprintf(" 1 background task (%s)", msgs[0])
+		}
+		content += " │ " + SpinnerStyle.Render(m.spinner.View()) + bgMsg
 	}
 
 	toggle := HelpKeyStyle.Render("ctrl+t") + " " + HelpDescStyle.Render("tasks")

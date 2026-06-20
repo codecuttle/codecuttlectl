@@ -20,6 +20,12 @@ type TaskCompletedMsg struct {
 	IsError  bool
 }
 
+// TaskProgressMsg is dispatched when a background agent executes a tool or makes progress.
+type TaskProgressMsg struct {
+	Assignee string
+	Progress string
+}
+
 // TokenUsageMsg reports token usage from a background agent back to the main UI.
 // This allows background tasks to correctly increment the session's running cost.
 type TokenUsageMsg struct {
