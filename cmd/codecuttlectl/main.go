@@ -17,6 +17,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/audit"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/conversation"
+	"github.com/codecuttle/codecuttlectl/internal/keyring"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -145,6 +146,9 @@ func main() {
 					Model:   modID,
 				}), nil
 			case "google":
+				if err := keyring.EnsureGeminiAPIKey(); err != nil {
+					return nil, fmt.Errorf("failed to ensure Gemini API key: %w", err)
+				}
 				client, err := googleprov.New(ctx, googleprov.Config{
 					Model:          modID,
 					CacheThreshold: *googleCacheThreshold,
@@ -207,6 +211,10 @@ func main() {
 			}
 
 		case "google":
+			if err := keyring.EnsureGeminiAPIKey(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error ensuring Gemini API key: %v\n", err)
+				os.Exit(1)
+			}
 			googleClient, err := googleprov.New(ctx, googleprov.Config{
 				Model:          *modelID,
 				CacheThreshold: *googleCacheThreshold,
@@ -597,6 +605,11 @@ func runListModels(providerName, currentModel string) {
 }
 
 func runListGoogleModels() {
+	if err := keyring.EnsureGeminiAPIKey(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error ensuring Gemini API key: %v\n", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

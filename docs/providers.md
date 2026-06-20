@@ -87,7 +87,31 @@ codecuttlectl --provider=google --model=gemini-2.5-pro --google-cache-threshold=
 codecuttlectl --provider=google --list-models
 ```
 
-Requires `GEMINI_API_KEY` environment variable (or Application Default Credentials).
+Requires the `GEMINI_API_KEY` environment variable. If not set, codecuttlectl will securely prompt for it interactively and optionally save it to the system keyring for future sessions (or you can use Application Default Credentials).
+
+> **Note on Keyring Support (Linux):** If you opt to save the API key to your system keyring on Linux, `codecuttlectl` utilizes the Secret Service API via D-Bus. This requires a functioning D-Bus session and a secret service provider (e.g., `gnome-keyring` or `kwallet`). In headless environments or dev containers, you may see errors like `exec: "dbus-launch": executable file not found in $PATH` if `dbus-x11` or a secret service provider is not installed.
+>
+> To install the necessary requirements on common Linux distributions:
+> 
+> **Ubuntu / Debian:**
+> ```bash
+> sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libsecret-1-0
+> ```
+> 
+> **Fedora / RHEL:**
+> ```bash
+> sudo dnf install dbus-x11 gnome-keyring libsecret
+> ```
+> 
+> **Arch Linux:**
+> ```bash
+> sudo pacman -S dbus gnome-keyring libsecret
+> ```
+> 
+> **Troubleshooting headless Linux environments (SSH / WSL / Containers):**
+> The OS keyring is primarily a desktop feature. If `gnome-keyring` fails to unlock because there is no GUI to prompt you for a password (e.g., you see a `failed to unlock correct collection` error), `codecuttlectl` will gracefully fall back to storing the API key in a local credentials file (`~/.config/codecuttlectl/credentials.json`) with strict `0600` permissions. This is the industry-standard approach for headless CLI tools like the AWS or GitHub CLIs.
+> 
+> *(macOS and Windows utilize their native secure credential stores out of the box and require no additional packages).*
 
 **Features:**
 - Full streaming with tool calling (`ConverseStream` via `iter.Seq2`)
