@@ -258,7 +258,7 @@ codecuttlectl backlog prune --older-than 90d
 | **Sessions** | Session metadata gains `related_work_items []string` for traceability. |
 | **Scaffold generator** | Consumes `kind=plugin` items with `status=approved` — pulls title, description, and accumulated snapshots as generation context. |
 | **Future Optic Lobe** | Semantic search surfaces relevant backlog items when session context overlaps. |
-| **Future swarm** | Swarm workers poll for `status=approved, assigned_to=""` items at their capability level. |
+| **Future swarm** | Swarm workers poll for `status=approved, assigned_to!=""` items. Background tasks are executed by Headless Agents (Phase 2), and results are injected safely back into the Orchestrator's context stream. |
 
 ## Capability Gap Detection (Inkwell to Backlog)
 
