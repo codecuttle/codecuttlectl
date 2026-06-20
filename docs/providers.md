@@ -109,16 +109,7 @@ Requires the `GEMINI_API_KEY` environment variable. If not set, codecuttlectl wi
 > ```
 > 
 > **Troubleshooting headless Linux environments (SSH / WSL / Containers):**
-> The OS keyring is primarily a desktop feature. If you see the warning `failed to unlock correct collection`, it means the keyring daemon is running, but there is no GUI available to prompt you for the password to unlock it. For headless servers or containers, the recommended approach is to skip the keyring and set the environment variable directly in your profile:
-> ```bash
-> echo 'export GEMINI_API_KEY="your_api_key_here"' >> ~/.bashrc
-> source ~/.bashrc
-> ```
-> Alternatively, you can unlock the keyring manually in your terminal session (assuming your keyring password matches your login password):
-> ```bash
-> export $(dbus-launch)
-> eval "$(echo 'your_login_password' | gnome-keyring-daemon --unlock)"
-> ```
+> The OS keyring is primarily a desktop feature. If `gnome-keyring` fails to unlock because there is no GUI to prompt you for a password (e.g., you see a `failed to unlock correct collection` error), `codecuttlectl` will gracefully fall back to storing the API key in a local credentials file (`~/.config/codecuttlectl/credentials.json`) with strict `0600` permissions. This is the industry-standard approach for headless CLI tools like the AWS or GitHub CLIs.
 > 
 > *(macOS and Windows utilize their native secure credential stores out of the box and require no additional packages).*
 
