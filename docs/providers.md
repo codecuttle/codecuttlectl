@@ -108,6 +108,18 @@ Requires the `GEMINI_API_KEY` environment variable. If not set, codecuttlectl wi
 > sudo pacman -S dbus gnome-keyring libsecret
 > ```
 > 
+> **Troubleshooting headless Linux environments (SSH / WSL / Containers):**
+> The OS keyring is primarily a desktop feature. If you see the warning `failed to unlock correct collection`, it means the keyring daemon is running, but there is no GUI available to prompt you for the password to unlock it. For headless servers or containers, the recommended approach is to skip the keyring and set the environment variable directly in your profile:
+> ```bash
+> echo 'export GEMINI_API_KEY="your_api_key_here"' >> ~/.bashrc
+> source ~/.bashrc
+> ```
+> Alternatively, you can unlock the keyring manually in your terminal session (assuming your keyring password matches your login password):
+> ```bash
+> export $(dbus-launch)
+> eval "$(echo 'your_login_password' | gnome-keyring-daemon --unlock)"
+> ```
+> 
 > *(macOS and Windows utilize their native secure credential stores out of the box and require no additional packages).*
 
 **Features:**
