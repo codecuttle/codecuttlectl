@@ -1520,6 +1520,19 @@ func (m *Model) executePendingTools() tea.Cmd {
 							Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 						})
 					}
+
+					// Inject builtins for handoff re-render
+					builtins := []prompt.ToolDef{
+						{Name: "todo_manage", Description: "Create and maintain a structured task list.", Parameters: []prompt.ToolParam{}},
+						{Name: "tool_info", Description: "Introspect available tools.", Parameters: []prompt.ToolParam{}},
+						{Name: "get_skill", Description: "Retrieve a skill, workflow, or knowledge document.", Parameters: []prompt.ToolParam{}},
+						{Name: "handoff", Description: "Yield conversational control.", Parameters: []prompt.ToolParam{}},
+					}
+					for _, b := range builtins {
+						if conversation.IsToolAllowed(b.Name, targetNode.Workbench) {
+							promptTools = append(promptTools, b)
+						}
+					}
 					
 					var swarmNodes []string
 					for nid := range m.morph.Nodes {

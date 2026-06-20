@@ -124,10 +124,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 	var systemPrompt string
 	if cfg.PromptMgr != nil && (cfg.Client != nil || cfg.Provider != nil) {
 		var promptTools []prompt.ToolDef
-		for _, def := range cfg.PluginMgr.Definitions() {
-			if !IsToolAllowed(def.Name, cfg.Workbench) {
-				continue
-			}
+		for _, def := range allToolDefs(cfg.PluginMgr, cfg.Workbench, cfg.Morph) {
 			promptTools = append(promptTools, prompt.ToolDef{
 				Name:        def.Name,
 				Description: def.Description,
@@ -973,11 +970,11 @@ func (a *Agent) buildSkillContext() skills.Context {
 }
 
 // allToolDefs returns combined tool definitions from plugins + built-in tools,
-// filtered by the agent's workbench sandbox.
-func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
+// filtered by the given workbench sandbox.
+func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm.Morphology) []bedrock.ToolDefinition {
 	var filtered []bedrock.ToolDefinition
-	for _, def := range a.pluginMgr.Definitions() {
-		if IsToolAllowed(def.Name, a.workbench) {
+	for _, def := range pluginMgr.Definitions() {
+		if IsToolAllowed(def.Name, workbench) {
 			filtered = append(filtered, def)
 		}
 	}
@@ -991,16 +988,22 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	}
 
 	for _, def := range builtins {
-		if IsToolAllowed(def.Name, a.workbench) {
+		if IsToolAllowed(def.Name, workbench) {
 			filtered = append(filtered, def)
 		}
 	}
 
-	if a.morph != nil && IsToolAllowed("handoff", a.workbench) {
+	if morph != nil && IsToolAllowed("handoff", workbench) {
 		filtered = append(filtered, HandoffToolDefinition())
 	}
 
 	return filtered
+}
+
+// allToolDefs returns combined tool definitions from plugins + built-in tools,
+// filtered by the agent's workbench sandbox.
+func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
+	return allToolDefs(a.pluginMgr, a.workbench, a.morph)
 }
 
 func HandoffToolDefinition() bedrock.ToolDefinition {
