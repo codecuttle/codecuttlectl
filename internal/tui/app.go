@@ -2182,13 +2182,40 @@ func sanitizeModelText(text string) string {
 func (m *Model) providerToolDefs() []provider.ToolDefinition {
 	defs := m.pluginMgr.Definitions()
 	var result []provider.ToolDefinition
+
+	// If using Swarm Morphologies, filter plugins by active node's sandbox
+	var activeWorkbench []string
+	if m.morph != nil && m.system != "" {
+		for _, node := range m.morph.Nodes {
+			if prov, ok := m.pool.GetNode(node.Provider); ok && prov == m.llmProvider {
+				activeWorkbench = node.Workbench
+				break
+			}
+		}
+	}
+
 	for _, d := range defs {
+		if activeWorkbench != nil && !conversation.IsToolAllowed(d.Name, activeWorkbench) {
+			continue // sandboxed
+		}
 		result = append(result, provider.ToolDefinition{
 			Name:        d.Name,
 			Description: d.Description,
 			InputSchema: d.InputSchema,
 		})
 	}
+	
+	// Add Swarm native tools
+	if m.morph != nil {
+		if activeWorkbench == nil || conversation.IsToolAllowed("handoff", activeWorkbench) {
+			result = append(result, provider.ToolDefinition{
+				Name:        "handoff",
+				Description: conversation.HandoffToolDefinition().Description,
+				InputSchema: conversation.HandoffToolDefinition().InputSchema,
+			})
+		}
+	}
+
 	return result
 }
 

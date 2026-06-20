@@ -961,13 +961,13 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 	}
 
 	if a.morph != nil && IsToolAllowed("handoff", a.workbench) {
-		filtered = append(filtered, handoffToolDefinition())
+		filtered = append(filtered, HandoffToolDefinition())
 	}
 
 	return filtered
 }
 
-func handoffToolDefinition() bedrock.ToolDefinition {
+func HandoffToolDefinition() bedrock.ToolDefinition {
 	return bedrock.ToolDefinition{
 		Name:        "handoff",
 		Description: "Yield conversational control and delegate execution to another specialized node in the Swarm Morphology. You will go to sleep and the target node will take over processing. Use this to route work to planners, researchers, or reviewers.",
