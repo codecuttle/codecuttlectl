@@ -1512,7 +1512,14 @@ func (m *Model) executePendingTools() tea.Cmd {
 						})
 					}
 					
-					newSysPrompt, err := promptMgr.RenderSystem(m.workDir, targetNode.Model, targetNode.Provider, promptTools)
+					var swarmNodes []string
+					for nid := range m.morph.Nodes {
+						if nid != payload.Target {
+							swarmNodes = append(swarmNodes, nid)
+						}
+					}
+					
+					newSysPrompt, err := promptMgr.RenderSystem(m.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
 					if err == nil {
 						if hints := m.pluginMgr.LLMHints(); hints != "" {
 							newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints

@@ -293,7 +293,8 @@ func main() {
 	} else if llmProvider != nil {
 		modelDisplayID = llmProvider.Name()
 	}
-	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools)
+	// Render the primary system prompt without swarm nodes (REPL mode is single-agent)
+	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error rendering system prompt: %v\n", err)
 		os.Exit(1)

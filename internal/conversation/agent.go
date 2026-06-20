@@ -110,8 +110,19 @@ func NewAgent(cfg Config) (*Agent, error) {
 		}
 	}
 
+	// Phase 2: Compute available Swarm Nodes for the prompt
+	var swarmNodes []string
+	if cfg.Morph != nil {
+		for nodeID := range cfg.Morph.Nodes {
+			// Don't include the current active node (defaults to "orchestrator" but we check all)
+			if nodeID != "orchestrator" {
+				swarmNodes = append(swarmNodes, nodeID)
+			}
+		}
+	}
+
 	var systemPrompt string
-	if cfg.PromptMgr != nil && cfg.Client != nil {
+	if cfg.PromptMgr != nil && (cfg.Client != nil || cfg.Provider != nil) {
 		var promptTools []prompt.ToolDef
 		for _, def := range cfg.PluginMgr.Definitions() {
 			if !IsToolAllowed(def.Name, cfg.Workbench) {
@@ -126,10 +137,18 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 		var err error
 		provName := "bedrock"
-		if cfg.Provider != nil {
-			provName = "ollama" // If there's a provider but also a client, it's the bedrock wrapper
+		if cfg.Provider != nil && cfg.Client == nil {
+			provName = "ollama" 
 		}
-		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, cfg.Client.ModelID(), provName, promptTools)
+		
+		var modelID string
+		if cfg.Client != nil {
+			modelID = cfg.Client.ModelID()
+		} else {
+			modelID = cfg.Provider.ID()
+		}
+		
+		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, modelID, provName, promptTools, swarmNodes)
 		if err != nil {
 			return nil, fmt.Errorf("rendering system prompt: %w", err)
 		}
@@ -678,7 +697,14 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 			})
 		}
 		
-		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools)
+		var swarmNodes []string
+		for nodeID := range a.morph.Nodes {
+			if nodeID != payload.Target {
+				swarmNodes = append(swarmNodes, nodeID)
+			}
+		}
+		
+		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
 		if err != nil {
 			return fmt.Sprintf("Error rendering new system prompt for %q: %v", payload.Target, err), types.ToolResultStatusError
 		}
