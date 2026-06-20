@@ -250,6 +250,7 @@ func toGenAIContents(msgs []provider.Message) []*genai.Content {
 							"isError": b.IsError,
 						},
 					},
+					ThoughtSignature: lastSignature, // Inject last seen thought signature
 				})
 				if b.Name == "" {
 					log.Printf("CRITICAL: b.Name is empty for ToolResultBlock! ToolUseID: %s", b.ToolUseID)
@@ -307,7 +308,11 @@ func (p *Provider) Converse(ctx context.Context, req provider.Request) (*provide
 	var res provider.Response
 	res.Usage = extractUsage(resp.UsageMetadata)
 
+	var lastSig string
 	for _, part := range cand.Content.Parts {
+		if len(part.ThoughtSignature) > 0 {
+			lastSig = string(part.ThoughtSignature)
+		}
 		if part.Thought {
 			// Skip thought parts in the direct response (they're internal reasoning)
 			continue
@@ -317,10 +322,17 @@ func (p *Provider) Converse(ctx context.Context, req provider.Request) (*provide
 		}
 		if part.FunctionCall != nil {
 			inputBytes, _ := json.Marshal(part.FunctionCall.Args)
+			sig := ""
+			if len(part.ThoughtSignature) > 0 {
+				sig = string(part.ThoughtSignature)
+			} else {
+				sig = lastSig
+			}
 			res.ToolUses = append(res.ToolUses, provider.ToolUseRequest{
-				ToolUseID: part.FunctionCall.ID,
-				Name:      part.FunctionCall.Name,
-				Input:     inputBytes,
+				ToolUseID:        part.FunctionCall.ID,
+				Name:             part.FunctionCall.Name,
+				Input:            inputBytes,
+				ThoughtSignature: sig,
 			})
 		}
 	}

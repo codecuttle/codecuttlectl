@@ -1,0 +1,24 @@
+name: "senior-dev-committee"
+version: "1.0.0"
+description: "A fast, cheap planner combined with a powerful executor."
+presentation: "progressive_disclosure"
+
+nodes:
+  orchestrator:
+    provider: "bedrock"
+    model: "us.anthropic.claude-opus-4-6-v1"
+    system_prompt: "You are the lead developer."
+    workbench: ["*"]
+    is_primary: true
+    
+  planner:
+    provider: "google"
+    model: "gemini-3.1-pro"
+    system_prompt: "You are a planner."
+    workbench: ["read_file", "list_directory"]
+
+topology:
+  type: "handoff"
+  rules:
+    orchestrator: ["planner"]
+    planner: ["orchestrator"]

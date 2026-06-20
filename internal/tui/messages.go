@@ -98,6 +98,7 @@ type ApprovalRequestMsg struct {
 	ToolIndex       int    // Index in the pending tools slice where approval is needed
 	ToolName        string // Tool name for display
 	ToolUseID       string
+	ThoughtSignature string
 	Input           json.RawMessage // Original tool input
 	Command         string          // Human-readable command description
 	Reason          string          // Why confirmation is needed
@@ -109,9 +110,10 @@ type ApprovalRequestMsg struct {
 
 // pendingToolForApproval holds serializable pending tool data for approval flow.
 type pendingToolForApproval struct {
-	ID    string
-	Name  string
-	Input json.RawMessage
+	ID               string
+	Name             string
+	Input            json.RawMessage
+	ThoughtSignature string
 }
 
 // ApprovalDecisionMsg carries the user's approval decision for a pending tool.

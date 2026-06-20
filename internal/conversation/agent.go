@@ -21,6 +21,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/scaffold"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/skills"
+	"github.com/codecuttle/codecuttlectl/internal/swarm"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
@@ -57,6 +58,11 @@ type Agent struct {
 	inkwell   []session.InkEntry
 	turn      int
 	dirty     bool // true when state needs flushing to disk
+
+	// Sandbox
+	workbench []string
+	morph     *swarm.Morphology
+	activeNode string
 }
 
 // Config holds configuration for creating an Agent.
@@ -64,6 +70,7 @@ type Config struct {
 	Client    *bedrock.Client   // Bedrock client (nil when using Provider)
 	Pool      provider.Pool     // Multi-model pool (if set, Client is ignored)
 	Provider  provider.Provider // Provider interface (takes precedence over Client when non-nil)
+	Morph     *swarm.Morphology // Swarm configuration (enables handoff tool)
 	PromptMgr *prompt.Manager
 	PluginMgr *pluginhost.Manager
 	WorkDir   string
@@ -74,6 +81,7 @@ type Config struct {
 	// Safety
 	AutoApprove  bool                                              // When true, skip destructive op confirmation
 	ApprovalFunc func(toolName, command, reason, risk string) bool // External approval callback (nil = deny)
+	Workbench    []string                                          // List of allowed tools (nil/empty or ["*"] means all tools)
 
 	// Audit
 	AuditLogger *audit.Logger // Structured event logger (nil = no structured logs)
@@ -102,6 +110,9 @@ func NewAgent(cfg Config) (*Agent, error) {
 	if cfg.PromptMgr != nil && cfg.Client != nil {
 		var promptTools []prompt.ToolDef
 		for _, def := range cfg.PluginMgr.Definitions() {
+			if !IsToolAllowed(def.Name, cfg.Workbench) {
+				continue
+			}
 			promptTools = append(promptTools, prompt.ToolDef{
 				Name:        def.Name,
 				Description: def.Description,
@@ -142,6 +153,19 @@ func NewAgent(cfg Config) (*Agent, error) {
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,
+		workbench:    cfg.Workbench,
+		morph:        cfg.Morph,
+		activeNode:   "orchestrator", // default until handoff overrides
+	}
+
+	// Initialize active node if morph is provided
+	if agent.morph != nil {
+		for nodeID, node := range agent.morph.Nodes {
+			if node.IsPrimary {
+				agent.activeNode = nodeID
+				break
+			}
+		}
 	}
 
 	// Initialize audit trail with model info and session start time
@@ -164,6 +188,19 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	return agent, nil
+}
+
+// IsToolAllowed checks if a tool name is permitted by the workbench.
+func IsToolAllowed(toolName string, workbench []string) bool {
+	if len(workbench) == 0 {
+		return true // Default: all tools allowed
+	}
+	for _, allowed := range workbench {
+		if allowed == "*" || allowed == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // SetSystemPrompt overrides the system prompt (used when prompt is pre-rendered externally).
@@ -502,6 +539,12 @@ func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
 
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
+	// Security Gate: Workbench Sandboxing
+	if !IsToolAllowed(name, a.workbench) {
+		errorMsg := fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", name, a.workbench)
+		return errorMsg, types.ToolResultStatusError
+	}
+
 	// Built-in: todo_manage
 	if name == "todo_manage" {
 		result := a.handleTodoTool(input)
@@ -529,6 +572,12 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 	// Built-in: reload_plugins
 	if name == "reload_plugins" {
 		result, status := a.handleReloadPlugins(ctx)
+		return result, status
+	}
+
+	// Built-in: handoff (Swarm routing)
+	if name == "handoff" {
+		result, status := a.handleHandoff(input)
 		return result, status
 	}
 
@@ -579,6 +628,72 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 		return output, types.ToolResultStatusError
 	}
 	return output, types.ToolResultStatusSuccess
+}
+
+func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultStatus) {
+	if a.morph == nil {
+		return "Error: Morphology is not enabled. Cannot handoff.", types.ToolResultStatusError
+	}
+
+	var payload struct {
+		Target       string `json:"target"`
+		Instructions string `json:"instructions"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return fmt.Sprintf("Error parsing handoff input: %v", err), types.ToolResultStatusError
+	}
+
+	targetNode, ok := a.morph.Nodes[payload.Target]
+	if !ok {
+		return fmt.Sprintf("Error: Node %q does not exist in the active morphology.", payload.Target), types.ToolResultStatusError
+	}
+
+	targetProv, ok := a.pool.GetNode(payload.Target)
+	if !ok {
+		return fmt.Sprintf("Error: Provider for node %q failed to initialize.", payload.Target), types.ToolResultStatusError
+	}
+
+	// Update Agent State
+	a.activeNode = payload.Target
+	a.provider = targetProv
+	a.client = nil // Ensure we only use the provider interface, avoiding fork logic
+	a.workbench = targetNode.Workbench
+
+	// Re-render System Prompt for the new Persona
+	if a.promptMgr != nil {
+		promptTools := []prompt.ToolDef{}
+		for _, def := range a.pluginMgr.Definitions() {
+			if !IsToolAllowed(def.Name, a.workbench) {
+				continue
+			}
+			promptTools = append(promptTools, prompt.ToolDef{
+				Name:        def.Name,
+				Description: def.Description,
+				Parameters:  prompt.SchemaToToolParams(def.InputSchema),
+			})
+		}
+		
+		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools)
+		if err != nil {
+			return fmt.Sprintf("Error rendering new system prompt for %q: %v", payload.Target, err), types.ToolResultStatusError
+		}
+		
+		if hints := a.pluginMgr.LLMHints(); hints != "" {
+			newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints
+		}
+		// If the node has its own static prompt from the YAML, append it
+		if targetNode.SystemPrompt != "" {
+			newSysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
+		}
+		a.systemPrompt = newSysPrompt
+	}
+
+	if a.verbose {
+		log.Printf("[swarm] handoff successful: %s -> %s", a.activeNode, payload.Target)
+	}
+
+	successMsg := fmt.Sprintf("Handoff successful. You are now operating as the %q node. Instructions from caller: %s", payload.Target, payload.Instructions)
+	return successMsg, types.ToolResultStatusSuccess
 }
 
 func (a *Agent) handleTodoTool(input json.RawMessage) string {
@@ -821,15 +936,56 @@ func (a *Agent) buildSkillContext() skills.Context {
 	return ctx
 }
 
-// allToolDefs returns combined tool definitions from plugins + built-in tools.
+// allToolDefs returns combined tool definitions from plugins + built-in tools,
+// filtered by the agent's workbench sandbox.
 func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
-	defs := a.pluginMgr.Definitions()
-	defs = append(defs, todoToolDefinition())
-	defs = append(defs, toolInfoDefinition())
-	defs = append(defs, getSkillDefinition())
-	defs = append(defs, scaffoldPluginDefinition())
-	defs = append(defs, reloadPluginsDefinition())
-	return defs
+	var filtered []bedrock.ToolDefinition
+	for _, def := range a.pluginMgr.Definitions() {
+		if IsToolAllowed(def.Name, a.workbench) {
+			filtered = append(filtered, def)
+		}
+	}
+
+	builtins := []bedrock.ToolDefinition{
+		todoToolDefinition(),
+		toolInfoDefinition(),
+		getSkillDefinition(),
+		scaffoldPluginDefinition(),
+		reloadPluginsDefinition(),
+	}
+
+	for _, def := range builtins {
+		if IsToolAllowed(def.Name, a.workbench) {
+			filtered = append(filtered, def)
+		}
+	}
+
+	if a.morph != nil && IsToolAllowed("handoff", a.workbench) {
+		filtered = append(filtered, HandoffToolDefinition())
+	}
+
+	return filtered
+}
+
+func HandoffToolDefinition() bedrock.ToolDefinition {
+	return bedrock.ToolDefinition{
+		Name:        "handoff",
+		Description: "Yield conversational control and delegate execution to another specialized node in the Swarm Morphology. You will go to sleep and the target node will take over processing. Use this to route work to planners, researchers, or reviewers.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"target": {
+					"type": "string",
+					"description": "The Node ID to handoff to (e.g. 'planner', 'reviewer')."
+				},
+				"instructions": {
+					"type": "string",
+					"description": "Explicit instructions for the target node. They will see the entire conversation history, but this specifies exactly what you need them to do right now."
+				}
+			},
+			"required": ["target", "instructions"]
+		}`),
+	}
 }
 
 func todoToolDefinition() bedrock.ToolDefinition {
@@ -847,7 +1003,9 @@ func todoToolDefinition() bedrock.ToolDefinition {
 						"properties": {
 							"content": {"type": "string", "description": "Brief description of the task"},
 							"status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"], "description": "Current status"},
-							"priority": {"type": "string", "enum": ["high", "medium", "low"], "description": "Priority level"}
+							"priority": {"type": "string", "enum": ["high", "medium", "low"], "description": "Priority level"},
+							"assignee": {"type": "string", "description": "(Swarm) The Node ID to assign this task to for execution."},
+							"async": {"type": "boolean", "description": "(Swarm) If true, delegating to the assignee does not block the orchestrator."}
 						},
 						"required": ["content", "status", "priority"]
 					}

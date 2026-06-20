@@ -23,6 +23,8 @@ type Item struct {
 	Content  string `json:"content"`
 	Status   string `json:"status"`
 	Priority string `json:"priority"`
+	Assignee string `json:"assignee,omitempty"` // Node ID for async delegation
+	Async    bool   `json:"async,omitempty"`    // True if task should run in parallel
 }
 
 // List manages the session's todo items.

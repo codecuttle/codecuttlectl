@@ -24,6 +24,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
 	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
+	"github.com/codecuttle/codecuttlectl/internal/swarm"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
 )
 
@@ -37,6 +38,7 @@ func main() {
 		providerF            = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
 		ollamaURL            = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
 		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
+		morphPath            = flag.String("morph", "", "Path to a Swarm Morphology YAML file (overrides model/provider flags)")
 		workDir              = flag.String("workdir", "", "Working directory (default: current directory)")
 		pluginDir            = flag.String("plugin-dir", "", "Directory containing Cuttlebone plugin binaries")
 		verbose              = flag.Bool("verbose", false, "Enable verbose/debug output")
@@ -123,72 +125,131 @@ func main() {
 	// Initialize LLM provider
 	var llmProvider provider.Provider
 	var bedrockClient *bedrock.Client // Non-nil only for Bedrock (needed for Bedrock-specific features)
-	var bedrockPool provider.Pool
-
+	var genericPool provider.Pool
+	var morph *swarm.Morphology
 	providerName := *providerF
-	// Auto-detect provider from model name prefix (e.g., "ollama:gemma4")
-	if providerName == "" && strings.HasPrefix(*modelID, "ollama:") {
-		providerName = "ollama"
-		*modelID = strings.TrimPrefix(*modelID, "ollama:")
-	}
-	if providerName == "" {
-		providerName = "bedrock"
-	}
 
-	switch providerName {
-	case "ollama":
-		ollamaClient := ollama.New(ollama.Config{
-			BaseURL: *ollamaURL,
-			Model:   *modelID,
-		})
-		llmProvider = ollamaClient
-		if *verbose {
-			fmt.Fprintf(os.Stderr, "[provider] ollama model=%s url=%s\n", *modelID, ollamaClient.ID())
-		}
-
-	case "google":
-		googleClient, err := googleprov.New(ctx, googleprov.Config{
-			Model:          *modelID,
-			CacheThreshold: *googleCacheThreshold,
-		})
+	if *morphPath != "" {
+		var err error
+		morph, err = swarm.LoadMorphology(*morphPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error initializing Google client: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error loading morphology: %v\n", err)
 			os.Exit(1)
 		}
-		llmProvider = googleClient
-		// Ensure cache cleanup on shutdown
-		defer googleClient.Close(context.Background())
-		if *verbose {
-			fmt.Fprintf(os.Stderr, "[provider] google model=%s cache-threshold=%d\n", *modelID, *googleCacheThreshold)
+
+		factory := func(ctx context.Context, provName, modID string) (provider.Provider, error) {
+			switch provName {
+			case "ollama":
+				return ollama.New(ollama.Config{
+					BaseURL: *ollamaURL,
+					Model:   modID,
+				}), nil
+			case "google":
+				client, err := googleprov.New(ctx, googleprov.Config{
+					Model:          modID,
+					CacheThreshold: *googleCacheThreshold,
+				})
+				if err == nil {
+					// Add cleanup? (omitted for simple factory)
+				}
+				return client, err
+			case "bedrock":
+				// Create single bedrock client (could optimize by caching session)
+				resolved := bedrock.ResolveModelID(modID)
+				c, err := bedrock.NewClient(ctx, bedrock.Config{
+					Region:  *region,
+					Profile: *profile,
+					ModelID: resolved,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return bedrockprov.New(c), nil
+			default:
+				return nil, fmt.Errorf("unsupported provider: %s", provName)
+			}
 		}
 
-	case "bedrock":
-		resolvedModel := bedrock.ResolveModelID(*modelID)
-		pool, err := bedrock.NewPool(ctx, bedrock.PoolConfig{
-			Region:    *region,
-			Profile:   *profile,
-			Primary:   resolvedModel,
-			Auxiliary: *auxModel,
-			Planning:  *planModel,
-		})
+		pool, err := swarm.NewPool(ctx, morph, factory)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error initializing swarm pool: %v\n", err)
 			os.Exit(1)
 		}
-		bedrockPool = bedrockprov.NewPool(pool)
-		bedrockClient = pool.Primary()
-		llmProvider = nil // TUI/Agent still use bedrockClient directly for now
+
+		genericPool = pool
+		
+		// Map genericPool to legacy components for smooth transition
+		llmProvider = pool.Primary()
+		
 		if *verbose {
-			fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
-				bedrockPool.Info(string(bedrock.RolePrimary)).DisplayName,
-				bedrockPool.Info(string(bedrock.RoleAuxiliary)).DisplayName,
-				bedrockPool.Info(string(bedrock.RolePlanning)).DisplayName,
-			)
+			fmt.Fprintf(os.Stderr, "[swarm] morphology loaded: %s (%s)\n", morph.Name, morph.Presentation)
+			fmt.Fprintf(os.Stderr, "[swarm] primary node=%s\n", pool.Info("primary").DisplayName)
+		}
+	} else {
+		// Auto-detect provider from model name prefix (e.g., "ollama:gemma4")
+		if providerName == "" && strings.HasPrefix(*modelID, "ollama:") {
+			providerName = "ollama"
+			*modelID = strings.TrimPrefix(*modelID, "ollama:")
+		}
+		if providerName == "" {
+			providerName = "bedrock"
 		}
 
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama)\n", providerName)
-		os.Exit(1)
+		switch providerName {
+		case "ollama":
+			ollamaClient := ollama.New(ollama.Config{
+				BaseURL: *ollamaURL,
+				Model:   *modelID,
+			})
+			llmProvider = ollamaClient
+			if *verbose {
+				fmt.Fprintf(os.Stderr, "[provider] ollama model=%s url=%s\n", *modelID, ollamaClient.ID())
+			}
+
+		case "google":
+			googleClient, err := googleprov.New(ctx, googleprov.Config{
+				Model:          *modelID,
+				CacheThreshold: *googleCacheThreshold,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error initializing Google client: %v\n", err)
+				os.Exit(1)
+			}
+			llmProvider = googleClient
+			// Ensure cache cleanup on shutdown
+			defer googleClient.Close(context.Background())
+			if *verbose {
+				fmt.Fprintf(os.Stderr, "[provider] google model=%s cache-threshold=%d\n", *modelID, *googleCacheThreshold)
+			}
+
+		case "bedrock":
+			resolvedModel := bedrock.ResolveModelID(*modelID)
+			pool, err := bedrock.NewPool(ctx, bedrock.PoolConfig{
+				Region:    *region,
+				Profile:   *profile,
+				Primary:   resolvedModel,
+				Auxiliary: *auxModel,
+				Planning:  *planModel,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error initializing Bedrock model pool: %v\n", err)
+				os.Exit(1)
+			}
+			genericPool = bedrockprov.NewPool(pool)
+			bedrockClient = pool.Primary()
+			llmProvider = nil // TUI/Agent still use bedrockClient directly for now
+			if *verbose {
+				fmt.Fprintf(os.Stderr, "[pool] primary=%s auxiliary=%s planning=%s\n",
+					genericPool.Info(string(bedrock.RolePrimary)).DisplayName,
+					genericPool.Info(string(bedrock.RoleAuxiliary)).DisplayName,
+					genericPool.Info(string(bedrock.RolePlanning)).DisplayName,
+				)
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama)\n", providerName)
+			os.Exit(1)
+		}
 	}
 
 	// Initialize prompt manager
@@ -236,20 +297,20 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
+		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, bedrockClient, bedrockPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
+		runPlainREPL(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, morph)
 		return
 	}
 
 	// Full-screen TUI mode
 	model := tui.New(tui.Config{
 		Client:         bedrockClient,
-		Pool:           bedrockPool,
+		Pool:           genericPool,
 		Provider:       llmProvider,
 		PluginMgr:      pluginMgr,
 		System:         systemPrompt,
@@ -259,6 +320,7 @@ func main() {
 		AutoApprove:    *autoApprove,
 		Store:          store,
 		SessionID:      *sessionID,
+		Morph:          morph,
 	})
 
 	p := tea.NewProgram(model)
@@ -275,11 +337,12 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
 		Provider:    llmProvider,
+		Morph:       morph,
 		PromptMgr:   nil, // Not needed, system prompt already rendered
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
@@ -337,7 +400,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 	printSessionExit(agent.SessionID())
 }
 
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, morph *swarm.Morphology) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -355,6 +418,7 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Poo
 		Client:       client,
 		Pool:         pool,
 		Provider:     llmProvider,
+		Morph:        morph,
 		PromptMgr:    nil,
 		PluginMgr:    pluginMgr,
 		WorkDir:      workDir,

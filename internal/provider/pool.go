@@ -7,6 +7,7 @@ type Pool interface {
 	Planning() Provider
 	Info(role string) PoolModelInfo
 	EstimateCost(role string, input, output, cacheRead, cacheWrite int64) float64
+	GetNode(nodeID string) (Provider, bool)
 }
 
 // PoolModelInfo contains generic metadata for a model in a pool.
