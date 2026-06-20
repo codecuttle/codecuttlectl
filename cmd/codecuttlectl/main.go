@@ -126,10 +126,12 @@ func main() {
 	var llmProvider provider.Provider
 	var bedrockClient *bedrock.Client // Non-nil only for Bedrock (needed for Bedrock-specific features)
 	var genericPool provider.Pool
+	var morph *swarm.Morphology
 	providerName := *providerF
 
 	if *morphPath != "" {
-		morph, err := swarm.LoadMorphology(*morphPath)
+		var err error
+		morph, err = swarm.LoadMorphology(*morphPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading morphology: %v\n", err)
 			os.Exit(1)
@@ -295,13 +297,13 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot)
+		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
 		return
 	}
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger)
+		runPlainREPL(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, morph)
 		return
 	}
 
@@ -318,6 +320,7 @@ func main() {
 		AutoApprove:    *autoApprove,
 		Store:          store,
 		SessionID:      *sessionID,
+		Morph:          morph,
 	})
 
 	p := tea.NewProgram(model)
@@ -334,11 +337,12 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
 		Provider:    llmProvider,
+		Morph:       morph,
 		PromptMgr:   nil, // Not needed, system prompt already rendered
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
@@ -396,7 +400,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 	printSessionExit(agent.SessionID())
 }
 
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger) {
+func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, morph *swarm.Morphology) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -414,6 +418,7 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Poo
 		Client:       client,
 		Pool:         pool,
 		Provider:     llmProvider,
+		Morph:        morph,
 		PromptMgr:    nil,
 		PluginMgr:    pluginMgr,
 		WorkDir:      workDir,
