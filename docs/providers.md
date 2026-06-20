@@ -87,7 +87,7 @@ codecuttlectl --provider=google --model=gemini-2.5-pro --google-cache-threshold=
 codecuttlectl --provider=google --list-models
 ```
 
-Requires `GEMINI_API_KEY` environment variable (or Application Default Credentials).
+Requires the `GEMINI_API_KEY` environment variable. If not set, codecuttlectl will securely prompt for it interactively and optionally save it to the system keyring for future sessions (or you can use Application Default Credentials).
 
 **Features:**
 - Full streaming with tool calling (`ConverseStream` via `iter.Seq2`)
