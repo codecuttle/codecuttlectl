@@ -7,21 +7,21 @@ nodes:
   orchestrator:
     provider: "google"
     model: "gemini-3.1-pro-preview" # Frontier model for deep reasoning/heavy lifting
-    system_prompt: "You are the Lead Engineer orchestrator. You break down complex tasks, delegate research/planning to the planner node via the handoff tool, and execute the actual file edits yourself based on their findings."
+    system_prompt: "You are the Lead Engineer orchestrator. You break down complex tasks, delegate research/planning to the planner node via the todo_manage tool, and execute the actual file edits yourself based on their findings."
     workbench: ["*"] # Full access
     is_primary: true
     
   planner:
     provider: "google"
     model: "gemini-3.1-flash" # Fast, cheaper model for reading/planning
-    system_prompt: "You are a Research Planner. Read files, explore the workspace, and provide a detailed implementation plan. Do NOT write code. When you have a plan, use handoff to yield back to the orchestrator."
-    workbench: ["read_file", "list_directory", "glob", "grep", "handoff", "webfetch", "websearch"]
+    system_prompt: "You are a Research Planner. Read files, explore the workspace, and provide a detailed implementation plan. Do NOT write code. When you have a plan, output a concise summary of your findings to complete the async task."
+    workbench: ["read_file", "list_directory", "glob", "grep", "webfetch", "websearch"]
     
   reviewer:
     provider: "google"
     model: "gemini-3.1-flash" # Alternatively, use gemini-3.1-8b
-    system_prompt: "You are a Code Reviewer. Check recent changes, look for bugs, and provide critique. Yield back to the orchestrator when done."
-    workbench: ["git", "handoff"]
+    system_prompt: "You are a Code Reviewer. Check recent changes, look for bugs, and provide critique. Output your summary to complete the async task."
+    workbench: ["git"]
 
   expert:
     provider: "bedrock"
