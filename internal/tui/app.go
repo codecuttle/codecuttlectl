@@ -1725,6 +1725,18 @@ func (m *Model) renderStatusBar() string {
 	label := StatusLabelStyle.Render("codecuttlectl")
 	modelName := ""
 	region := ""
+	
+	// Determine active Swarm Node if applicable
+	activeNodeName := ""
+	if m.morph != nil {
+		for name, node := range m.morph.Nodes {
+			if prov, ok := m.pool.GetNode(node.Provider); ok && prov == m.llmProvider {
+				activeNodeName = name
+				break
+			}
+		}
+	}
+	
 	if m.pool != nil {
 		modelName = m.pool.Info(string(bedrock.RolePrimary)).DisplayName
 		if bp, ok := m.pool.(interface{ BedrockPool() *bedrock.ModelPool }); ok {
@@ -1735,6 +1747,11 @@ func (m *Model) renderStatusBar() string {
 		region = m.client.Region()
 	} else if m.llmProvider != nil {
 		modelName = m.llmProvider.Name()
+	}
+	
+	// If in swarm mode, enhance the model name display
+	if activeNodeName != "" {
+		modelName = fmt.Sprintf("Swarm: %s [%s]", m.morph.Name, activeNodeName)
 	}
 	model := StatusModelStyle.Render(modelName)
 	regionStr := StatusDimStyle.Render(region)
