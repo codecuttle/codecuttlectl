@@ -63,6 +63,7 @@ type Agent struct {
 	workbench []string
 	morph     *swarm.Morphology
 	activeNode string
+	dispatcher swarm.EventDispatcher
 }
 
 // Config holds configuration for creating an Agent.
@@ -89,6 +90,9 @@ type Config struct {
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
 	SessionID string // If set, resume this session
+	
+	// Swarm Dispatcher
+	EventDispatcher swarm.EventDispatcher // Dispatches async events to TUI
 }
 
 // NewAgent creates a new conversation agent.
@@ -156,6 +160,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		workbench:    cfg.Workbench,
 		morph:        cfg.Morph,
 		activeNode:   "orchestrator", // default until handoff overrides
+		dispatcher:   cfg.EventDispatcher,
 	}
 
 	// Initialize active node if morph is provided
@@ -1332,6 +1337,16 @@ func (a *Agent) recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrit
 
 	if a.auditLogger != nil {
 		a.auditLogger.TokenUsage(a.sessionID, modelID, inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
+	}
+	
+	if a.dispatcher != nil {
+		a.dispatcher.Dispatch(swarm.TokenUsageMsg{
+			Assignee:              a.activeNode,
+			InputTokens:           inputTokens,
+			OutputTokens:          outputTokens,
+			CacheReadInputTokens:  cacheRead,
+			CacheWriteInputTokens: cacheWrite,
+		})
 	}
 }
 

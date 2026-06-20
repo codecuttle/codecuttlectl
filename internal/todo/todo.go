@@ -55,9 +55,6 @@ func (l *List) Replace(items []Item) error {
 			inProgressCount++
 		}
 	}
-	if inProgressCount > 1 {
-		return fmt.Errorf("at most one item can be in_progress, got %d", inProgressCount)
-	}
 	l.items = make([]Item, len(items))
 	copy(l.items, items)
 	return nil

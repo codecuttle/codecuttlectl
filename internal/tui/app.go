@@ -140,10 +140,13 @@ type Model struct {
 	// Markdown renderer
 	mdRenderer *glamour.TermRenderer
 
-	// Cache keepalive: track when the last API call was made so we can
-	// decide whether a keepalive ping is needed. Pings fire every 4 minutes
-	// but only send a request if we've been idle > 4 minutes since the last call.
+	// Cache keepalive
 	lastAPICallTime time.Time
+
+	// Swarm integration
+	swarmMgr            *swarm.Manager
+	swarmEventCh        chan any
+	pendingAsyncResults []string
 }
 
 type chatMessage struct {
@@ -168,6 +171,14 @@ type pendingTool struct {
 	name             string
 	input            json.RawMessage
 	thoughtSignature string // Gemini 3 thought signature for this function call
+}
+
+type chanDispatcher struct {
+	ch chan any
+}
+
+func (c chanDispatcher) Dispatch(msg any) {
+	c.ch <- msg
 }
 
 // New creates a new TUI Model.
@@ -222,6 +233,11 @@ func New(cfg Config) Model {
 		store:            cfg.Store,
 		sessionID:        cfg.SessionID,
 		morph:            cfg.Morph,
+		swarmEventCh:     make(chan any, 100),
+	}
+
+	if m.morph != nil {
+		m.swarmMgr = swarm.NewManager(m.morph, chanDispatcher{ch: m.swarmEventCh})
 	}
 
 	// If pool is provided, use its primary client
@@ -283,7 +299,13 @@ func (m Model) Pool() provider.Pool {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, textarea.Blink, m.cacheKeepaliveTick())
+	return tea.Batch(m.spinner.Tick, textarea.Blink, m.cacheKeepaliveTick(), m.listenSwarmEvents())
+}
+
+func (m *Model) listenSwarmEvents() tea.Cmd {
+	return func() tea.Msg {
+		return <-m.swarmEventCh
+	}
 }
 
 // cacheKeepaliveTick returns a Cmd that fires CacheKeepaliveTickMsg after the keepalive interval.
@@ -453,6 +475,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	// --- Stream event handling ---
+
+	case swarm.TaskStartedMsg:
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: fmt.Sprintf("↻ [Swarm] Background task started: %q (Node: %s)", msg.TaskID, msg.Assignee),
+		})
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+		return m, m.listenSwarmEvents()
+
+	case swarm.TokenUsageMsg:
+		m.totalInputTokens += msg.InputTokens
+		m.totalOutputTokens += msg.OutputTokens
+		m.totalCacheReadInputTokens += msg.CacheReadInputTokens
+		m.totalCacheWriteInputTokens += msg.CacheWriteInputTokens
+		return m, m.listenSwarmEvents()
+
+	case swarm.TaskCompletedMsg:
+		// Mark the task as completed in the Todo list
+		items := m.todos.Items()
+		for i, item := range items {
+			if item.Content == msg.TaskID {
+				items[i].Status = todo.StatusCompleted
+				break
+			}
+		}
+		m.todos.Replace(items)
+
+		// Build the injection result
+		icon := "✓"
+		if msg.IsError {
+			icon = "✗"
+		}
+		resultText := fmt.Sprintf("%s [Swarm] Background task completed: %q\nNode '%s' reported:\n%s", icon, msg.TaskID, msg.Assignee, msg.Result)
+
+		if m.streaming || m.approvalPending != nil {
+			m.pendingAsyncResults = append(m.pendingAsyncResults, resultText)
+		} else {
+			m.history = append(m.history, provider.BuildUserTextMessage(resultText))
+			m.messages = append(m.messages, chatMessage{
+				role:    "system",
+				content: resultText,
+			})
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
+		return m, m.listenSwarmEvents()
 
 	case StreamTextMsg:
 		// Clear interrupt pending on new content (user didn't confirm)
@@ -659,6 +728,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.saveSession()
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
+
+		// Flush any async results that arrived while we were streaming
+		if len(m.pendingAsyncResults) > 0 {
+			for _, res := range m.pendingAsyncResults {
+				m.history = append(m.history, provider.BuildUserTextMessage(res))
+				m.messages = append(m.messages, chatMessage{
+					role:    "system",
+					content: res,
+				})
+			}
+			m.pendingAsyncResults = nil
+
+			// Auto-nudge the model so it immediately reviews the background task results
+			nudge := "A background task has completed. Review the injected results above and incorporate them into your response."
+			m.history = append(m.history, provider.BuildUserTextMessage(nudge))
+			m.messages = append(m.messages, chatMessage{
+				role:    "system_nudge",
+				content: "↻ auto-continuing to review background task...",
+			})
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+			return m, m.launchStream()
+		}
+
 		return m, nil
 
 	case StreamUsageMsg:
@@ -789,6 +882,89 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					msg.Messages[i].Content = fmt.Sprintf("Error updating todos: %v", err)
 				} else {
 					msg.Messages[i].Content = fmt.Sprintf("Todo list updated: %s", m.todos.Summary())
+
+					// Phase 2: Dispatch any newly created async tasks
+					if m.swarmMgr != nil {
+						for ti, newTodo := range payload.Todos {
+							if newTodo.Async && newTodo.Assignee != "" && newTodo.Status == todo.StatusPending {
+								taskDesc := newTodo.Content
+								assignee := newTodo.Assignee
+
+								targetProv, ok := m.pool.GetNode(assignee)
+								targetNode, morphOk := m.morph.Nodes[assignee]
+
+								if ok && morphOk {
+									// Mark it in_progress locally so we don't submit it again on the next tick
+									updatedItems := m.todos.Items()
+									updatedItems[ti].Status = todo.StatusInProgress
+									m.todos.Replace(updatedItems)
+
+									// Capture context for background closure
+									morph := m.morph
+									workDir := m.workDir
+									pluginMgr := m.pluginMgr
+									eventCh := m.swarmEventCh
+									promptMgr, _ := prompt.NewManager() // Need a fresh manager to render persona prompt
+
+									// Build compact session history context to seed the headless agent
+									var compactContext strings.Builder
+									compactContext.WriteString("Context of current session:\n")
+									for _, histMsg := range m.history {
+										if histMsg.Role == provider.RoleUser {
+											for _, blk := range histMsg.Content {
+												if tb, isText := blk.(provider.TextBlock); isText {
+													// Keep it brief
+													content := tb.Text
+													if len(content) > 300 {
+														content = content[:300] + "..."
+													}
+													compactContext.WriteString("- User: " + content + "\n")
+												}
+											}
+										}
+									}
+
+									// Submit to the Swarm Manager Queue
+									m.swarmMgr.Submit(taskDesc, assignee, func() {
+										// 1. Instantiate the Headless Agent
+										cfg := conversation.Config{
+											Provider:        targetProv,
+											Morph:           morph,
+											PromptMgr:       promptMgr,
+											PluginMgr:       pluginMgr,
+											WorkDir:         workDir,
+											Workbench:       targetNode.Workbench,
+											AutoApprove:     false,
+											ApprovalFunc:    func(_, _, _, _ string) bool { return false }, // Safety: Always deny destructive actions
+											EventDispatcher: chanDispatcher{ch: eventCh},
+										}
+										agent, err := conversation.NewAgent(cfg)
+										if err != nil {
+											eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: true, Result: "Failed to initialize headless agent: " + err.Error()}
+											return
+										}
+
+										// 2. Set Persona System Prompt
+										sysPrompt := agent.SystemPrompt()
+										if targetNode.SystemPrompt != "" {
+											sysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
+										}
+										agent.SetSystemPrompt(sysPrompt)
+
+										// 3. Execute the Task
+										promptText := fmt.Sprintf("You have been assigned a background task from the Swarm Orchestrator.\n\nTask: %s\n\n%s\n\nPlease execute this task using your available tools. When you are completely finished, output a concise summary of your findings or the actions you took. Do NOT ask for permission. Do NOT leave TODOs. If you lack the tools to complete it, summarize what you couldn't do.", taskDesc, compactContext.String())
+
+										result, err := agent.Turn(context.Background(), promptText)
+										if err != nil {
+											eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: true, Result: err.Error()}
+										} else {
+											eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: false, Result: result}
+										}
+									})
+								}
+							}
+						}
+					}
 				}
 			}
 		}
