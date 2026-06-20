@@ -15,7 +15,7 @@ nodes:
     provider: "google"
     model: "gemini-3.1-flash" # Fast, cheaper model for reading/planning
     system_prompt: "You are a Research Planner. Read files, explore the workspace, and provide a detailed implementation plan. Do NOT write code. When you have a plan, use handoff to yield back to the orchestrator."
-    workbench: ["read_file", "list_directory", "glob", "grep", "handoff"]
+    workbench: ["read_file", "list_directory", "glob", "grep", "handoff", "webfetch", "websearch"]
     
   reviewer:
     provider: "google"
@@ -23,9 +23,16 @@ nodes:
     system_prompt: "You are a Code Reviewer. Check recent changes, look for bugs, and provide critique. Yield back to the orchestrator when done."
     workbench: ["git", "handoff"]
 
+  expert:
+    provider: "bedrock"
+    model: "us.anthropic.claude-opus-4-6-v1"
+    system_prompt: "You are an Expert node. Use your full tool access to solve complex tasks."
+    workbench: ["*"]
+
 topology:
   type: "handoff"
   rules:
-    orchestrator: ["planner", "reviewer"]
+    orchestrator: ["planner", "reviewer", "expert"]
     planner: ["orchestrator"]
     reviewer: ["orchestrator"]
+    expert: ["orchestrator"]
