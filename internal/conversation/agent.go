@@ -969,6 +969,24 @@ func (a *Agent) buildSkillContext() skills.Context {
 	return ctx
 }
 
+// BuiltinToolDefs returns the bedrock.ToolDefinition for all builtin tools.
+// If morph is not nil, it includes the handoff tool.
+func BuiltinToolDefs(morph *swarm.Morphology) []bedrock.ToolDefinition {
+	builtins := []bedrock.ToolDefinition{
+		todoToolDefinition(),
+		toolInfoDefinition(),
+		getSkillDefinition(),
+		scaffoldPluginDefinition(),
+		reloadPluginsDefinition(),
+	}
+
+	if morph != nil {
+		builtins = append(builtins, HandoffToolDefinition())
+	}
+
+	return builtins
+}
+
 // allToolDefs returns combined tool definitions from plugins + built-in tools,
 // filtered by the given workbench sandbox.
 func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm.Morphology) []bedrock.ToolDefinition {
@@ -979,22 +997,10 @@ func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm
 		}
 	}
 
-	builtins := []bedrock.ToolDefinition{
-		todoToolDefinition(),
-		toolInfoDefinition(),
-		getSkillDefinition(),
-		scaffoldPluginDefinition(),
-		reloadPluginsDefinition(),
-	}
-
-	for _, def := range builtins {
+	for _, def := range BuiltinToolDefs(morph) {
 		if IsToolAllowed(def.Name, workbench) {
 			filtered = append(filtered, def)
 		}
-	}
-
-	if morph != nil && IsToolAllowed("handoff", workbench) {
-		filtered = append(filtered, HandoffToolDefinition())
 	}
 
 	return filtered

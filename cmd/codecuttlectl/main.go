@@ -287,6 +287,13 @@ func main() {
 			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 		})
 	}
+	for _, def := range conversation.BuiltinToolDefs(morph) {
+		promptTools = append(promptTools, prompt.ToolDef{
+			Name:        def.Name,
+			Description: def.Description,
+			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
+		})
+	}
 	modelDisplayID := *modelID
 	if bedrockClient != nil {
 		modelDisplayID = bedrockClient.ModelID()
