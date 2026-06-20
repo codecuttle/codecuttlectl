@@ -237,6 +237,11 @@ func (a *Agent) SessionID() string {
 	return a.sessionID
 }
 
+// SetApprovalFunc allows overriding the destructive tool approval handler.
+func (a *Agent) SetApprovalFunc(fn func(toolName, command, reason, risk string) bool) {
+	a.approvalFunc = fn
+}
+
 // InitSession creates a new session and returns its ID.
 // Call this after agent creation if you want persistence but aren't resuming.
 func (a *Agent) InitSession(model, region, workDir string) (string, error) {
@@ -1343,6 +1348,11 @@ func (a *Agent) SystemPrompt() string {
 // Todos returns the current todo list.
 func (a *Agent) Todos() *todo.List {
 	return a.todos
+}
+
+// ActiveNode returns the currently active Swarm node ID.
+func (a *Agent) ActiveNode() string {
+	return a.activeNode
 }
 
 // --- Audit trail helpers ---

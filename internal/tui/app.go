@@ -45,6 +45,7 @@ type Config struct {
 	Store     session.Store
 	SessionID string // If set, resume this session
 	Morph     *swarm.Morphology // Pass down morph config
+	Agent     *conversation.Agent
 }
 
 // Model is the main Bubble Tea application model.
@@ -144,6 +145,7 @@ type Model struct {
 	lastAPICallTime time.Time
 
 	// Swarm integration
+	agent               *conversation.Agent
 	swarmMgr            *swarm.Manager
 	swarmEventCh        chan any
 	pendingAsyncResults []string
@@ -233,6 +235,7 @@ func New(cfg Config) Model {
 		store:            cfg.Store,
 		sessionID:        cfg.SessionID,
 		morph:            cfg.Morph,
+		agent:            cfg.Agent,
 		swarmEventCh:     make(chan any, 100),
 	}
 
@@ -897,7 +900,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									// Mark it in_progress locally so we don't submit it again on the next tick
 									updatedItems := m.todos.Items()
 									updatedItems[ti].Status = todo.StatusInProgress
+									// Update internal TUI model immediately
 									m.todos.Replace(updatedItems)
+									
+									// We MUST send a msg so the main update loop rerenders the UI to reflect
+									// the new "in_progress" state before the background task finishes.
+									// (Normally Replace happens inside Update, so we should really dispatch a Msg here,
+									// but we are inside Update handling StreamDoneMsg or similar? Wait, we are in ExecuteTool result parsing.)
 
 									// Capture context for background closure
 									morph := m.morph
@@ -1912,10 +1921,24 @@ func (m *Model) renderStatusBar() string {
 	// Determine active Swarm Node if applicable
 	activeNodeName := ""
 	if m.morph != nil {
-		for name := range m.morph.Nodes {
-			if prov, ok := m.pool.GetNode(name); ok && prov == m.llmProvider {
-				activeNodeName = name
-				break
+		if m.agent != nil && m.agent.ActiveNode() != "" {
+			activeNodeName = m.agent.ActiveNode()
+		} else {
+			// Find primary node if available
+			for name, node := range m.morph.Nodes {
+				if node.IsPrimary {
+					activeNodeName = name
+					break
+				}
+			}
+			// Fallback to searching provider instances
+			if activeNodeName == "" {
+				for name := range m.morph.Nodes {
+					if prov, ok := m.pool.GetNode(name); ok && prov == m.llmProvider {
+						activeNodeName = name
+						break
+					}
+				}
 			}
 		}
 	}
@@ -2084,6 +2107,7 @@ func (m *Model) renderTodoBar() string {
 	return TodoBarStyle.Width(m.width).Render(line)
 }
 
+// renderTodoPanel returns the full todo list panel UI.
 func (m *Model) renderTodoPanel() string {
 	if m.todos.IsEmpty() {
 		return ""
