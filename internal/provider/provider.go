@@ -113,9 +113,10 @@ type Response struct {
 
 // ToolUseRequest represents the model requesting to use a tool.
 type ToolUseRequest struct {
-	ToolUseID string
-	Name      string
-	Input     json.RawMessage
+	ToolUseID        string
+	Name             string
+	Input            json.RawMessage
+	ThoughtSignature string
 }
 
 // Usage reports token consumption.

@@ -67,9 +67,10 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		}
 		for _, tu := range resp.ToolUses {
 			assistBlocks = append(assistBlocks, provider.ToolUseBlock{
-				ToolUseID: tu.ToolUseID,
-				Name:      tu.Name,
-				Input:     tu.Input,
+				ToolUseID:        tu.ToolUseID,
+				Name:             tu.Name,
+				Input:            tu.Input,
+				ThoughtSignature: tu.ThoughtSignature,
 			})
 		}
 		if len(assistBlocks) > 0 {
@@ -94,7 +95,7 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		var resultBlocks []provider.ContentBlock
 		for _, toolUse := range resp.ToolUses {
 			if a.verbose {
-				log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
+				log.Printf("[tool] %s id=%s input=%s sig=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input), toolUse.ThoughtSignature)
 			}
 
 			start := time.Now()
@@ -319,7 +320,7 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 				if len(truncated) > 500 {
 					truncated = truncated[:500] + "..."
 				}
-				log.Printf("[tool] %s (%dms): %s", tc.name, duration.Milliseconds(), truncated)
+				log.Printf("[tool] %s id=%s input=%s sig=%s (%dms)", tc.name, tc.id, tc.input, tc.thoughtSignature, duration.Milliseconds())
 			}
 
 			isErr := status == types.ToolResultStatusError
