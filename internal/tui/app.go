@@ -1729,8 +1729,8 @@ func (m *Model) renderStatusBar() string {
 	// Determine active Swarm Node if applicable
 	activeNodeName := ""
 	if m.morph != nil {
-		for name, node := range m.morph.Nodes {
-			if prov, ok := m.pool.GetNode(node.Provider); ok && prov == m.llmProvider {
+		for name := range m.morph.Nodes {
+			if prov, ok := m.pool.GetNode(name); ok && prov == m.llmProvider {
 				activeNodeName = name
 				break
 			}
@@ -2203,8 +2203,8 @@ func (m *Model) providerToolDefs() []provider.ToolDefinition {
 	// If using Swarm Morphologies, filter plugins by active node's sandbox
 	var activeWorkbench []string
 	if m.morph != nil && m.system != "" {
-		for _, node := range m.morph.Nodes {
-			if prov, ok := m.pool.GetNode(node.Provider); ok && prov == m.llmProvider {
+		for name, node := range m.morph.Nodes {
+			if prov, ok := m.pool.GetNode(name); ok && prov == m.llmProvider {
 				activeWorkbench = node.Workbench
 				break
 			}
