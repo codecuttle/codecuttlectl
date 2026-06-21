@@ -911,12 +911,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				todoIdx++
 				if err := json.Unmarshal(input, &payload); err != nil {
 					msg.Messages[i].Content = fmt.Sprintf("Error parsing todo input: %v", err)
-				} else if err := m.todos.Replace(payload.Todos); err != nil {
-					msg.Messages[i].Content = fmt.Sprintf("Error updating todos: %v", err)
+					msg.Messages[i].IsError = true
 				} else {
-					msg.Messages[i].Content = fmt.Sprintf("Todo list updated: %s", m.todos.Summary())
+					// Phase 2: Validate assignees before applying
+					valid := true
+					var invalidNode string
+					if m.morph != nil {
+						for _, item := range payload.Todos {
+							if item.Assignee != "" {
+								if _, ok := m.morph.Nodes[item.Assignee]; !ok {
+									valid = false
+									invalidNode = item.Assignee
+									break
+								}
+							}
+						}
+					}
 
-					// Phase 2: Dispatch any newly created async tasks
+					if !valid {
+						var availableNodes []string
+						for n := range m.morph.Nodes {
+							availableNodes = append(availableNodes, n)
+						}
+						msg.Messages[i].Content = fmt.Sprintf("Error: Cannot assign task to %q. Node does not exist in the active morphology. Available nodes: %s", invalidNode, strings.Join(availableNodes, ", "))
+						msg.Messages[i].IsError = true
+					} else if err := m.todos.Replace(payload.Todos); err != nil {
+						msg.Messages[i].Content = fmt.Sprintf("Error updating todos: %v", err)
+						msg.Messages[i].IsError = true
+					} else {
+						msg.Messages[i].Content = fmt.Sprintf("Todo list updated: %s", m.todos.Summary())
+
+						// Phase 2: Dispatch any newly created async tasks
 					if m.swarmMgr != nil {
 						for ti, newTodo := range payload.Todos {
 							if newTodo.Async && newTodo.Assignee != "" && newTodo.Status == todo.StatusPending {
@@ -1008,6 +1033,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
+				}
 				}
 			}
 		}

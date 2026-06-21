@@ -743,6 +743,22 @@ func (a *Agent) handleTodoTool(input json.RawMessage) string {
 	if err := json.Unmarshal(input, &payload); err != nil {
 		return fmt.Sprintf("Error parsing todo input: %v", err)
 	}
+	
+	// Prevent assigning tasks to nodes that do not exist
+	if a.morph != nil {
+		for _, item := range payload.Todos {
+			if item.Assignee != "" {
+				if _, ok := a.morph.Nodes[item.Assignee]; !ok {
+					var availableNodes []string
+					for n := range a.morph.Nodes {
+						availableNodes = append(availableNodes, n)
+					}
+					return fmt.Sprintf("Error: Cannot assign task to %q. Node does not exist in the active morphology. Available nodes: %s", item.Assignee, strings.Join(availableNodes, ", "))
+				}
+			}
+		}
+	}
+
 	if err := a.todos.Replace(payload.Todos); err != nil {
 		return fmt.Sprintf("Error updating todos: %v", err)
 	}
