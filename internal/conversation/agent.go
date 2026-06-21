@@ -63,6 +63,7 @@ type Agent struct {
 	workbench []string
 	morph     *swarm.Morphology
 	activeNode string
+	dispatcher swarm.EventDispatcher
 }
 
 // Config holds configuration for creating an Agent.
@@ -89,6 +90,9 @@ type Config struct {
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
 	SessionID string // If set, resume this session
+	
+	// Swarm Dispatcher
+	EventDispatcher swarm.EventDispatcher // Dispatches async events to TUI
 }
 
 // NewAgent creates a new conversation agent.
@@ -106,13 +110,21 @@ func NewAgent(cfg Config) (*Agent, error) {
 		}
 	}
 
-	var systemPrompt string
-	if cfg.PromptMgr != nil && cfg.Client != nil {
-		var promptTools []prompt.ToolDef
-		for _, def := range cfg.PluginMgr.Definitions() {
-			if !IsToolAllowed(def.Name, cfg.Workbench) {
-				continue
+	// Phase 2: Compute available Swarm Nodes for the prompt
+	var swarmNodes []string
+	if cfg.Morph != nil {
+		for nodeID := range cfg.Morph.Nodes {
+			// Don't include the current active node (defaults to "orchestrator" but we check all)
+			if nodeID != "orchestrator" {
+				swarmNodes = append(swarmNodes, nodeID)
 			}
+		}
+	}
+
+	var systemPrompt string
+	if cfg.PromptMgr != nil && (cfg.Client != nil || cfg.Provider != nil) {
+		var promptTools []prompt.ToolDef
+		for _, def := range allToolDefs(cfg.PluginMgr, cfg.Workbench, cfg.Morph) {
 			promptTools = append(promptTools, prompt.ToolDef{
 				Name:        def.Name,
 				Description: def.Description,
@@ -122,10 +134,18 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 		var err error
 		provName := "bedrock"
-		if cfg.Provider != nil {
-			provName = "ollama" // If there's a provider but also a client, it's the bedrock wrapper
+		if cfg.Provider != nil && cfg.Client == nil {
+			provName = "ollama" 
 		}
-		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, cfg.Client.ModelID(), provName, promptTools)
+		
+		var modelID string
+		if cfg.Client != nil {
+			modelID = cfg.Client.ModelID()
+		} else {
+			modelID = cfg.Provider.ID()
+		}
+		
+		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, modelID, provName, promptTools, swarmNodes)
 		if err != nil {
 			return nil, fmt.Errorf("rendering system prompt: %w", err)
 		}
@@ -156,6 +176,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		workbench:    cfg.Workbench,
 		morph:        cfg.Morph,
 		activeNode:   "orchestrator", // default until handoff overrides
+		dispatcher:   cfg.EventDispatcher,
 	}
 
 	// Initialize active node if morph is provided
@@ -211,6 +232,11 @@ func (a *Agent) SetSystemPrompt(s string) {
 // SessionID returns the current session ID (empty if no session persistence).
 func (a *Agent) SessionID() string {
 	return a.sessionID
+}
+
+// SetApprovalFunc allows overriding the destructive tool approval handler.
+func (a *Agent) SetApprovalFunc(fn func(toolName, command, reason, risk string) bool) {
+	a.approvalFunc = fn
 }
 
 // InitSession creates a new session and returns its ID.
@@ -280,6 +306,13 @@ func (a *Agent) Turn(ctx context.Context, userMessage string) (string, error) {
 		for _, toolUse := range resp.ToolUses {
 			if a.verbose {
 				log.Printf("[tool] %s id=%s input=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input))
+			}
+
+			if a.dispatcher != nil {
+				a.dispatcher.Dispatch(swarm.TaskProgressMsg{
+					Assignee: a.activeNode,
+					Progress: fmt.Sprintf("Calling %s...", toolUse.Name),
+				})
 			}
 
 			start := time.Now()
@@ -673,7 +706,14 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 			})
 		}
 		
-		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools)
+		var swarmNodes []string
+		for nodeID := range a.morph.Nodes {
+			if nodeID != payload.Target {
+				swarmNodes = append(swarmNodes, nodeID)
+			}
+		}
+		
+		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
 		if err != nil {
 			return fmt.Sprintf("Error rendering new system prompt for %q: %v", payload.Target, err), types.ToolResultStatusError
 		}
@@ -703,6 +743,22 @@ func (a *Agent) handleTodoTool(input json.RawMessage) string {
 	if err := json.Unmarshal(input, &payload); err != nil {
 		return fmt.Sprintf("Error parsing todo input: %v", err)
 	}
+	
+	// Prevent assigning tasks to nodes that do not exist
+	if a.morph != nil {
+		for _, item := range payload.Todos {
+			if item.Assignee != "" {
+				if _, ok := a.morph.Nodes[item.Assignee]; !ok {
+					var availableNodes []string
+					for n := range a.morph.Nodes {
+						availableNodes = append(availableNodes, n)
+					}
+					return fmt.Sprintf("Error: Cannot assign task to %q. Node does not exist in the active morphology. Available nodes: %s", item.Assignee, strings.Join(availableNodes, ", "))
+				}
+			}
+		}
+	}
+
 	if err := a.todos.Replace(payload.Todos); err != nil {
 		return fmt.Sprintf("Error updating todos: %v", err)
 	}
@@ -936,16 +992,9 @@ func (a *Agent) buildSkillContext() skills.Context {
 	return ctx
 }
 
-// allToolDefs returns combined tool definitions from plugins + built-in tools,
-// filtered by the agent's workbench sandbox.
-func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
-	var filtered []bedrock.ToolDefinition
-	for _, def := range a.pluginMgr.Definitions() {
-		if IsToolAllowed(def.Name, a.workbench) {
-			filtered = append(filtered, def)
-		}
-	}
-
+// BuiltinToolDefs returns the bedrock.ToolDefinition for all builtin tools.
+// If morph is not nil, it includes the handoff tool.
+func BuiltinToolDefs(morph *swarm.Morphology) []bedrock.ToolDefinition {
 	builtins := []bedrock.ToolDefinition{
 		todoToolDefinition(),
 		toolInfoDefinition(),
@@ -954,17 +1003,36 @@ func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
 		reloadPluginsDefinition(),
 	}
 
-	for _, def := range builtins {
-		if IsToolAllowed(def.Name, a.workbench) {
+	if morph != nil {
+		builtins = append(builtins, HandoffToolDefinition())
+	}
+
+	return builtins
+}
+
+// allToolDefs returns combined tool definitions from plugins + built-in tools,
+// filtered by the given workbench sandbox.
+func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm.Morphology) []bedrock.ToolDefinition {
+	var filtered []bedrock.ToolDefinition
+	for _, def := range pluginMgr.Definitions() {
+		if IsToolAllowed(def.Name, workbench) {
 			filtered = append(filtered, def)
 		}
 	}
 
-	if a.morph != nil && IsToolAllowed("handoff", a.workbench) {
-		filtered = append(filtered, HandoffToolDefinition())
+	for _, def := range BuiltinToolDefs(morph) {
+		if IsToolAllowed(def.Name, workbench) {
+			filtered = append(filtered, def)
+		}
 	}
 
 	return filtered
+}
+
+// allToolDefs returns combined tool definitions from plugins + built-in tools,
+// filtered by the agent's workbench sandbox.
+func (a *Agent) allToolDefs() []bedrock.ToolDefinition {
+	return allToolDefs(a.pluginMgr, a.workbench, a.morph)
 }
 
 func HandoffToolDefinition() bedrock.ToolDefinition {
@@ -1314,6 +1382,16 @@ func (a *Agent) Todos() *todo.List {
 	return a.todos
 }
 
+// ActiveNode returns the currently active Swarm node ID.
+func (a *Agent) ActiveNode() string {
+	return a.activeNode
+}
+
+// SetActiveNode overrides the currently active Swarm node ID.
+func (a *Agent) SetActiveNode(nodeID string) {
+	a.activeNode = nodeID
+}
+
 // --- Audit trail helpers ---
 
 // recordTokenUsage accumulates token usage and emits a structured log event.
@@ -1332,6 +1410,16 @@ func (a *Agent) recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrit
 
 	if a.auditLogger != nil {
 		a.auditLogger.TokenUsage(a.sessionID, modelID, inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
+	}
+	
+	if a.dispatcher != nil {
+		a.dispatcher.Dispatch(swarm.TokenUsageMsg{
+			Assignee:              a.activeNode,
+			InputTokens:           inputTokens,
+			OutputTokens:          outputTokens,
+			CacheReadInputTokens:  cacheRead,
+			CacheWriteInputTokens: cacheWrite,
+		})
 	}
 }
 

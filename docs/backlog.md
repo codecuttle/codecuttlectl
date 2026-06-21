@@ -258,7 +258,7 @@ codecuttlectl backlog prune --older-than 90d
 | **Sessions** | Session metadata gains `related_work_items []string` for traceability. |
 | **Scaffold generator** | Consumes `kind=plugin` items with `status=approved` — pulls title, description, and accumulated snapshots as generation context. |
 | **Future Optic Lobe** | Semantic search surfaces relevant backlog items when session context overlaps. |
-| **Future swarm** | Swarm workers poll for `status=approved, assigned_to=""` items at their capability level. |
+| **Future swarm** | Swarm workers poll for `status=approved, assigned_to!=""` items. Background tasks are executed by Headless Agents (Phase 2), and results are injected safely back into the Orchestrator's context stream. Live status is shown in the UI using `TaskProgressMsg`. |
 
 ## Capability Gap Detection (Inkwell to Backlog)
 
@@ -385,6 +385,6 @@ Searching by tag surfaces items from any project: `list_work(tag="needs-research
 | 3 | CLI subcommand: `codecuttlectl backlog list/show/approve/reject` | Phase 1 | ⬜ |
 | 4 | Integration: Inkwell CapabilityGap detection | Phase 1, Inkwell | ⬜ |
 | 5 | Integration: `on_turn:first` skill surfacing approved items | Phase 1, Skills | ⬜ |
-| 6 | `refine_work` + `complete_work` tools | Phase 2 | ⬜ |
-| 7 | `--backlog-auto-approve` flag + scaffold integration | Phase 2, Scaffold | ⬜ |
+| 6 | `refine_work` + `complete_work` tools | Phase 3 | ⬜ |
+| 7 | `--backlog-auto-approve` flag + scaffold integration | Phase 3, Scaffold | ⬜ |
 | 8 | CloudStore implementation (S3/GCS) | Phase 1 interface | ⬜ |

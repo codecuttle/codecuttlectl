@@ -25,8 +25,9 @@ func TestReplaceMultipleInProgress(t *testing.T) {
 		{Content: "Task 1", Status: StatusInProgress, Priority: PriorityHigh},
 		{Content: "Task 2", Status: StatusInProgress, Priority: PriorityMedium},
 	}
-	if err := l.Replace(items); err == nil {
-		t.Error("Replace() should reject multiple in_progress items")
+	// Phase 2: Swarm Backlog allows multiple in_progress tasks simultaneously
+	if err := l.Replace(items); err != nil {
+		t.Errorf("Replace() should allow multiple in_progress items, got error: %v", err)
 	}
 }
 

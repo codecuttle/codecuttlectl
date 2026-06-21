@@ -20,6 +20,7 @@ type Context struct {
 	Model            string
 	Provider         string
 	Tools            []ToolDef
+	SwarmNodes       []string // Available Node IDs in the current morphology
 }
 
 // ToolDef describes a tool available to the agent for template rendering.
@@ -95,8 +96,9 @@ func DefaultContext(workDir, model, providerName string, tools []ToolDef) Contex
 }
 
 // RenderSystem renders the main system prompt with environment context.
-func (m *Manager) RenderSystem(workDir, model, providerName string, tools []ToolDef) (string, error) {
+func (m *Manager) RenderSystem(workDir, model, providerName string, tools []ToolDef, swarmNodes []string) (string, error) {
 	ctx := DefaultContext(workDir, model, providerName, tools)
+	ctx.SwarmNodes = swarmNodes
 	return m.Render("system/coding.md", ctx)
 }
 

@@ -1,0 +1,44 @@
+name: "google-dev-squad"
+version: "1.0.0"
+description: "A Google-backed swarm using Gemini models for distinct roles."
+presentation: "progressive_disclosure"
+
+nodes:
+  orchestrator:
+    provider: "google"
+    model: "gemini-3.1-pro-preview" # Frontier model for deep reasoning/heavy lifting
+    system_prompt: "You are the Lead Engineer orchestrator. You break down complex tasks, delegate research/planning to the planner node via the todo_manage tool, and execute the actual file edits yourself based on their findings."
+    workbench: ["*"] # Full access
+    is_primary: true
+
+  planner:
+    provider: "google"
+    model: "gemini-3.1-flash" # Fast, cheaper model for reading/planning
+    system_prompt: "You are a Research Planner. Read files, explore the workspace, and provide a detailed implementation plan. Do NOT write code. When you have a plan, output a concise summary of your findings to complete the async task."
+    workbench: ["read_file", "list_directory", "glob", "grep", "webfetch", "websearch"]
+
+  reviewer:
+    provider: "google"
+    model: "gemini-3.1-flash" # Alternatively, use gemini-3.1-8b
+    system_prompt: "You are a Code Reviewer. Check recent changes, look for bugs, and provide critique. Output your summary to complete the async task."
+    workbench: ["git"]
+
+  researcher:
+    provider: "google"
+    model: "gemini-3.1-flash"
+    system_prompt: "You are a Researcher node. Conduct in-depth research and provide detailed findings to the orchestrator."
+    workbench: ["read_file", "list_directory", "glob", "grep", "webfetch", "websearch"]
+
+  expert:
+    provider: "google"
+    model: "gemini-3.1-pro-preview" # Frontier model for deep reasoning/heavy lifting
+    system_prompt: "You are an Expert node. Use your full tool access to solve complex tasks."
+    workbench: ["*"]
+
+topology:
+  type: "handoff"
+  rules:
+    orchestrator: ["planner", "reviewer", "expert"]
+    planner: ["orchestrator"]
+    reviewer: ["orchestrator"]
+    expert: ["orchestrator"]

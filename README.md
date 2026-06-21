@@ -73,8 +73,8 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Multi-Provider** — Bedrock + Google + Ollama via provider interface | Done |
 | **State Dictionary** — ground-truth injection for local models | Done |
 | **Auto-Planning** — harness-managed task extraction from text | Done |
-| **Work Backlog** — cross-session deferred intent queue | Designed |
 | **Swarm Orchestration** — multi-agent routing via YAML Morphologies | Done |
+| **Swarm Backlog** — parallel async delegation via Headless Agents | Done |
 | **Chromatophore Engine** — Chomsky hierarchy routing | Planned |
 | **Optic Lobe** — PostgreSQL + pgvector + AGE memory | Planned |
 | **Arm Nodes** — edge inference agents | Planned |
@@ -138,6 +138,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 - Optic Lobe (cross-session semantic memory)
 - Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)
 - Fleet telemetry (OpenTelemetry — Phase 10 of [streaming doc](docs/streaming-tool-telemetry.md))
+- Work Backlog (cross-session deferred intent queue)
 - Self-evolving harness (outer loop from execution traces)
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)

@@ -17,6 +17,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/session"
+	"github.com/codecuttle/codecuttlectl/internal/swarm"
 )
 
 // turnProvider implements Turn using the provider interface.
@@ -96,6 +97,13 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 		for _, toolUse := range resp.ToolUses {
 			if a.verbose {
 				log.Printf("[tool] %s id=%s input=%s sig=%s", toolUse.Name, toolUse.ToolUseID, string(toolUse.Input), toolUse.ThoughtSignature)
+			}
+
+			if a.dispatcher != nil {
+				a.dispatcher.Dispatch(swarm.TaskProgressMsg{
+					Assignee: a.activeNode,
+					Progress: fmt.Sprintf("Calling %s...", toolUse.Name),
+				})
 			}
 
 			start := time.Now()

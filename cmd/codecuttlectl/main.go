@@ -287,13 +287,21 @@ func main() {
 			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 		})
 	}
+	for _, def := range conversation.BuiltinToolDefs(morph) {
+		promptTools = append(promptTools, prompt.ToolDef{
+			Name:        def.Name,
+			Description: def.Description,
+			Parameters:  prompt.SchemaToToolParams(def.InputSchema),
+		})
+	}
 	modelDisplayID := *modelID
 	if bedrockClient != nil {
 		modelDisplayID = bedrockClient.ModelID()
 	} else if llmProvider != nil {
 		modelDisplayID = llmProvider.Name()
 	}
-	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools)
+	// Render the primary system prompt without swarm nodes (REPL mode is single-agent)
+	systemPrompt, err := promptMgr.RenderSystem(*workDir, modelDisplayID, providerName, promptTools, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error rendering system prompt: %v\n", err)
 		os.Exit(1)
@@ -311,9 +319,52 @@ func main() {
 
 	// Interactive mode
 	if *noTUI {
-		runPlainREPL(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, morph)
+		// Initialize the Agent for REPL
+		agent, err := conversation.NewAgent(conversation.Config{
+			Client:      bedrockClient,
+			Pool:        genericPool,
+			Provider:    llmProvider,
+			Morph:       morph,
+			PromptMgr:   promptMgr,
+			PluginMgr:   pluginMgr,
+			WorkDir:     *workDir,
+			MaxSteps:    *maxSteps,
+			Verbose:     *verbose,
+			AutoApprove: *autoApprove,
+			AuditLogger: auditLogger,
+			Store:       store,
+			SessionID:   *sessionID,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
+			os.Exit(1)
+		}
+		agent.SetSystemPrompt(systemPrompt)
+		runPlainREPL(ctx, agent, store, *sessionID, *workDir, *verbose, *autoApprove, auditLogger)
 		return
 	}
+
+	// Initialize the Agent for TUI
+	agent, err := conversation.NewAgent(conversation.Config{
+		Client:      bedrockClient,
+		Pool:        genericPool,
+		Provider:    llmProvider,
+		Morph:       morph,
+		PromptMgr:   promptMgr,
+		PluginMgr:   pluginMgr,
+		WorkDir:     *workDir,
+		MaxSteps:    *maxSteps,
+		Verbose:     *verbose,
+		AutoApprove: *autoApprove,
+		AuditLogger: auditLogger,
+		Store:       store,
+		SessionID:   *sessionID,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
+		os.Exit(1)
+	}
+	agent.SetSystemPrompt(systemPrompt)
 
 	// Full-screen TUI mode
 	model := tui.New(tui.Config{
@@ -329,6 +380,7 @@ func main() {
 		Store:          store,
 		SessionID:      *sessionID,
 		Morph:          morph,
+		Agent:          agent,
 	})
 
 	p := tea.NewProgram(model)
@@ -408,7 +460,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 	printSessionExit(agent.SessionID())
 }
 
-func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, morph *swarm.Morphology) {
+func runPlainREPL(ctx context.Context, agent *conversation.Agent, store session.Store, sessionID, workDir string, verbose, autoApprove bool, auditLogger *audit.Logger) {
 	// In plain REPL mode, we can prompt the user for approval via stdin
 	approvalFunc := func(toolName, command, reason, risk string) bool {
 		fmt.Fprintf(os.Stderr, "\n⚠️  DESTRUCTIVE OPERATION DETECTED (risk: %s)\n", risk)
@@ -422,39 +474,12 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Poo
 		return answer == "y" || answer == "yes"
 	}
 
-	agent, err := conversation.NewAgent(conversation.Config{
-		Client:       client,
-		Pool:         pool,
-		Provider:     llmProvider,
-		Morph:        morph,
-		PromptMgr:    nil,
-		PluginMgr:    pluginMgr,
-		WorkDir:      workDir,
-		MaxSteps:     maxSteps,
-		Verbose:      verbose,
-		AutoApprove:  autoApprove,
-		ApprovalFunc: approvalFunc,
-		AuditLogger:  auditLogger,
-		Store:        store,
-		SessionID:    sessionID,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
-		os.Exit(1)
-	}
-	agent.SetSystemPrompt(system)
+	// We already have an agent, just set the approval func
+	agent.SetApprovalFunc(approvalFunc)
 
 	// Create a new session if not resuming
-	modelID := ""
-	region := ""
-	if client != nil {
-		modelID = client.ModelID()
-		region = client.Region()
-	} else if llmProvider != nil {
-		modelID = llmProvider.ID()
-	}
 	if sessionID == "" {
-		id, _ := agent.InitSession(modelID, region, workDir)
+		id, _ := agent.InitSession("", "", workDir) // IDs are handled internally if needed
 		if id != "" {
 			fmt.Printf("Session: %s\n", id)
 		}
@@ -463,7 +488,6 @@ func runPlainREPL(ctx context.Context, client *bedrock.Client, pool provider.Poo
 	}
 
 	fmt.Println("codecuttlectl - Codecuttle Meta-Harness Agent (plain mode)")
-	fmt.Printf("Model: %s | Plugins: %d\n", modelID, pluginMgr.Count())
 	fmt.Println("Type your message and press Enter. Type 'exit' or Ctrl+C to quit.")
 	fmt.Println()
 

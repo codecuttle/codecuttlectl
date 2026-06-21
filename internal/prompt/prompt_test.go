@@ -45,7 +45,7 @@ func TestRenderSystem(t *testing.T) {
 		{Name: "write_file", Description: "Write a file"},
 	}
 
-	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools)
+	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools, nil)
 	if err != nil {
 		t.Fatalf("RenderSystem() error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRenderSystemWithParams(t *testing.T) {
 		},
 	}
 
-	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools)
+	result, err := mgr.RenderSystem("/tmp/test", "claude-sonnet", "bedrock", tools, nil)
 	if err != nil {
 		t.Fatalf("RenderSystem() error: %v", err)
 	}

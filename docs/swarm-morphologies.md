@@ -118,6 +118,33 @@ PR #25 introduced the concept of multi-model routing via a Bedrock-specific `Mod
    * The `Agent` struct will be updated to handle the active `Morphology`.
    * It will support executing a `handoff` tool, suspending the current active node, and resuming the loop with the target node's provider and system prompt.
 
+## Phase 2: Asynchronous Delegation (The Swarm Backlog)
+
+While Phase 1 (Parser, Sandboxing, Synchronous Handoff) enables dynamic multi-agent conversation, **Phase 2** unlocks true parallel execution. The goal is to allow the primary Orchestrator agent to assign multi-step or time-consuming tasks (like "scrape these 5 API docs" or "draft an implementation plan") to specialized background agents without blocking its own conversation loop with the user.
+
+### Architecture
+
+1.  **Event Dispatcher Interface:**
+    To keep the core `conversation` and `tui` packages cleanly decoupled, inter-thread communication utilizes a `swarm.EventDispatcher` interface (`Dispatch(msg any)`). The TUI implements this by wrapping Bubble Tea's `tea.Program.Send(msg)`.
+
+2.  **The Swarm Manager (`internal/swarm/manager.go`):**
+    A central component responsible for orchestrating background agents. It holds a queue of pending tasks (added to the `todo_manage` tool with `async: true` and an `assignee`). It implements a Worker Pool / Semaphore system that respects the `MaxConcurrency` value defined for each Node in the morphology (e.g., ensuring we don't spawn 50 parallel Ollama models and exhaust VRAM).
+
+3.  **Headless Agents & Strict Sandboxing:**
+    When a worker picks up a task, it spins up an isolated background agent.
+    *   **Context Pre-seeding:** The headless agent is seeded with a compacted summary of the current session and the specific task description.
+    *   **Safety Policy:** Headless agents are instantiated with `AutoApprove: false` and a strict policy that denies any destructive operations. They rely entirely on the `workbench` defined in the morphology (e.g., restricted to `read_file`, `webfetch`). If an agent attempts a destructive command, it fails safely and records the error.
+    *   **Final Synthesis:** The agent's prompt instructs it to synthesize its findings into a concise summary when finished, rather than dumping raw tool outputs.
+
+4.  **TUI Integration and Context Injection (Closing the Loop):**
+    Background tasks must safely bring their findings back into the Orchestrator's context.
+    *   The background worker emits a `TaskCompletedMsg` containing the final summary.
+    *   **Race Condition Mitigation:** If the background task finishes while the Orchestrator is actively streaming a response to the user, injecting text directly into the history would cause slice corruption or index panics. The system queues the result in a `pendingAsyncResults` slice.
+    *   When the active stream finishes, the TUI safely injects the results into the history as synthetic `System` messages (e.g., `[Background Task Complete] Node 'researcher' finished: <Summary>`).
+
+5.  **File State Safety & Shared Context:**
+    The project directory acts as the shared state boundary (the "Modular Monolith" approach). To prevent data corruption if the Orchestrator and a background agent edit the same file simultaneously, tools like `edit_file` and `write_file` enforce thread-safe atomic writes.
+
 ## Future Enhancements
 * **The SAGA Pattern:** Allowing agents to revert orphaned states (e.g., executing idempotent compensating tools) if a multi-step workflow fails catastrophically midway through.
 * **Morphology Registry:** A central repository where users can download community-created morphologies via a command like `codecuttlectl morph install react-specialist`.
