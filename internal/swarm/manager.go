@@ -40,8 +40,7 @@ func NewManager(morph *Morphology, dispatcher EventDispatcher) *Manager {
 }
 
 // Submit enqueues an asynchronous task for a specific node.
-// It will block until a worker slot is available for that node,
-// so this should typically be called inside a goroutine by the caller.
+// It will execute the task as soon as a worker slot is available for that node.
 func (m *Manager) Submit(taskID, assignee string, run func()) error {
 	m.mu.Lock()
 	sem, ok := m.semaphores[assignee]
@@ -52,11 +51,11 @@ func (m *Manager) Submit(taskID, assignee string, run func()) error {
 		return nil // Should handle this with a clear error in the next iteration
 	}
 
-	// Acquire a worker token for this specific node
-	sem <- struct{}{}
-	
 	// Execute the background task
 	go func() {
+		// Acquire a worker token for this specific node
+		sem <- struct{}{}
+
 		defer func() {
 			// Release the worker token when done
 			<-sem
