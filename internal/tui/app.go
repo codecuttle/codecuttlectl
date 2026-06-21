@@ -150,6 +150,7 @@ type Model struct {
 	swarmEventCh        chan any
 	pendingAsyncResults []string
 	activeSwarmTasks    int
+	dispatchedTasks     map[string]bool   // task content -> true
 	swarmProgress       map[string]string // assignee -> current progress
 }
 
@@ -239,6 +240,7 @@ func New(cfg Config) Model {
 		morph:            cfg.Morph,
 		agent:            cfg.Agent,
 		swarmEventCh:     make(chan any, 100),
+		dispatchedTasks:  make(map[string]bool),
 		swarmProgress:    make(map[string]string),
 	}
 
@@ -944,7 +946,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Phase 2: Dispatch any newly created async tasks
 					if m.swarmMgr != nil {
 						for ti, newTodo := range payload.Todos {
-							if newTodo.Async && newTodo.Assignee != "" && newTodo.Status == todo.StatusPending {
+							if newTodo.Async && newTodo.Assignee != "" && !m.dispatchedTasks[newTodo.Content] && (newTodo.Status == todo.StatusPending || newTodo.Status == todo.StatusInProgress) {
 								taskDesc := newTodo.Content
 								assignee := newTodo.Assignee
 
@@ -952,7 +954,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								targetNode, morphOk := m.morph.Nodes[assignee]
 
 								if ok && morphOk {
-									// Mark it in_progress locally so we don't submit it again on the next tick
+									// Mark it as dispatched so we never double-submit
+									m.dispatchedTasks[taskDesc] = true
+
+									// Mark it in_progress locally so it's visually active
 									updatedItems := m.todos.Items()
 									updatedItems[ti].Status = todo.StatusInProgress
 									// Update internal TUI model immediately
@@ -1002,6 +1007,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 											eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: true, Result: "Failed to initialize headless agent: " + err.Error()}
 											return
 										}
+										// Force the active node to the actual assignee so progress/logs show up correctly
+										agent.SetActiveNode(assignee)
 
 										// 2. Set Persona System Prompt
 										sysPrompt := agent.SystemPrompt()

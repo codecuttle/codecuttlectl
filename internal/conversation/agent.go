@@ -1387,6 +1387,11 @@ func (a *Agent) ActiveNode() string {
 	return a.activeNode
 }
 
+// SetActiveNode overrides the currently active Swarm node ID.
+func (a *Agent) SetActiveNode(nodeID string) {
+	a.activeNode = nodeID
+}
+
 // --- Audit trail helpers ---
 
 // recordTokenUsage accumulates token usage and emits a structured log event.

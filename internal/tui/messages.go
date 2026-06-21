@@ -84,7 +84,8 @@ type ToolExecResultMsg struct {
 
 // TodoUpdatedMsg signals that the todo list has changed.
 type TodoUpdatedMsg struct {
-	Items []todo.Item
+	Items    []todo.Item
+	Assignee string // The node that updated the list
 }
 
 // ContinueStreamMsg signals the agent should continue after tool results.
