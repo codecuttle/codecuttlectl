@@ -933,11 +933,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									// Update internal TUI model immediately
 									m.todos.Replace(updatedItems)
 									
-									// We MUST send a msg so the main update loop rerenders the UI to reflect
-									// the new "in_progress" state before the background task finishes.
-									// (Normally Replace happens inside Update, so we should really dispatch a Msg here,
-									// but we are inside Update handling StreamDoneMsg or similar? Wait, we are in ExecuteTool result parsing.)
-
 									// Capture context for background closure
 									morph := m.morph
 									workDir := m.workDir
@@ -1000,6 +995,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 											eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: false, Result: result}
 										}
 									})
+								} else {
+									// Node doesn't exist — mark the task as cancelled so it doesn't stay stuck pending
+									updatedItems := m.todos.Items()
+									updatedItems[ti].Status = todo.StatusCancelled
+									m.todos.Replace(updatedItems)
+
+									// Append an error warning directly to the tool result so the Orchestrator sees it immediately
+									msg.Messages[i].Content += fmt.Sprintf("\n\n⚠️ Error: Failed to dispatch async task to %q (Node does not exist in the active morphology).", assignee)
+									msg.Messages[i].IsError = true
 								}
 							}
 						}
