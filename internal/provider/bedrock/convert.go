@@ -36,6 +36,19 @@ func providerMsgToBedrock(msg provider.Message) types.Message {
 		switch b := block.(type) {
 		case provider.TextBlock:
 			content = append(content, &types.ContentBlockMemberText{Value: b.Text})
+		case provider.ReasoningBlock:
+			var sig *string
+			if b.Signature != "" {
+				sig = aws.String(b.Signature)
+			}
+			content = append(content, &types.ContentBlockMemberReasoningContent{
+				Value: &types.ReasoningContentBlockMemberReasoningText{
+					Value: types.ReasoningTextBlock{
+						Text:      aws.String(b.Text),
+						Signature: sig,
+					},
+				},
+			})
 		case provider.ToolUseBlock:
 			var inputMap interface{}
 			if len(b.Input) > 0 {

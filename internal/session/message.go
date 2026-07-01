@@ -217,8 +217,29 @@ func marshalContentBlock(block types.ContentBlock) (ContentItem, error) {
 			Text: b.Value,
 		}, nil
 
+	case *types.ContentBlockMemberReasoningContent:
+		switch r := b.Value.(type) {
+		case *types.ReasoningContentBlockMemberReasoningText:
+			return ContentItem{
+				Type:      "reasoning",
+				Text:      aws.ToString(r.Value.Text),
+				Signature: aws.ToString(r.Value.Signature),
+			}, nil
+		case *types.ReasoningContentBlockMemberRedactedContent:
+			return ContentItem{
+				Type: "reasoning",
+				Text: "[redacted reasoning content]",
+			}, nil
+		default:
+			return ContentItem{
+				Type: "reasoning",
+				Text: "[unsupported reasoning block type]",
+			}, nil
+		}
+
 	case *types.ContentBlockMemberToolUse:
 		var inputJSON json.RawMessage
+
 		if b.Value.Input != nil {
 			// Use MarshalSmithyDocument to get JSON bytes from the document interface.
 			// This works for both marshaler (outbound) and unmarshaler (inbound) document types.
@@ -272,6 +293,20 @@ func unmarshalContentItem(item ContentItem) (types.ContentBlock, error) {
 	switch item.Type {
 	case "text":
 		return &types.ContentBlockMemberText{Value: item.Text}, nil
+
+	case "reasoning":
+		var sig *string
+		if item.Signature != "" {
+			sig = aws.String(item.Signature)
+		}
+		return &types.ContentBlockMemberReasoningContent{
+			Value: &types.ReasoningContentBlockMemberReasoningText{
+				Value: types.ReasoningTextBlock{
+					Text:      aws.String(item.Text),
+					Signature: sig,
+				},
+			},
+		}, nil
 
 	case "tool_use":
 		var inputMap map[string]interface{}

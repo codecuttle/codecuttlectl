@@ -37,6 +37,18 @@ func MessageToProvider(msg types.Message) Message {
 		switch b := block.(type) {
 		case *types.ContentBlockMemberText:
 			blocks = append(blocks, TextBlock{Text: b.Value})
+		case *types.ContentBlockMemberReasoningContent:
+			switch r := b.Value.(type) {
+			case *types.ReasoningContentBlockMemberReasoningText:
+				blocks = append(blocks, ReasoningBlock{
+					Text:      aws.ToString(r.Value.Text),
+					Signature: aws.ToString(r.Value.Signature),
+				})
+			case *types.ReasoningContentBlockMemberRedactedContent:
+				blocks = append(blocks, ReasoningBlock{
+					Text: "[redacted reasoning content]",
+				})
+			}
 		case *types.ContentBlockMemberToolUse:
 			var inputMap interface{}
 			if b.Value.Input != nil {

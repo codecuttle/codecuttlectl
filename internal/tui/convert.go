@@ -31,6 +31,18 @@ func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 			switch b := block.(type) {
 			case *types.ContentBlockMemberText:
 				blocks = append(blocks, provider.TextBlock{Text: b.Value})
+			case *types.ContentBlockMemberReasoningContent:
+				switch r := b.Value.(type) {
+				case *types.ReasoningContentBlockMemberReasoningText:
+					blocks = append(blocks, provider.ReasoningBlock{
+						Text:      aws.ToString(r.Value.Text),
+						Signature: aws.ToString(r.Value.Signature),
+					})
+				case *types.ReasoningContentBlockMemberRedactedContent:
+					blocks = append(blocks, provider.ReasoningBlock{
+						Text: "[redacted reasoning content]",
+					})
+				}
 			case *types.ContentBlockMemberToolUse:
 				var inputMap interface{}
 				if b.Value.Input != nil {
@@ -90,6 +102,19 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 			switch b := block.(type) {
 			case provider.TextBlock:
 				blocks = append(blocks, &types.ContentBlockMemberText{Value: b.Text})
+			case provider.ReasoningBlock:
+				var sig *string
+				if b.Signature != "" {
+					sig = aws.String(b.Signature)
+				}
+				blocks = append(blocks, &types.ContentBlockMemberReasoningContent{
+					Value: &types.ReasoningContentBlockMemberReasoningText{
+						Value: types.ReasoningTextBlock{
+							Text:      aws.String(b.Text),
+							Signature: sig,
+						},
+					},
+				})
 			case provider.ToolUseBlock:
 				var inputMap map[string]interface{}
 				if len(b.Input) > 0 {
