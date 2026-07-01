@@ -138,7 +138,6 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 - Optic Lobe (cross-session semantic memory)
 - Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)
 - Fleet telemetry (OpenTelemetry — Phase 10 of [streaming doc](docs/streaming-tool-telemetry.md))
-- Work Backlog (cross-session deferred intent queue)
 - Self-evolving harness (outer loop from execution traces)
 - Proto-based schema path (cross-language plugin inputs via .proto)
 - MicroVM isolation (Firecracker)
@@ -149,7 +148,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 ## Development
 
 ```bash
-make all     # Build orchestrator + 12 plugins
+make all     # Build orchestrator + all plugins
 make test    # Unit tests, all packages
 make proto   # Regenerate protobuf
 ```

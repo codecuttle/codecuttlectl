@@ -27,7 +27,12 @@ graph TD
     PluginMgr --> |gRPC over Unix socket| P5[cuttlebone-grep]
     PluginMgr --> |gRPC over Unix socket| P6[cuttlebone-glob]
     PluginMgr --> |gRPC over Unix socket| P7[cuttlebone-git]
-    PluginMgr --> |gRPC over Unix socket| P8[cuttlebone-go-skills]
+    PluginMgr --> |gRPC over Unix socket| P8[cuttlebone-github]
+    PluginMgr --> |gRPC over Unix socket| P9[cuttlebone-list-directory]
+    PluginMgr --> |gRPC over Unix socket| P10[cuttlebone-web-fetch]
+    PluginMgr --> |gRPC over Unix socket| P11[cuttlebone-web-search]
+    PluginMgr --> |gRPC over Unix socket| P12[cuttlebone-go-skills]
+    PluginMgr --> |gRPC over Unix socket| P13[cuttlebone-quant]
 
     Bedrock --> |Stream Events| Agent
     Agent --> |Tool Results| Bedrock
@@ -45,6 +50,11 @@ graph TD
         P6
         P7
         P8
+        P9
+        P10
+        P11
+        P12
+        P13
     end
 ```
 

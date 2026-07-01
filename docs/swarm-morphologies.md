@@ -41,7 +41,7 @@ Morphologies can define global event triggers that spawn asynchronous node tasks
 To prevent trigger storms (e.g., firing a "Review Code" task on every single file write during a massive refactor), triggers support debouncing and logical grouping.
 *   *Example:* Trigger the `reviewer` node on `event: "git_commit"` rather than raw file writes, ensuring the reviewer only critiques logical, completed chunks of work.
 
-### 4. Resilience & Fallbacks
+### 5. Resilience & Fallbacks
 Multi-agent swarms face compounding probabilities of failure. Morphologies encode graceful degradation:
 *   **Hierarchical Fallbacks:** If the primary provider (e.g., Anthropic) hits rate limits or 5xx errors, the node dynamically falls back to an alternative provider (e.g., Google).
 *   **Intelligent Circuit Breakers:** If an external tool (e.g., the GitHub API) repeatedly times out, a circuit breaker trips to the `OPEN` state, preventing retry storms and immediately forcing the agent to attempt an alternative reasoning path or escalate to a Human-in-the-Loop (HITL) pause.
