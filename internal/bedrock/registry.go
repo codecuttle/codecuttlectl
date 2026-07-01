@@ -78,8 +78,8 @@ var knownModels = map[string]ModelInfo{
 		SupportsCache:  true,
 		SupportsTools:  true,
 	},
-	"anthropic.claude-fable-5": {
-		ModelID:        "anthropic.claude-fable-5",
+	"us.anthropic.claude-fable-5": {
+		ModelID:        "us.anthropic.claude-fable-5",
 		DisplayName:    "fable-5",
 		ContextWindow:  1_000_000,
 		MaxOutput:      128_000,
@@ -101,8 +101,8 @@ var modelAliases = map[string]string{
 	"sonnet-4-6": "us.anthropic.claude-sonnet-4-6",
 	"haiku":      "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 	"haiku-4-5":  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-	"fable":      "anthropic.claude-fable-5",
-	"fable-5":    "anthropic.claude-fable-5",
+	"fable":      "us.anthropic.claude-fable-5",
+	"fable-5":    "us.anthropic.claude-fable-5",
 }
 
 // ResolveModelID resolves a model alias or full ID to a canonical model ID.
