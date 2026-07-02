@@ -54,6 +54,13 @@ func providerMsgToBedrock(msg provider.Message) types.Message {
 			if len(b.Input) > 0 {
 				_ = json.Unmarshal(b.Input, &inputMap)
 			}
+			// Bedrock rejects toolUse.input that serializes to JSON null with
+			// "The value at messages.N.content.M.toolUse.input is empty."
+			// Zero-argument tool calls (empty, "null", or unparsable input)
+			// must be sent as an empty JSON object instead.
+			if inputMap == nil {
+				inputMap = map[string]interface{}{}
+			}
 			content = append(content, &types.ContentBlockMemberToolUse{
 				Value: types.ToolUseBlock{
 					ToolUseId: aws.String(b.ToolUseID),

@@ -412,58 +412,103 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 	a.history = append(a.history, bedrock.BuildUserTextMessage(userMessage))
 
 	for step := 0; step < a.maxSteps; step++ {
-		ch := a.client.ConverseStream(ctx, a.effectiveSystemPrompt(), a.history, a.allToolDefs())
-
 		var textBuf strings.Builder
 		var toolCalls []pendingToolCall
 		var currentToolInput strings.Builder
 		var currentToolID, currentToolName string
 
-		for event := range ch {
-			switch e := event.(type) {
-			case bedrock.TextDeltaEvent:
-				textBuf.WriteString(e.Text)
-				if cb != nil {
-					cb(StreamEvent{Type: "text", Text: e.Text})
-				}
+		// Retry transient stream failures (mid-stream InternalServerException,
+		// ThrottlingException / 429 "Too many tokens", etc.) with error-aware
+		// backoff. The AWS SDK's built-in retryer only covers the initial
+		// handshake with millisecond-scale delays — useless for token-bucket
+		// throttling and blind to mid-stream faults. Partial output from a
+		// failed attempt is discarded so history is never polluted.
+		const maxStreamRetries = 5
+		for attempt := 0; ; attempt++ {
+			textBuf.Reset()
+			toolCalls = nil
+			currentToolInput.Reset()
+			currentToolID, currentToolName = "", ""
 
-			case bedrock.ToolUseStartEvent:
-				currentToolID = e.ToolUseID
-				currentToolName = e.Name
-				currentToolInput.Reset()
-				if cb != nil {
-					cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
-				}
+			var streamErr error
+			ch := a.client.ConverseStream(ctx, a.effectiveSystemPrompt(), a.history, a.allToolDefs())
 
-			case bedrock.ToolInputDeltaEvent:
-				currentToolInput.WriteString(e.Delta)
+			for event := range ch {
+				switch e := event.(type) {
+				case bedrock.TextDeltaEvent:
+					textBuf.WriteString(e.Text)
+					if cb != nil {
+						cb(StreamEvent{Type: "text", Text: e.Text})
+					}
 
-			case bedrock.ToolUseStopEvent:
-				if currentToolName != "" {
-					input := bedrock.CollectToolInput([]string{currentToolInput.String()})
-					toolCalls = append(toolCalls, pendingToolCall{
-						id:    currentToolID,
-						name:  currentToolName,
-						input: input,
-					})
-					currentToolName = ""
-					currentToolID = ""
+				case bedrock.ToolUseStartEvent:
+					currentToolID = e.ToolUseID
+					currentToolName = e.Name
 					currentToolInput.Reset()
+					if cb != nil {
+						cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
+					}
+
+				case bedrock.ToolInputDeltaEvent:
+					currentToolInput.WriteString(e.Delta)
+
+				case bedrock.ToolUseStopEvent:
+					if currentToolName != "" {
+						input := bedrock.CollectToolInput([]string{currentToolInput.String()})
+						toolCalls = append(toolCalls, pendingToolCall{
+							id:    currentToolID,
+							name:  currentToolName,
+							input: input,
+						})
+						currentToolName = ""
+						currentToolID = ""
+						currentToolInput.Reset()
+					}
+
+				case bedrock.UsageEvent:
+					// Track token usage in audit trail
+					a.recordTokenUsage(e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheWriteInputTokens, step)
+
+				case bedrock.StreamErrorEvent:
+					// Record and keep draining until the channel closes so the
+					// producer goroutine is not leaked.
+					streamErr = e.Err
+
+				case bedrock.MessageStopEvent:
+					// Stream complete for this round
 				}
-
-			case bedrock.UsageEvent:
-				// Track token usage in audit trail
-				a.recordTokenUsage(e.InputTokens, e.OutputTokens, e.CacheReadInputTokens, e.CacheWriteInputTokens, step)
-
-			case bedrock.StreamErrorEvent:
-				if cb != nil {
-					cb(StreamEvent{Type: "error", Error: e.Err})
-				}
-				return textBuf.String(), e.Err
-
-			case bedrock.MessageStopEvent:
-				// Stream complete for this round
 			}
+
+			if streamErr == nil {
+				break
+			}
+
+			if attempt < maxStreamRetries && ctx.Err() == nil && provider.IsTransientStreamError(streamErr) {
+				delay := provider.RetryDelay(attempt, streamErr)
+				if a.verbose {
+					log.Printf("[stream] transient error (attempt %d/%d), retrying in %s: %v",
+						attempt+1, maxStreamRetries, delay.Round(time.Second), streamErr)
+				}
+				if cb != nil {
+					reason := "stream interrupted"
+					if provider.IsThrottleError(streamErr) {
+						reason = "rate limited"
+					}
+					cb(StreamEvent{Type: "text", Text: fmt.Sprintf(
+						"\n[%s — retrying %d/%d in %s]\n", reason, attempt+1, maxStreamRetries, delay.Round(time.Second))})
+				}
+				select {
+				case <-ctx.Done():
+					return textBuf.String(), ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+
+			if cb != nil {
+				cb(StreamEvent{Type: "error", Error: streamErr})
+			}
+			return textBuf.String(), streamErr
 		}
 
 		// Build assistant message for history
