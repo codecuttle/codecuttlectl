@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -328,6 +329,36 @@ type ExecuteResult struct {
 	IsError  bool
 }
 
+// MaxToolOutputBytes caps the size of any tool output entering conversation
+// history. Oversized outputs (e.g. `docker logs` dumping tens of MB) would
+// otherwise be sent verbatim to the model, instantly blowing provider input
+// token limits (Google: 1,048,576) and triggering throttling on Bedrock.
+// 100 KiB is roughly 25k tokens — generous for real work, safe for providers.
+const MaxToolOutputBytes = 100 * 1024
+
+// capToolOutput truncates oversized tool output, preserving the head and tail
+// (errors typically appear at the end of long logs) with an explicit marker so
+// the model knows content was elided.
+func capToolOutput(s string) string {
+	if len(s) <= MaxToolOutputBytes {
+		return s
+	}
+	const headBytes = MaxToolOutputBytes * 6 / 10
+	const tailBytes = MaxToolOutputBytes - headBytes
+	head := s[:headBytes]
+	tail := s[len(s)-tailBytes:]
+	// Avoid splitting mid-line where practical.
+	if i := strings.LastIndexByte(head, '\n'); i > 0 {
+		head = head[:i]
+	}
+	if i := strings.IndexByte(tail, '\n'); i >= 0 && i < len(tail)-1 {
+		tail = tail[i+1:]
+	}
+	omitted := len(s) - len(head) - len(tail)
+	return fmt.Sprintf("%s\n\n[... tool output truncated: %d bytes omitted (%d total). Re-run with a narrower query (e.g. grep, head/tail, --since/--tail flags) to see specific sections ...]\n\n%s",
+		head, omitted, len(s), tail)
+}
+
 // Execute invokes a tool by name with the given JSON input.
 // Applies a per-plugin execution timeout.
 // If the plugin has crashed, attempts to restart it before failing.
@@ -422,10 +453,10 @@ func (m *Manager) ExecuteFull(ctx context.Context, name string, input json.RawMe
 		if resp.Output != "" {
 			errMsg = resp.Output + "\n" + errMsg
 		}
-		return ExecuteResult{Output: errMsg, Metadata: resp.Metadata, IsError: true}, fmt.Errorf("tool error: %s", resp.ErrorMessage)
+		return ExecuteResult{Output: capToolOutput(errMsg), Metadata: resp.Metadata, IsError: true}, fmt.Errorf("tool error: %s", resp.ErrorMessage)
 	}
 
-	return ExecuteResult{Output: resp.Output, Metadata: resp.Metadata, IsError: false}, nil
+	return ExecuteResult{Output: capToolOutput(resp.Output), Metadata: resp.Metadata, IsError: false}, nil
 }
 
 // ExecuteStream invokes a tool's streaming RPC if supported, otherwise falls
@@ -500,13 +531,17 @@ func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.Raw
 		return ch, nil
 	}
 
-	// Wrap the event channel to handle cancellation
+	// Wrap the event channel to handle cancellation. Cap the final output so
+	// oversized results never enter conversation history.
 	wrappedCh := make(chan ToolStreamEvent, 64)
 	go func() {
 		defer unlock()
 		defer close(wrappedCh)
 		defer cancel()
 		for event := range eventCh {
+			if event.Final != nil {
+				event.Final.Output = capToolOutput(event.Final.Output)
+			}
 			wrappedCh <- event
 		}
 	}()
