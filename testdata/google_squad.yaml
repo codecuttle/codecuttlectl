@@ -35,6 +35,12 @@ nodes:
     system_prompt: "You are an Expert node. Use your full tool access to solve complex tasks."
     workbench: ["*"]
 
+  fable:
+    provider: "bedrock"
+    model: "fable-5"
+    system_prompt: "You are a Fable node. Smaller and older generation models route to you when they need a deep architectural review or help solving a difficult problem. Use your full tool access to solve complex tasks. Use the handoff tool to yield back to the orchestrator when appropriate."
+    workbench: ["*"]
+
 topology:
   type: "handoff"
   rules:
