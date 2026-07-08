@@ -36,10 +36,30 @@ func providerMsgToBedrock(msg provider.Message) types.Message {
 		switch b := block.(type) {
 		case provider.TextBlock:
 			content = append(content, &types.ContentBlockMemberText{Value: b.Text})
+		case provider.ReasoningBlock:
+			var sig *string
+			if b.Signature != "" {
+				sig = aws.String(b.Signature)
+			}
+			content = append(content, &types.ContentBlockMemberReasoningContent{
+				Value: &types.ReasoningContentBlockMemberReasoningText{
+					Value: types.ReasoningTextBlock{
+						Text:      aws.String(b.Text),
+						Signature: sig,
+					},
+				},
+			})
 		case provider.ToolUseBlock:
 			var inputMap interface{}
 			if len(b.Input) > 0 {
 				_ = json.Unmarshal(b.Input, &inputMap)
+			}
+			// Bedrock rejects toolUse.input that serializes to JSON null with
+			// "The value at messages.N.content.M.toolUse.input is empty."
+			// Zero-argument tool calls (empty, "null", or unparsable input)
+			// must be sent as an empty JSON object instead.
+			if inputMap == nil {
+				inputMap = map[string]interface{}{}
 			}
 			content = append(content, &types.ContentBlockMemberToolUse{
 				Value: types.ToolUseBlock{

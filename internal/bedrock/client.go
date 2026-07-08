@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -51,7 +53,20 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}
 
-	client := bedrockruntime.NewFromConfig(awsCfg)
+	client := bedrockruntime.NewFromConfig(awsCfg, func(o *bedrockruntime.Options) {
+		// Adaptive retry adds client-side rate limiting on top of standard
+		// exponential backoff, which handles Bedrock ThrottlingException
+		// ("Too many tokens") far better than the default standard retryer.
+		// Longer waits for token-bucket refill are handled at the harness
+		// level (see internal/provider/retry.go); this covers initial-call
+		// 429s and transient 5xx on non-streaming Converse calls too.
+		o.Retryer = retry.NewAdaptiveMode(func(ao *retry.AdaptiveModeOptions) {
+			ao.StandardOptions = append(ao.StandardOptions, func(so *retry.StandardOptions) {
+				so.MaxAttempts = 5
+				so.MaxBackoff = 30 * time.Second
+			})
+		})
+	})
 	return &Client{
 		runtime: client,
 		modelID: cfg.ModelID,
@@ -164,6 +179,12 @@ func parseConverseOutput(output *bedrockruntime.ConverseOutput) *Response {
 					var inputMap interface{}
 					if b.Value.Input != nil {
 						_ = b.Value.Input.UnmarshalSmithyDocument(&inputMap)
+					}
+					// Normalize zero-argument tool calls to an empty object so
+					// the input never round-trips as JSON null (Bedrock rejects
+					// toolUse.input that serializes to null).
+					if inputMap == nil {
+						inputMap = map[string]interface{}{}
 					}
 					inputJSON, _ := json.Marshal(inputMap)
 					resp.ToolUses = append(resp.ToolUses, ToolUseRequest{

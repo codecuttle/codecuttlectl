@@ -203,81 +203,122 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			Tools:    a.allProviderToolDefs(),
 		}
 
-		fmt.Printf("[DEBUG] About to call ConverseStream with %d messages\n", len(req.Messages))
-	for i, m := range req.Messages {
-		for j, block := range m.Content {
-			if tr, ok := block.(provider.ToolResultBlock); ok {
-				if tr.Name == "" {
-					fmt.Printf("[CRITICAL] Msg %d Block %d has empty Name! ToolUseID=%s\n", i, j, tr.ToolUseID)
-				}
-			}
-		}
-	}
-	ch := a.provider.ConverseStream(ctx, req)
-
 		var textBuf strings.Builder
 		var reasoningBuf strings.Builder
 		var toolCalls []pendingToolCall
 		var currentToolInput strings.Builder
 		var currentToolID, currentToolName, currentToolSig string
 
-		for event := range ch {
-			switch e := event.(type) {
-			case provider.TextDeltaEvent:
-				textBuf.WriteString(e.Text)
-				if cb != nil {
-					cb(StreamEvent{Type: "text", Text: e.Text})
-				}
+		// Bedrock can fail mid-stream with transient errors (e.g.
+		// InternalServerException) or reject the request outright with
+		// ThrottlingException ("Too many tokens, please wait before trying
+		// again") once the SDK's own millisecond-scale retries are exhausted.
+		// Retry here with error-aware backoff: short exponential for server
+		// faults, long (30s+) for throttling so the token bucket can refill.
+		// Partial output from a failed attempt is discarded so history is
+		// never polluted with truncated assistant messages.
+		const maxStreamRetries = 5
+		for attempt := 0; ; attempt++ {
+			textBuf.Reset()
+			reasoningBuf.Reset()
+			toolCalls = nil
+			currentToolInput.Reset()
+			currentToolID, currentToolName, currentToolSig = "", "", ""
 
-			case provider.ReasoningDeltaEvent:
-				reasoningBuf.WriteString(e.Text)
+			var streamErr error
+			ch := a.provider.ConverseStream(ctx, req)
 
-			case provider.ReasoningSignatureEvent:
-				currentToolSig = e.Signature
-
-			case provider.ToolUseStartEvent:
-				currentToolID = e.ToolUseID
-				currentToolName = e.Name
-				if e.ThoughtSignature != "" {
-					currentToolSig = e.ThoughtSignature
-				}
-				currentToolInput.Reset()
-				if cb != nil {
-					cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
-				}
-
-			case provider.ToolInputDeltaEvent:
-				currentToolInput.WriteString(e.Delta)
-
-			case provider.ToolUseStopEvent:
-				if currentToolName != "" {
-					input := json.RawMessage(currentToolInput.String())
-					if len(input) == 0 {
-						input = json.RawMessage("{}")
+			for event := range ch {
+				switch e := event.(type) {
+				case provider.TextDeltaEvent:
+					textBuf.WriteString(e.Text)
+					if cb != nil {
+						cb(StreamEvent{Type: "text", Text: e.Text})
 					}
-					toolCalls = append(toolCalls, pendingToolCall{
-						id:               currentToolID,
-						name:             currentToolName,
-						input:            input,
-						thoughtSignature: currentToolSig,
-					})
-					currentToolName = ""
-					currentToolID = ""
+
+				case provider.ReasoningDeltaEvent:
+					reasoningBuf.WriteString(e.Text)
+
+				case provider.ReasoningSignatureEvent:
+					currentToolSig = e.Signature
+
+				case provider.ToolUseStartEvent:
+					currentToolID = e.ToolUseID
+					currentToolName = e.Name
+					if e.ThoughtSignature != "" {
+						currentToolSig = e.ThoughtSignature
+					}
 					currentToolInput.Reset()
+					if cb != nil {
+						cb(StreamEvent{Type: "tool_start", ToolName: e.Name, ToolUseID: e.ToolUseID})
+					}
+
+				case provider.ToolInputDeltaEvent:
+					currentToolInput.WriteString(e.Delta)
+
+				case provider.ToolUseStopEvent:
+					if currentToolName != "" {
+						raw := strings.TrimSpace(currentToolInput.String())
+						if raw == "" || raw == "null" {
+							// Zero-argument tool call — Bedrock rejects empty/null
+							// toolUse.input, so normalize to an empty JSON object.
+							raw = "{}"
+						}
+						input := json.RawMessage(raw)
+						toolCalls = append(toolCalls, pendingToolCall{
+							id:               currentToolID,
+							name:             currentToolName,
+							input:            input,
+							thoughtSignature: currentToolSig,
+						})
+						currentToolName = ""
+						currentToolID = ""
+						currentToolInput.Reset()
+					}
+
+				case provider.UsageEvent:
+					a.recordTokenUsage(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, step)
+
+				case provider.StreamErrorEvent:
+					// Record and keep draining until the channel closes so the
+					// producer goroutine is not leaked.
+					streamErr = e.Err
+
+				case provider.MessageStopEvent:
+					// Stream complete for this round
 				}
-
-			case provider.UsageEvent:
-				a.recordTokenUsage(e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens, step)
-
-			case provider.StreamErrorEvent:
-				if cb != nil {
-					cb(StreamEvent{Type: "error", Error: e.Err})
-				}
-				return textBuf.String(), e.Err
-
-			case provider.MessageStopEvent:
-				// Stream complete for this round
 			}
+
+			if streamErr == nil {
+				break
+			}
+
+			if attempt < maxStreamRetries && ctx.Err() == nil && provider.IsTransientStreamError(streamErr) {
+				delay := provider.RetryDelay(attempt, streamErr)
+				if a.verbose {
+					log.Printf("[stream] transient error (attempt %d/%d), retrying in %s: %v",
+						attempt+1, maxStreamRetries, delay.Round(time.Second), streamErr)
+				}
+				if cb != nil {
+					reason := "stream interrupted"
+					if provider.IsThrottleError(streamErr) {
+						reason = "rate limited"
+					}
+					cb(StreamEvent{Type: "text", Text: fmt.Sprintf(
+						"\n[%s — retrying %d/%d in %s]\n", reason, attempt+1, maxStreamRetries, delay.Round(time.Second))})
+				}
+				select {
+				case <-ctx.Done():
+					return textBuf.String(), ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+
+			if cb != nil {
+				cb(StreamEvent{Type: "error", Error: streamErr})
+			}
+			return textBuf.String(), streamErr
 		}
 
 		// Build assistant message for history
