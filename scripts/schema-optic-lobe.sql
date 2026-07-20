@@ -22,7 +22,7 @@ CREATE TABLE insights (
     workspace_id UUID REFERENCES workspaces(id),
     author_id UUID REFERENCES users(id),
     content TEXT NOT NULL,
-    embedding vector(1536), -- Standard embedding dimension
+    embedding vector(768), -- Gemini embedding dimension
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -50,7 +50,7 @@ CREATE TABLE commits (
     repository_id UUID REFERENCES repositories(id),
     author_id UUID REFERENCES users(id),
     message TEXT,
-    message_embedding vector(1536),
+    message_embedding vector(768),
     timestamp TIMESTAMPTZ NOT NULL
 );
 
@@ -62,7 +62,7 @@ CREATE TABLE code_nodes (
     symbol_name VARCHAR(255) NOT NULL,
     node_type VARCHAR(50) NOT NULL, -- 'function', 'class', 'struct'
     content TEXT NOT NULL,
-    content_embedding vector(1536),
+    content_embedding vector(768),
     
     -- Temporal Interval Stamping
     valid_from_commit VARCHAR(40) REFERENCES commits(hash),

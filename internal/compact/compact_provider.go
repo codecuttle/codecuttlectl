@@ -27,6 +27,7 @@ func CompactProvider(messages []provider.Message, currentTurn int, cfg Config) P
 	result := make([]provider.Message, len(messages))
 	totalFreed := 0
 	compacted := 0
+	var summaries []string
 
 	for i, msg := range messages {
 		if i >= preserveFromIdx {
@@ -54,19 +55,21 @@ func CompactProvider(messages []provider.Message, currentTurn int, cfg Config) P
 		}
 
 		// Compact tool results in this message
-		newContent, freed, count := compactProviderToolResults(msg.Content, cfg)
+		newContent, freed, count, blockSummaries := compactProviderToolResults(msg.Content, cfg)
 		result[i] = provider.Message{
 			Role:    msg.Role,
 			Content: newContent,
 		}
 		totalFreed += freed
 		compacted += count
+		summaries = append(summaries, blockSummaries...)
 	}
 
 	return ProviderResult{
 		Messages:       result,
 		TokensEstimate: totalFreed / 4,
 		Compacted:      compacted,
+		Summaries:      summaries,
 	}
 }
 
@@ -75,6 +78,7 @@ type ProviderResult struct {
 	Messages       []provider.Message
 	TokensEstimate int
 	Compacted      int
+	Summaries      []string // The text summaries generated during this pass
 }
 
 // findProviderPreserveBoundary returns the index from which messages should be
@@ -108,10 +112,11 @@ func hasProviderTextContent(msg provider.Message) bool {
 
 // compactProviderToolResults processes content blocks, replacing large tool results
 // with summaries.
-func compactProviderToolResults(content []provider.ContentBlock, cfg Config) ([]provider.ContentBlock, int, int) {
+func compactProviderToolResults(content []provider.ContentBlock, cfg Config) ([]provider.ContentBlock, int, int, []string) {
 	newContent := make([]provider.ContentBlock, 0, len(content))
 	totalFreed := 0
 	count := 0
+	var summaries []string
 
 	for _, block := range content {
 		tr, ok := block.(provider.ToolResultBlock)
@@ -141,31 +146,32 @@ func compactProviderToolResults(content []provider.ContentBlock, cfg Config) ([]
 
 		totalFreed += freed
 		count++
+		summaries = append(summaries, summary)
 	}
 
-	return newContent, totalFreed, count
+	return newContent, totalFreed, count, summaries
 }
 
 // CompactProviderIfNeeded applies compaction only when the estimated token usage
 // exceeds the threshold. This is a convenience wrapper for the agent loop.
-func CompactProviderIfNeeded(messages []provider.Message, currentTurn int, lastInputTokens int32, contextWindow int32, cfg Config) ([]provider.Message, bool) {
+func CompactProviderIfNeeded(messages []provider.Message, currentTurn int, lastInputTokens int32, contextWindow int32, cfg Config) ([]provider.Message, bool, []string) {
 	// If MaxContextPercent is 0, always compact (used for small models)
 	if cfg.MaxContextPercent > 0 {
 		if contextWindow <= 0 || lastInputTokens <= 0 {
-			return messages, false
+			return messages, false, nil
 		}
 		usage := float64(lastInputTokens) / float64(contextWindow)
 		if usage < cfg.MaxContextPercent {
-			return messages, false
+			return messages, false, nil
 		}
 	}
 
 	result := CompactProvider(messages, currentTurn, cfg)
 	if result.Compacted == 0 {
-		return messages, false
+		return messages, false, nil
 	}
 
 	// Log what happened (consumers can check the bool return)
 	_ = fmt.Sprintf("compacted %d tool results, freed ~%d tokens", result.Compacted, result.TokensEstimate)
-	return result.Messages, true
+	return result.Messages, true, result.Summaries
 }

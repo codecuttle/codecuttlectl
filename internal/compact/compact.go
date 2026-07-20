@@ -56,6 +56,7 @@ type Result struct {
 	Messages       []types.Message // The compacted message history
 	TokensEstimate int             // Estimated tokens freed (rough: chars/4)
 	Compacted      int             // Number of tool results that were compacted
+	Summaries      []string        // The text summaries generated during this pass
 }
 
 // Compact rewrites old tool_result messages in the history with summaries.
@@ -75,6 +76,7 @@ func Compact(messages []types.Message, currentTurn int, cfg Config) Result {
 	result := make([]types.Message, len(messages))
 	totalFreed := 0
 	compacted := 0
+	var summaries []string
 
 	for i, msg := range messages {
 		if i >= preserveFromIdx {
@@ -90,7 +92,7 @@ func Compact(messages []types.Message, currentTurn int, cfg Config) Result {
 		}
 
 		// Check if this message contains tool_result blocks worth compacting
-		newContent, freed, count := compactToolResults(msg.Content, cfg)
+		newContent, freed, count, blockSummaries := compactToolResults(msg.Content, cfg)
 		if count > 0 {
 			result[i] = types.Message{
 				Role:    msg.Role,
@@ -98,6 +100,7 @@ func Compact(messages []types.Message, currentTurn int, cfg Config) Result {
 			}
 			totalFreed += freed
 			compacted += count
+			summaries = append(summaries, blockSummaries...)
 		} else {
 			result[i] = msg
 		}
@@ -107,6 +110,7 @@ func Compact(messages []types.Message, currentTurn int, cfg Config) Result {
 		Messages:       result,
 		TokensEstimate: totalFreed / 4, // Rough chars-to-tokens ratio
 		Compacted:      compacted,
+		Summaries:      summaries,
 	}
 }
 
@@ -160,10 +164,11 @@ func hasTextContent(msg types.Message) bool {
 
 // compactToolResults processes content blocks, replacing large tool_result blocks
 // with summaries. Returns the new content slice, chars freed, and count compacted.
-func compactToolResults(content []types.ContentBlock, cfg Config) ([]types.ContentBlock, int, int) {
+func compactToolResults(content []types.ContentBlock, cfg Config) ([]types.ContentBlock, int, int, []string) {
 	newContent := make([]types.ContentBlock, 0, len(content))
 	totalFreed := 0
 	count := 0
+	var summaries []string
 
 	for _, block := range content {
 		tr, ok := block.(*types.ContentBlockMemberToolResult)
@@ -201,9 +206,10 @@ func compactToolResults(content []types.ContentBlock, cfg Config) ([]types.Conte
 
 		totalFreed += freed
 		count++
+		summaries = append(summaries, summary)
 	}
 
-	return newContent, totalFreed, count
+	return newContent, totalFreed, count, summaries
 }
 
 // extractToolResultText extracts the text content from a tool result block.

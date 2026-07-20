@@ -14,7 +14,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
+	"github.com/codecuttle/codecuttlectl/internal/embedding"
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
+	"github.com/codecuttle/codecuttlectl/internal/opticlobe"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/swarm"
@@ -159,9 +161,23 @@ func (a *Agent) turnProvider(ctx context.Context, userMessage string) (string, e
 
 		// Compact old tool results to keep context window manageable for small models
 		if a.needsGroundingAssist() {
-			a.provHistory, _ = compact.CompactProviderIfNeeded(
+			var summaries []string
+			a.provHistory, _, summaries = compact.CompactProviderIfNeeded(
 				a.provHistory, a.turn, 0, 0, compact.SmallModelConfig(),
 			)
+			if len(summaries) > 0 && a.opticStore != nil && a.opticStore.IsAvailable() {
+				// Inject the summaries into the Optic Lobe as Insights to preserve the knowledge graph
+				for _, sum := range summaries {
+					emb, _ := embedding.Generate(ctx, sum)
+					if emb == nil {
+						emb = make([]float32, 768) // Fallback zero vector
+					}
+					_, _ = a.opticStore.AddInsight(ctx, "global", opticlobe.InsightData{
+						Content:   "Compacted memory trace: " + sum,
+						Embedding: emb,
+					})
+				}
+			}
 		}
 
 		a.flushSessionProvider()
@@ -415,9 +431,23 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 
 		// Compact old tool results to keep context window manageable for small models
 		if a.needsGroundingAssist() {
-			a.provHistory, _ = compact.CompactProviderIfNeeded(
+			var summaries []string
+			a.provHistory, _, summaries = compact.CompactProviderIfNeeded(
 				a.provHistory, a.turn, 0, 0, compact.SmallModelConfig(),
 			)
+			if len(summaries) > 0 && a.opticStore != nil && a.opticStore.IsAvailable() {
+				// Inject the summaries into the Optic Lobe as Insights to preserve the knowledge graph
+				for _, sum := range summaries {
+					emb, _ := embedding.Generate(ctx, sum)
+					if emb == nil {
+						emb = make([]float32, 768) // Fallback zero vector
+					}
+					_, _ = a.opticStore.AddInsight(ctx, "global", opticlobe.InsightData{
+						Content:   "Compacted memory trace: " + sum,
+						Embedding: emb,
+					})
+				}
+			}
 		}
 
 		a.flushSessionProvider()

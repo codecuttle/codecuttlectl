@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/conversation"
 	"github.com/codecuttle/codecuttlectl/internal/keyring"
+	"github.com/codecuttle/codecuttlectl/internal/opticlobe"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -61,6 +63,19 @@ func main() {
 		opticLobeURI = flag.String("optic-lobe-uri", "", "PostgreSQL connection string for the Optic Lobe knowledge graph. If omitted, uses local fallback.")
 	)
 	flag.Parse()
+
+	// 2. Initialize Optic Lobe Memory Store
+	var opticStore opticlobe.OpticStore
+	if *opticLobeURI != "" {
+		postgresStore, dbErr := opticlobe.NewPostgresOpticStore(*opticLobeURI)
+		if dbErr != nil {
+			log.Fatalf("Failed to initialize PostgreSQL Optic Lobe: %v", dbErr)
+		}
+		opticStore = postgresStore
+	} else {
+		opticStore = opticlobe.NewLocalOpticStore()
+	}
+	defer opticStore.Close()
 
 	// Initialize audit logger
 	auditLogger := audit.NewLogger(os.Stderr, *auditLog)
@@ -331,6 +346,7 @@ func main() {
 			WorkDir:     *workDir,
 			MaxSteps:    *maxSteps,
 			Verbose:     *verbose,
+			OpticStore:  nil,
 			AutoApprove: *autoApprove,
 			AuditLogger: auditLogger,
 			Store:       store,
@@ -356,6 +372,7 @@ func main() {
 		WorkDir:     *workDir,
 		MaxSteps:    *maxSteps,
 		Verbose:     *verbose,
+		OpticStore:  nil,
 		AutoApprove: *autoApprove,
 		AuditLogger: auditLogger,
 		Store:       store,
@@ -409,6 +426,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 		WorkDir:     workDir,
 		MaxSteps:    maxSteps,
 		Verbose:     verbose,
+		OpticStore:  nil,
 		AutoApprove: autoApprove,
 		AuditLogger: auditLogger,
 		Store:       store,

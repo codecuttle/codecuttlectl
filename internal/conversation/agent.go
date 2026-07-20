@@ -15,6 +15,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/audit"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/inkwell"
+	"github.com/codecuttle/codecuttlectl/internal/opticlobe"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -49,6 +50,9 @@ type Agent struct {
 	auditLogger *audit.Logger
 	auditTrail  session.AuditTrail
 
+	// Optic Lobe Memory
+	opticStore opticlobe.OpticStore
+
 	// Inkwell reconciliation loop
 	reconciler *inkwell.Reconciler
 
@@ -78,6 +82,7 @@ type Config struct {
 	PluginDir string // Plugin binary directory (for reload)
 	MaxSteps  int    // Maximum tool-use iterations per turn. Default: 25
 	Verbose   bool   // Print debug info
+	OpticStore opticlobe.OpticStore // Optional Graph memory store
 
 	// Safety
 	AutoApprove  bool                                              // When true, skip destructive op confirmation
@@ -170,6 +175,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 		autoApprove:  cfg.AutoApprove,
 		approvalFunc: cfg.ApprovalFunc,
 		auditLogger:  cfg.AuditLogger,
+		opticStore:   cfg.OpticStore,
 		reconciler:   inkwell.NewReconciler(),
 		store:        cfg.Store,
 		sessionID:    cfg.SessionID,

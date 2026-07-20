@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
+	"github.com/codecuttle/codecuttlectl/internal/opticlobe"
+	"github.com/codecuttle/codecuttlectl/internal/embedding"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit/types"
@@ -36,6 +39,12 @@ func (t *opticRecallTool) Describe(ctx context.Context) (*pb.DescribeResponse, e
 	}, nil
 }
 
+// createMockEmbedding returns a dummy vector representing the query embedding.
+// In a full implementation, this calls out to Bedrock or Ollama.
+func createMockEmbedding(ctx context.Context, query string) ([]float32, error) {
+	return embedding.Generate(ctx, query)
+}
+
 func (t *opticRecallTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	var params opticRecallInput
 	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
@@ -45,10 +54,10 @@ func (t *opticRecallTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 		}, nil
 	}
 
-	if params.Query == "" {
+	if params.Query == "" || params.RepoID == "" {
 		return &pb.ExecuteResponse{
 			IsError:      true,
-			ErrorMessage: "query is required",
+			ErrorMessage: "query and repo_id are required",
 		}, nil
 	}
 
@@ -61,14 +70,57 @@ func (t *opticRecallTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 		limit = 5
 	}
 
-	// TODO: Connect to OpticStore, execute HybridRAG, and return fused narrative chunks.
-	// For now, this is a stub.
+	connStr := "host=localhost port=5439 user=codecuttle password=codecuttle_dev_pass dbname=optic_lobe sslmode=disable"
+	store, err := opticlobe.NewPostgresOpticStore(connStr)
+	if err != nil {
+		return &pb.ExecuteResponse{
+			IsError:      true,
+			ErrorMessage: fmt.Sprintf("db connection failed: %v", err),
+		}, nil
+	}
+	defer store.Close()
+
+	emb, err := createMockEmbedding(ctx, params.Query)
+	if err != nil {
+		return &pb.ExecuteResponse{
+			IsError:      true,
+			ErrorMessage: fmt.Sprintf("failed to generate query embedding: %v", err),
+		}, nil
+	}
+	filter := opticlobe.RecallFilter{
+		WorkspaceID:  params.WorkspaceID,
+		RepositoryID: params.RepoID,
+		TargetCommit: params.TargetCommit,
+		MaxHops:      maxHops,
+		Limit:        limit,
+	}
+
+	chunks, err := store.RecallContext(ctx, params.Query, emb, filter)
+	if err != nil {
+		return &pb.ExecuteResponse{
+			IsError:      true,
+			ErrorMessage: fmt.Sprintf("Graph retrieval failed: %v", err),
+		}, nil
+	}
+
+	if len(chunks) == 0 {
+		return &pb.ExecuteResponse{
+			Output: "No semantic context found in the Optic Lobe for this query.",
+		}, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Optic Lobe Retrieval Context (%d chunks retrieved):\n\n", len(chunks))
+	for i, chunk := range chunks {
+		fmt.Fprintf(&sb, "-- Chunk %d [ID: %s] (Confidence: %.4f) --\n%s\n\n", i+1, chunk.ID, chunk.Confidence, chunk.Content)
+	}
 
 	return &pb.ExecuteResponse{
-		Output: fmt.Sprintf("Optic Lobe search for '%s' (repo: %s, max_hops: %d, limit: %d)\n\n[STUB: No results found or DB not connected]", params.Query, params.RepoID, maxHops, limit),
+		Output: sb.String(),
 	}, nil
 }
 
 func main() {
 	pluginkit.Serve(&opticRecallTool{})
 }
+
