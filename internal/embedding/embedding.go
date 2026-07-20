@@ -12,7 +12,7 @@ import (
 )
 
 // Generate creates a vector embedding for the given text.
-// Currently uses Google's text-embedding-004 via direct HTTP (768 dimensions).
+// Currently uses Google's gemini-embedding-2 via direct HTTP (768 dimensions projected).
 func Generate(ctx context.Context, text string) ([]float32, error) {
 	if text == "" {
 		return nil, fmt.Errorf("text cannot be empty")
@@ -24,10 +24,11 @@ func Generate(ctx context.Context, text string) ([]float32, error) {
 	}
 	apiKey := os.Getenv("GEMINI_API_KEY")
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=%s", apiKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key=%s", apiKey)
 
 	payload := map[string]interface{}{
-		"model": "models/text-embedding-004",
+		"model": "models/gemini-embedding-2",
+		"outputDimensionality": 768,
 		"content": map[string]interface{}{
 			"parts": []map[string]interface{}{
 				{
