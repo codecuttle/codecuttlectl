@@ -11,10 +11,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.53.1
 	github.com/aws/smithy-go v1.26.0
 	github.com/charmbracelet/glamour v0.8.0
+	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lib/pq v1.12.3
+	github.com/pgvector/pgvector-go v0.4.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/zalando/go-keyring v0.2.8
