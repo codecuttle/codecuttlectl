@@ -3,6 +3,8 @@ package opticlobe
 import (
 	"context"
 	"time"
+
+	"github.com/codecuttle/codecuttlectl/internal/audit"
 )
 
 // OpticStore defines the interface for Codecuttle's hierarchical memory system.
@@ -18,10 +20,10 @@ type OpticStore interface {
 
 	// RecallContext executes a HybridRAG query, fusing semantic vector search
 	// with structural graph traversals, returning condensed narrative summaries.
-	RecallContext(ctx context.Context, query string, filter RecallFilter) ([]ContextChunk, error)
+	RecallContext(ctx context.Context, query string, queryEmbedding []float32, filter RecallFilter) ([]ContextChunk, error)
 
 	// RecordAudit logs a graph retrieval or mutation event for enterprise governance.
-	RecordAudit(ctx context.Context, action string, metadata map[string]interface{}) error
+	RecordAudit(logger *audit.Logger, sessionID string, action string, metadata map[string]interface{}) error
 
 	// IsAvailable returns true if the backing store is fully functional (e.g., Postgres is online).
 	IsAvailable() bool
@@ -32,23 +34,25 @@ type OpticStore interface {
 
 // CommitData represents the structural changes extracted from a git commit via JIT AST parsing.
 type CommitData struct {
-	Hash      string
-	Message   string
-	AuthorID  string
-	Timestamp time.Time
-	Nodes     []CodeNode
-	Edges     []CodeEdge
+	Hash             string
+	Message          string
+	MessageEmbedding []float32
+	AuthorID         string
+	Timestamp        time.Time
+	Nodes            []CodeNode
+	Edges            []CodeEdge
 }
 
 // CodeNode represents a semantic symbol (Function, Class) in the Code Property Graph.
 type CodeNode struct {
-	ID              string
-	FilePath        string
-	SymbolName      string
-	NodeType        string
-	Content         string
-	ValidFromCommit string
-	ValidToCommit   *string // nil if still active
+	ID               string
+	FilePath         string
+	SymbolName       string
+	NodeType         string
+	Content          string
+	ContentEmbedding []float32
+	ValidFromCommit  string
+	ValidToCommit    *string // nil if still active
 }
 
 // CodeEdge represents a relationship between code nodes (e.g., EVOLVED_FROM, CALLS).
@@ -63,6 +67,7 @@ type CodeEdge struct {
 type InsightData struct {
 	ID       string
 	Content  string
+	Embedding []float32
 	AuthorID string
 }
 

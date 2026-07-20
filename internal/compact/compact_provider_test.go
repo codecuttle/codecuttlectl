@@ -99,7 +99,7 @@ func TestCompactProviderIfNeeded_AlwaysCompactsWhenZeroPercent(t *testing.T) {
 	cfg := SmallModelConfig() // MaxContextPercent: 0.0, PreserveRecentTurns: 2
 
 	// With 0 tokens and 0 window, it should still compact because MaxContextPercent is 0
-	result, compacted := CompactProviderIfNeeded(messages, 3, 0, 0, cfg)
+	result, compacted, _ := CompactProviderIfNeeded(messages, 3, 0, 0, cfg)
 	if !compacted {
 		t.Error("expected compaction to occur when MaxContextPercent is 0")
 	}
