@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/golang"
@@ -155,7 +158,8 @@ func (t *opticIngestTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 				symEmb = make([]float32, 768) // Fallback if API fails
 			}
 
-			nodeID := fmt.Sprintf("%s_%s_%d", params.CommitHash, file, i)
+			nodeIDStr := fmt.Sprintf("%s_%s_%d", params.CommitHash, file, i)
+			nodeID := uuid.NewMD5(uuid.NameSpaceOID, []byte(nodeIDStr)).String()
 			commitData.Nodes = append(commitData.Nodes, opticlobe.CodeNode{
 				ID:               nodeID,
 				FilePath:         file,
@@ -167,7 +171,16 @@ func (t *opticIngestTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 			})
 			
 			// If we tracked lineage, we'd add an EVOLVED_FROM edge here.
-			// commitData.Edges = append(commitData.Edges, opticlobe.CodeEdge{...})
+			if i > 0 {
+				prevIDStr := fmt.Sprintf("%s_%s_%d", params.CommitHash, file, i-1)
+				prevID := uuid.NewMD5(uuid.NameSpaceOID, []byte(prevIDStr)).String()
+				commitData.Edges = append(commitData.Edges, opticlobe.CodeEdge{
+					FromNodeID: prevID,
+					ToNodeID:   nodeID,
+					Label:      "EVOLVED_FROM",
+					CommitHash: params.CommitHash,
+				})
+			}
 		}
 	}
 
@@ -195,6 +208,10 @@ func (t *opticIngestTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "test" {
+		runTest()
+		return
+	}
 	pluginkit.Serve(&opticIngestTool{})
 }
 

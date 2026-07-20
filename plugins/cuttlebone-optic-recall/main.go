@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
@@ -121,6 +122,10 @@ func (t *opticRecallTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "test" {
+		runTest()
+		return
+	}
 	pluginkit.Serve(&opticRecallTool{})
 }
 
