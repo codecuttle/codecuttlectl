@@ -32,7 +32,7 @@ func TestLocalOpticStore(t *testing.T) {
 	}
 
 	// Test RecallContext
-	chunks, err := store.RecallContext(ctx, "query", RecallFilter{})
+	chunks, err := store.RecallContext(ctx, "query", make([]float32, 1536), RecallFilter{})
 	if err != nil {
 		t.Errorf("RecallContext failed: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestLocalOpticStore(t *testing.T) {
 	}
 
 	// Test RecordAudit
-	err = store.RecordAudit(ctx, "test_action", map[string]interface{}{})
+	err = store.RecordAudit(nil, "session_123", "test_action", map[string]interface{}{})
 	if err != nil {
 		t.Errorf("RecordAudit failed: %v", err)
 	}
@@ -78,28 +78,43 @@ func TestPostgresOpticStore(t *testing.T) {
 	defer cancel()
 
 	// Test Stubs
-	err = store.IngestCommit(ctx, "repo_123", CommitData{})
+	// Use valid UUIDs for PostgreSQL tests to avoid 22P02 errors
+	dummyRepoUUID := "123e4567-e89b-12d3-a456-426614174000"
+	dummyWorkspaceUUID := "223e4567-e89b-12d3-a456-426614174001"
+
+	err = store.IngestCommit(ctx, dummyRepoUUID, CommitData{
+		Hash: "mockhash123", 
+		AuthorID: "323e4567-e89b-12d3-a456-426614174002", // Add dummy author id
+		Timestamp: time.Now(),
+	})
 	if err != nil {
 		t.Errorf("IngestCommit failed: %v", err)
 	}
 
-	id, err := store.AddInsight(ctx, "workspace_123", InsightData{})
+	id, err := store.AddInsight(ctx, dummyWorkspaceUUID, InsightData{
+		Content: "mock insight",
+		AuthorID: "323e4567-e89b-12d3-a456-426614174002", // Add dummy author id
+	})
 	if err != nil {
 		t.Errorf("AddInsight failed: %v", err)
 	}
-	if id != "" {
-		t.Errorf("Expected empty ID from postgres store stub, got %v", id)
+	if id == "" {
+		t.Errorf("Expected valid UUID from postgres store, got empty")
 	}
 
-	chunks, err := store.RecallContext(ctx, "query", RecallFilter{})
+	chunks, err := store.RecallContext(ctx, "query", make([]float32, 1536), RecallFilter{
+		RepositoryID: dummyRepoUUID,
+		MaxHops: 2,
+		Limit: 5,
+	})
 	if err != nil {
 		t.Errorf("RecallContext failed: %v", err)
 	}
-	if chunks == nil {
-		t.Errorf("Expected empty slice of chunks from postgres store stub, got nil")
+	if len(chunks) != 0 {
+		t.Errorf("Expected empty slice of chunks from postgres store stub, got %v", chunks)
 	}
 
-	err = store.RecordAudit(ctx, "test_action", map[string]interface{}{})
+	err = store.RecordAudit(nil, "session_123", "test_action", map[string]interface{}{})
 	if err != nil {
 		t.Errorf("RecordAudit failed: %v", err)
 	}
