@@ -14,7 +14,9 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/invopop/jsonschema v0.14.0
+	github.com/lib/pq v1.12.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.44.0
 	google.golang.org/genai v1.60.0
@@ -67,7 +69,6 @@ require (
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
-	github.com/lib/pq v1.12.3 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

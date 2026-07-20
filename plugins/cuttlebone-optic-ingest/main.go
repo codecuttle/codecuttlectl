@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/golang"
+	"github.com/smacker/go-tree-sitter/python"
 
 	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/pluginkit"
@@ -33,6 +38,38 @@ func (t *opticIngestTool) Describe(ctx context.Context) (*pb.DescribeResponse, e
 	}, nil
 }
 
+// extractSymbols is a scaffold for using tree-sitter to parse code into semantic blocks.
+func extractSymbols(code []byte, lang string) ([]string, error) {
+	parser := sitter.NewParser()
+	
+	switch lang {
+	case "go":
+		parser.SetLanguage(golang.GetLanguage())
+	case "python":
+		parser.SetLanguage(python.GetLanguage())
+	default:
+		return nil, fmt.Errorf("unsupported language: %s", lang)
+	}
+
+	tree, err := parser.ParseCtx(context.Background(), nil, code)
+	if err != nil {
+		return nil, err
+	}
+
+	// This is a minimal scaffold. A full implementation would use Tree-sitter queries 
+	// (*.scm files) to capture specific nodes like function_declaration or class_definition.
+	var symbols []string
+	root := tree.RootNode()
+	for i := 0; i < int(root.ChildCount()); i++ {
+		child := root.Child(i)
+		if strings.Contains(child.Type(), "function") || strings.Contains(child.Type(), "class") {
+			symbols = append(symbols, child.Type())
+		}
+	}
+
+	return symbols, nil
+}
+
 func (t *opticIngestTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
 	var params opticIngestInput
 	if err := json.Unmarshal([]byte(req.Input), &params); err != nil {
@@ -49,11 +86,15 @@ func (t *opticIngestTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (
 		}, nil
 	}
 
-	// TODO: Initialize connection to OpticStore, parse Tree-sitter diffs, and insert into DB.
-	// For now, this is a stub.
+	// TODO: Connect to OpticStore
+	// 1. Run `git diff-tree -r --no-commit-id --name-only <commit_hash>` to find changed files
+	// 2. Extract contents of changed files using `git show <commit_hash>:<file>`
+	// 3. For each file, run `extractSymbols` using Tree-sitter to find semantic AST blocks
+	// 4. Construct `opticlobe.CommitData` with AST `CodeNode`s and `EVOLVED_FROM` edges.
+	// 5. Store.IngestCommit(ctx, params.RepoID, commitData)
 
 	return &pb.ExecuteResponse{
-		Output: fmt.Sprintf("Successfully ingested commit %s into Optic Lobe for repo %s (STUB)", params.CommitHash, params.RepoID),
+		Output: fmt.Sprintf("Successfully processed commit %s using Tree-sitter for repo %s (STUB: connection and diff algorithms pending)", params.CommitHash, params.RepoID),
 	}, nil
 }
 
