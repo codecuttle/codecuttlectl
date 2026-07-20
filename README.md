@@ -76,14 +76,14 @@ Named after cephalopod neurology. A cuttlefish distributes 60% of its neurons in
 | **Swarm Orchestration** — multi-agent routing via YAML Morphologies | Done |
 | **Swarm Backlog** — parallel async delegation via Headless Agents | Done |
 | **Chromatophore Engine** — Chomsky hierarchy routing | Planned |
-| **Optic Lobe** — PostgreSQL + pgvector + AGE memory | Planned |
+| **Optic Lobe** — PostgreSQL + pgvector + Recursive CTEs (polyfilling SQL/PGQ) memory | Implemented |
 | **Arm Nodes** — edge inference agents | Planned |
 
 ## Tools
 
-17 total (12 plugin, 5 built-in):
+21 total (16 plugin, 5 built-in):
 
-`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `websearch` `webfetch` `github` `todo_manage` `tool_info` `get_skill` `scaffold_plugin` `reload_plugins`
+`read_file` `write_file` `edit_file` `list_directory` `bash_exec` `grep` `glob` `git` `go_skills` `websearch` `webfetch` `github` `todo_manage` `tool_info` `get_skill` `scaffold_plugin` `reload_plugins` `handoff` `quant_analysis` `optic_ingest` `optic_recall`
 
 ## Plugins
 
@@ -135,7 +135,7 @@ A background keepalive ping fires every 4 minutes during idle to prevent the 5-m
 
 - Multi-model routing (Haiku/Sonnet for auxiliary tasks — [design doc](docs/multi-model-design.md), PR #25 ready)
 - Chomsky routing (dynamic complexity classification — depends on multi-model)
-- Optic Lobe (cross-session semantic memory)
+- Optic Lobe (cross-session semantic memory) - Partially complete, foundation built.
 - Work Backlog (cross-session deferred intent queue — [design doc](docs/backlog.md), Phase 1 done)
 - Fleet telemetry (OpenTelemetry — Phase 10 of [streaming doc](docs/streaming-tool-telemetry.md))
 - Self-evolving harness (outer loop from execution traces)

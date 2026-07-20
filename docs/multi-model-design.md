@@ -1,3 +1,5 @@
+> Status: **Superseded.** This design has been replaced by [Swarm Morphologies](swarm-morphologies.md).
+
 # Multi-Model Support
 
 ## Overview

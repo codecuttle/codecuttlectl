@@ -1,3 +1,5 @@
+> Status: **Superseded.** This design has been replaced by [Swarm Morphologies](swarm-morphologies.md).
+
 # Generic Model Pool Design
 
 ## Overview

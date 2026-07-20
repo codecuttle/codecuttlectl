@@ -33,6 +33,8 @@ graph TD
     PluginMgr --> |gRPC over Unix socket| P11[cuttlebone-web-search]
     PluginMgr --> |gRPC over Unix socket| P12[cuttlebone-go-skills]
     PluginMgr --> |gRPC over Unix socket| P13[cuttlebone-quant]
+    PluginMgr --> |gRPC over Unix socket| P14[cuttlebone-optic-ingest]
+    PluginMgr --> |gRPC over Unix socket| P15[cuttlebone-optic-recall]
 
     Bedrock --> |Stream Events| Agent
     Agent --> |Tool Results| Bedrock
@@ -55,6 +57,8 @@ graph TD
         P11
         P12
         P13
+        P14
+        P15
     end
 ```
 
@@ -227,7 +231,7 @@ The architecture draws from cephalopod biology:
 | **Cuttlebone Substrate** | Rigid internal shell providing compressive strength | Compiled protobuf + gRPC layer enforcing type safety |
 | **Inkwell** | Ink sac defense mechanism | Diagnostic capture and error analysis cache |
 | **Chromatophore Engine** | Pigment cells enabling rapid color change | (Future) Dynamic complexity routing via Chomsky Hierarchy |
-| **Optic Lobe** | Multi-dimensional visual processing center | (Future) PostgreSQL + pgvector + AGE hybrid memory |
+| **Optic Lobe** | Multi-dimensional visual processing center | PostgreSQL + pgvector + Recursive CTEs hybrid memory |
 | **Stellate Ganglion** | Peripheral motor center bypassing the brain | Raw bash/shell fallback when structured tools fail |
 | **Arm Nodes** | Distributed neural clusters in tentacles | (Future) Edge-localized lightweight inference agents |
 
