@@ -58,6 +58,7 @@ func main() {
 		// Safety
 		autoApprove = flag.Bool("auto-approve", false, "Skip confirmation prompts for destructive operations (use in automated pipelines)")
 		auditLog    = flag.Bool("audit-log", false, "Emit structured JSON audit events to stderr")
+		opticLobeURI = flag.String("optic-lobe-uri", "", "PostgreSQL connection string for the Optic Lobe knowledge graph. If omitted, uses local fallback.")
 	)
 	flag.Parse()
 
