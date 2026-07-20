@@ -5,18 +5,19 @@ services:
     # We use a pgvector image geared towards PostgreSQL 19, 
     # which has native SQL/PGQ (Property Graph Queries) support.
     # Note: Using a standard placeholder tag for PG19 + pgvector.
-    image: pgvector/pgvector:pg19
+    image: pgvector/pgvector:pg16
     container_name: codecuttlectl-optic-lobe
     environment:
       - POSTGRES_USER=codecuttle
       - POSTGRES_PASSWORD=codecuttle_dev_pass
       - POSTGRES_DB=optic_lobe
     ports:
-      - "5432:5432"
+      - "5439:5432"
     volumes:
       - optic_lobe_data:/var/lib/postgresql/data
       # Mount initialization scripts for extensions and baseline schema
-      - ./scripts/init-optic-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./scripts/init-optic-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./scripts/schema-optic-lobe.sql:/docker-entrypoint-initdb.d/02-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U codecuttle -d optic_lobe"]
       interval: 5s
