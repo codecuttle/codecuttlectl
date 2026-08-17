@@ -80,8 +80,9 @@ codecuttlectl --provider=openrouter --model=qwen/qwen3.8-max
 # Auto-detect from model prefix
 codecuttlectl --model=openrouter:openai/gpt-4o
 
-# Force Zero Data Retention (ZDR)
-codecuttlectl --model=openrouter:anthropic/claude-3.5-sonnet --openrouter-zdr
+# Zero Data Retention (ZDR) is enabled by default to protect codebase privacy.
+# To explicitly allow data collection (e.g., to use cheaper non-ZDR endpoints):
+codecuttlectl --model=openrouter:anthropic/claude-3.5-sonnet --openrouter-zdr=false
 
 # Auto-fallback if primary model fails (Zero-Completion Insurance)
 codecuttlectl --model=openrouter:deepseek/deepseek-coder --openrouter-fallbacks="anthropic/claude-3-5-sonnet,openai/gpt-4o"
@@ -90,7 +91,7 @@ codecuttlectl --model=openrouter:deepseek/deepseek-coder --openrouter-fallbacks=
 Requires the `OPENROUTER_API_KEY` environment variable. If not set, codecuttlectl will securely prompt for it and save it to the system keyring (or local fallback credentials file on headless servers).
 
 **Features exclusive to OpenRouter:**
-- **Zero Data Retention (ZDR):** When the `--openrouter-zdr` flag is passed (or automatically triggered when context payloads exceed 10,000 tokens), `codecuttlectl` passes the `provider.zdr = true` and `provider.data_collection = "deny"` parameters. OpenRouter will only route these requests to models/endpoints that legally guarantee no data logging or training.
+- **Zero Data Retention (ZDR):** Enabled by default to protect codebase privacy. `codecuttlectl` passes the `provider.zdr = true` and `provider.data_collection = "deny"` parameters. OpenRouter will only route these requests to models/endpoints that legally guarantee no data logging or training. You can disable this by passing `--openrouter-zdr=false`.
 - **Model Fallbacks:** By providing a comma-separated list of models via `--openrouter-fallbacks`, `codecuttlectl` sends an array of models. If the primary model fails (5xx or 429), OpenRouter will seamlessly cascade to the next model without hanging your Swarm execution loops.
 - **App Attribution:** Automatically sends attribution headers so token usage can be visualized in your OpenRouter dashboard.
 

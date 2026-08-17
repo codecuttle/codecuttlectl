@@ -40,7 +40,7 @@ func main() {
 		providerF            = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', 'ollama', or 'openrouter'")
 		ollamaURL            = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
 		openrouterURL        = flag.String("openrouter-url", "", "OpenRouter server URL (default: https://openrouter.ai/api/v1)")
-		openrouterZDR        = flag.Bool("openrouter-zdr", false, "Force Zero Data Retention on OpenRouter requests")
+		openrouterZDR        = flag.Bool("openrouter-zdr", true, "Enable Zero Data Retention (ZDR) on OpenRouter requests (default true, use --openrouter-zdr=false to disable)")
 		openrouterFallbacks  = flag.String("openrouter-fallbacks", "", "Comma-separated list of fallback models for OpenRouter")
 		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
 		morphPath            = flag.String("morph", "", "Path to a Swarm Morphology YAML file (overrides model/provider flags)")

@@ -108,26 +108,15 @@ func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 		oaiReq.Models = c.fallbacks
 	}
 
-	// Estimate tokens for ZDR based on message text length (~4 chars per token)
-	estimatedTokens := 0
-	for _, msg := range req.Messages {
-		for _, block := range msg.Content {
-			switch b := block.(type) {
-			case provider.TextBlock:
-				estimatedTokens += len(b.Text) / 4
-			case provider.ToolResultBlock:
-				estimatedTokens += len(b.Content) / 4
-			}
-		}
-	}
+	// Set up provider preferences if needed
+	if c.enforceZDR || len(c.fallbacks) > 0 {
+		oaiReq.Provider = &ProviderPrefs{}
 
-	// Apply ZDR automatically for large contexts, or if explicitly requested
-	needsZDR := c.enforceZDR || estimatedTokens > 10000
-	if needsZDR || len(c.fallbacks) > 0 {
-		oaiReq.Provider = &ProviderPrefs{
-			AllowFallbacks: true, // Enable automatic OpenRouter fallbacks
+		if len(c.fallbacks) > 0 {
+			oaiReq.Provider.AllowFallbacks = true
 		}
-		if needsZDR {
+
+		if c.enforceZDR {
 			oaiReq.Provider.ZDR = true
 			oaiReq.Provider.DataCollection = "deny"
 		}
