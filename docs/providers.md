@@ -41,7 +41,7 @@ codecuttlectl --model ollama:deepseek-coder-v2:16b
 **How it works:**
 - Uses Ollama's OpenAI-compatible `/v1/chat/completions` endpoint
 - Supports streaming (SSE), tool calling, and reasoning/thinking
-- Context window auto-discovered from Ollama's `/api/show` endpoint
+- **Context window auto-discovered from Ollama's `/api/show` endpoint
 - Token usage reported via `stream_options.include_usage`
 
 **TUI differences for local models:**
@@ -68,6 +68,31 @@ Local models have smaller parameter counts and benefit from additional harness s
 2. **Auto-Planning** — The harness extracts plans from the model's natural-language output (numbered lists, bullet points with action verbs) and automatically populates the task panel without requiring the model to call `todo_manage`.
 
 3. **Read-Only Grounding** — System prompt explicitly instructs models not to implement features found in design docs or backlogs when performing exploratory tasks.
+
+## OpenRouter
+
+Use OpenRouter to access hundreds of AI models via a single API with automatic model fallbacks and Zero Data Retention (ZDR) capabilities for codebase privacy.
+
+```bash
+# Explicit provider flag
+codecuttlectl --provider=openrouter --model=alibaba/qwen3.8-max
+
+# Auto-detect from model prefix
+codecuttlectl --model=openrouter:openai/gpt-4o
+
+# Force Zero Data Retention (ZDR)
+codecuttlectl --model=openrouter:anthropic/claude-3.5-sonnet --openrouter-zdr
+
+# Auto-fallback if primary model fails (Zero-Completion Insurance)
+codecuttlectl --model=openrouter:deepseek/deepseek-coder --openrouter-fallbacks="anthropic/claude-3-5-sonnet,openai/gpt-4o"
+```
+
+Requires the `OPENROUTER_API_KEY` environment variable. If not set, codecuttlectl will securely prompt for it and save it to the system keyring (or local fallback credentials file on headless servers).
+
+**Features exclusive to OpenRouter:**
+- **Zero Data Retention (ZDR):** When the `--openrouter-zdr` flag is passed (or automatically triggered when context payloads exceed 10,000 tokens), `codecuttlectl` passes the `provider.zdr = true` and `provider.data_collection = "deny"` parameters. OpenRouter will only route these requests to models/endpoints that legally guarantee no data logging or training.
+- **Model Fallbacks:** By providing a comma-separated list of models via `--openrouter-fallbacks`, `codecuttlectl` sends an array of models. If the primary model fails (5xx or 429), OpenRouter will seamlessly cascade to the next model without hanging your Swarm execution loops.
+- **App Attribution:** Automatically sends attribution headers so token usage can be visualized in your OpenRouter dashboard.
 
 ## Google AI (Gemini)
 
@@ -161,7 +186,6 @@ The provider abstraction lives in `internal/provider/`. Adding a new provider re
 
 Candidates for future integration:
 - **Anthropic API** (direct, non-Bedrock)
-- **OpenAI** (GPT-4o, o1)
 - **vLLM** (self-hosted inference servers)
 - **LM Studio** (OpenAI-compatible local servers)
 
