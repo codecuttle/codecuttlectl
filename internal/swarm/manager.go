@@ -10,7 +10,7 @@ import (
 type Manager struct {
 	morph      *Morphology
 	dispatcher EventDispatcher
-	
+
 	// worker semaphores per NodeID
 	semaphores map[string]chan struct{}
 	mu         sync.Mutex
@@ -19,7 +19,7 @@ type Manager struct {
 // NewManager creates a new swarm manager configured with the given morphology.
 func NewManager(morph *Morphology, dispatcher EventDispatcher) *Manager {
 	semaphores := make(map[string]chan struct{})
-	
+
 	// Initialize a semaphore for each node based on its MaxConcurrency.
 	if morph != nil {
 		for nodeID, node := range morph.Nodes {
@@ -31,7 +31,7 @@ func NewManager(morph *Morphology, dispatcher EventDispatcher) *Manager {
 			semaphores[nodeID] = make(chan struct{}, concurrency)
 		}
 	}
-	
+
 	return &Manager{
 		morph:      morph,
 		dispatcher: dispatcher,
@@ -60,7 +60,7 @@ func (m *Manager) Submit(taskID, assignee string, run func()) error {
 			// Release the worker token when done
 			<-sem
 		}()
-		
+
 		// Let the main thread know we started
 		if m.dispatcher != nil {
 			m.dispatcher.Dispatch(TaskStartedMsg{
@@ -68,9 +68,9 @@ func (m *Manager) Submit(taskID, assignee string, run func()) error {
 				Assignee: assignee,
 			})
 		}
-		
+
 		run()
 	}()
-	
+
 	return nil
 }

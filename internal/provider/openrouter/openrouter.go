@@ -13,21 +13,21 @@ import (
 
 // Client implements provider.Provider for OpenRouter.
 type Client struct {
-	baseURL       string
-	model         string
-	fallbacks     []string
-	enforceZDR    bool
-	apiKey        string
-	httpClient    *http.Client
+	baseURL    string
+	model      string
+	fallbacks  []string
+	enforceZDR bool
+	apiKey     string
+	httpClient *http.Client
 }
 
 // Config holds configuration for creating an OpenRouter client.
 type Config struct {
-	BaseURL    string // Optional, defaults to "https://openrouter.ai/api/v1"
-	Model      string // Primary model (e.g. "alibaba/qwen3.8-max")
+	BaseURL    string   // Optional, defaults to "https://openrouter.ai/api/v1"
+	Model      string   // Primary model (e.g. "qwen/qwen3.8-max")
 	Fallbacks  []string // Optional fallback models
-	EnforceZDR bool // If true, strictly route to ZDR-compliant endpoints
-	APIKey     string // Required
+	EnforceZDR bool     // If true, strictly route to ZDR-compliant endpoints
+	APIKey     string   // Required
 }
 
 // New creates a new OpenRouter provider client.
@@ -105,11 +105,24 @@ func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 
 	// Add fallbacks if configured
 	if len(c.fallbacks) > 0 {
-		oaiReq.Models = append([]string{c.model}, c.fallbacks...)
+		oaiReq.Models = c.fallbacks
+	}
+
+	// Estimate tokens for ZDR based on message text length (~4 chars per token)
+	estimatedTokens := 0
+	for _, msg := range req.Messages {
+		for _, block := range msg.Content {
+			switch b := block.(type) {
+			case provider.TextBlock:
+				estimatedTokens += len(b.Text) / 4
+			case provider.ToolResultBlock:
+				estimatedTokens += len(b.Content) / 4
+			}
+		}
 	}
 
 	// Apply ZDR automatically for large contexts, or if explicitly requested
-	needsZDR := c.enforceZDR || len(req.Messages) > 10000
+	needsZDR := c.enforceZDR || estimatedTokens > 10000
 	if needsZDR || len(c.fallbacks) > 0 {
 		oaiReq.Provider = &ProviderPrefs{
 			AllowFallbacks: true, // Enable automatic OpenRouter fallbacks
@@ -171,7 +184,7 @@ func (c *Client) doRequest(ctx context.Context, body []byte) (io.ReadCloser, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	
+
 	// OpenRouter specific App Attribution Headers
 	httpReq.Header.Set("HTTP-Referer", "https://github.com/codecuttle/codecuttlectl")
 	httpReq.Header.Set("X-OpenRouter-Title", "codecuttlectl")

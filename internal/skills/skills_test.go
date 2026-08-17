@@ -104,7 +104,7 @@ func TestMatchAlways(t *testing.T) {
 
 func TestMatchOnErrorSpecific(t *testing.T) {
 	te := ParseTrigger("on_error:compile")
-	
+
 	ctx := Context{RecentErrors: []string{"compile"}}
 	if !te.Matches(ctx) {
 		t.Error("on_error:compile should match when compile error present")

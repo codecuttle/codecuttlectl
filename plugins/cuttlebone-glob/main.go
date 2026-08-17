@@ -26,11 +26,11 @@ type globInput struct {
 
 func (t *globTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
-		Name:        "glob",
-		Description: "Find files matching a glob pattern. Supports patterns like '**/*.go', 'src/**/*.ts', '*.md'. Returns matching file paths sorted by modification time (most recent first).",
-		InputSchema: schema.MustSchema(&globInput{}),
+		Name:           "glob",
+		Description:    "Find files matching a glob pattern. Supports patterns like '**/*.go', 'src/**/*.ts', '*.md'. Returns matching file paths sorted by modification time (most recent first).",
+		InputSchema:    schema.MustSchema(&globInput{}),
 		LlmContextHint: "Use glob to find files by name pattern before reading or editing them. Useful for discovering project structure, finding config files, or locating all files of a specific type.",
-		Version:     "1.0.0",
+		Version:        "1.0.0",
 		CommandPatterns: []string{
 			"find *",
 		},

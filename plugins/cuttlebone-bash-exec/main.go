@@ -80,7 +80,7 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 
 		if attempts <= maxMisuseBlocks {
 			return &pb.ExecuteResponse{
-				IsError:      true,
+				IsError: true,
 				ErrorMessage: fmt.Sprintf("TOOL DISCIPLINE (attempt %d/%d): %s\n\nThe command was NOT executed. Use the appropriate tool instead. After %d failed attempts, the command will be allowed through.",
 					attempts, maxMisuseBlocks, warning, maxMisuseBlocks),
 				Metadata: map[string]string{

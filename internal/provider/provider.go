@@ -75,9 +75,9 @@ func (ReasoningBlock) contentBlock() {}
 
 // ToolUseBlock represents a tool call from the model.
 type ToolUseBlock struct {
-	ToolUseID      string
-	Name           string
-	Input          json.RawMessage
+	ToolUseID string
+	Name      string
+	Input     json.RawMessage
 	// ThoughtSignature is an opaque signature from Gemini 3 models that must be
 	// passed back in conversation history for function calling to work correctly.
 	// Only the first function call in a parallel set will have this populated.
@@ -121,10 +121,10 @@ type ToolUseRequest struct {
 
 // Usage reports token consumption.
 type Usage struct {
-	InputTokens       int32
-	OutputTokens      int32
-	CacheReadTokens   int32
-	CacheWriteTokens  int32
+	InputTokens      int32
+	OutputTokens     int32
+	CacheReadTokens  int32
+	CacheWriteTokens int32
 }
 
 // --- Stream Events ---
@@ -157,8 +157,8 @@ func (ReasoningSignatureEvent) streamEvent() {}
 
 // ToolUseStartEvent is emitted when the model begins a tool call.
 type ToolUseStartEvent struct {
-	ToolUseID        string
-	Name             string
+	ToolUseID string
+	Name      string
 	// ThoughtSignature is the opaque Gemini 3 thought signature attached to this
 	// function call. Must be preserved and sent back in conversation history.
 	ThoughtSignature string
@@ -187,10 +187,10 @@ func (MessageStopEvent) streamEvent() {}
 
 // UsageEvent reports token consumption during streaming.
 type UsageEvent struct {
-	InputTokens       int32
-	OutputTokens      int32
-	CacheReadTokens   int32
-	CacheWriteTokens  int32
+	InputTokens      int32
+	OutputTokens     int32
+	CacheReadTokens  int32
+	CacheWriteTokens int32
 }
 
 func (UsageEvent) streamEvent() {}

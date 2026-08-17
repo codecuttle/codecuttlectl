@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codecuttle/codecuttlectl/internal/todo"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
 func TestIsToolAllowed(t *testing.T) {
@@ -44,11 +44,11 @@ func TestExecuteTool_SandboxEnforcement(t *testing.T) {
 	// But let's check a built-in that IS allowed, or just observe the error message.
 	// Actually, if it's rejected by sandbox, we get a specific error string.
 	res, status := agent.executeTool(context.Background(), "bash_exec", json.RawMessage(`{}`))
-	
+
 	if status != types.ToolResultStatusError {
 		t.Errorf("expected error status for unauthorized tool, got %v", status)
 	}
-	
+
 	if !strings.Contains(res, "not authorized in this node's workbench") {
 		t.Errorf("expected sandbox error message, got: %v", res)
 	}
@@ -58,7 +58,7 @@ func TestExecuteTool_SandboxEnforcement(t *testing.T) {
 	// Let's use a built-in tool that is allowed, like "todo_manage", by adding it to workbench.
 	agent.workbench = append(agent.workbench, "todo_manage")
 	res, status = agent.executeTool(context.Background(), "todo_manage", json.RawMessage(`{"todos":[]}`))
-	
+
 	if strings.Contains(res, "not authorized") {
 		t.Errorf("did not expect sandbox error for authorized tool, got: %v", res)
 	}

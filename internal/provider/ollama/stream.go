@@ -18,10 +18,10 @@ func parseSSEStream(body io.Reader, events chan<- provider.StreamEvent) {
 
 	// Track active tool calls by index for multi-tool streaming.
 	type activeToolCall struct {
-		id       string
-		name     string
-		argsBuf  strings.Builder
-		started  bool
+		id      string
+		name    string
+		argsBuf strings.Builder
+		started bool
 	}
 	toolCalls := make(map[int]*activeToolCall)
 

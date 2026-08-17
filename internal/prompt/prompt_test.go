@@ -18,8 +18,8 @@ func TestNewManager(t *testing.T) {
 
 	// Check that known prompts are present
 	found := map[string]bool{
-		"system/default.md":        false,
-		"system/coding.md":         false,
+		"system/default.md":         false,
+		"system/coding.md":          false,
 		"tools/tool_definitions.md": false,
 	}
 	for _, name := range prompts {

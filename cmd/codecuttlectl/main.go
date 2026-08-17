@@ -21,10 +21,10 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
+	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	googleprov "github.com/codecuttle/codecuttlectl/internal/provider/google"
 	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
 	"github.com/codecuttle/codecuttlectl/internal/provider/openrouter"
-	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/swarm"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
@@ -155,7 +155,9 @@ func main() {
 				}
 				var fallbacks []string
 				if *openrouterFallbacks != "" {
-					fallbacks = strings.Split(*openrouterFallbacks, ",")
+					for _, f := range strings.Split(*openrouterFallbacks, ",") {
+						fallbacks = append(fallbacks, strings.TrimSpace(f))
+					}
 				}
 				return openrouter.New(openrouter.Config{
 					BaseURL:    *openrouterURL,
@@ -200,10 +202,10 @@ func main() {
 		}
 
 		genericPool = pool
-		
+
 		// Map genericPool to legacy components for smooth transition
 		llmProvider = pool.Primary()
-		
+
 		if *verbose {
 			fmt.Fprintf(os.Stderr, "[swarm] morphology loaded: %s (%s)\n", morph.Name, morph.Presentation)
 			fmt.Fprintf(os.Stderr, "[swarm] primary node=%s\n", pool.Info("primary").DisplayName)
@@ -239,7 +241,9 @@ func main() {
 			}
 			var fallbacks []string
 			if *openrouterFallbacks != "" {
-				fallbacks = strings.Split(*openrouterFallbacks, ",")
+				for _, f := range strings.Split(*openrouterFallbacks, ",") {
+					fallbacks = append(fallbacks, strings.TrimSpace(f))
+				}
 			}
 			orClient := openrouter.New(openrouter.Config{
 				BaseURL:    *openrouterURL,

@@ -88,7 +88,7 @@ func (p *Pool) Info(role string) provider.PoolModelInfo {
 func (p *Pool) EstimateCost(role string, input, output, cacheRead, cacheWrite int64) float64 {
 	nodeID := p.roleToNodeID(role)
 	prov := p.providers[nodeID]
-	
+
 	if ce, ok := prov.(provider.CostEstimator); ok {
 		return ce.EstimateCost(provider.Usage{
 			InputTokens:      int32(input),

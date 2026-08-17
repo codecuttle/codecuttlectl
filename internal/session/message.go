@@ -13,7 +13,7 @@ import (
 // Message is the JSON-serializable representation of a conversation message.
 // It provides a clean round-trip between Bedrock SDK types and persistent storage.
 type Message struct {
-	Role   string        `json:"role"`   // "user", "assistant"
+	Role   string        `json:"role"` // "user", "assistant"
 	Blocks []ContentItem `json:"blocks"`
 }
 
@@ -36,8 +36,8 @@ type ContentItem struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 
 	// For Type=="tool_result": the execution result
-	Content   string `json:"content,omitempty"`   // Result text
-	Status    string `json:"status,omitempty"`    // "success" or "error"
+	Content   string `json:"content,omitempty"`    // Result text
+	Status    string `json:"status,omitempty"`     // "success" or "error"
 	ResultFor string `json:"result_for,omitempty"` // ToolUseID this result corresponds to
 }
 

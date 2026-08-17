@@ -60,8 +60,8 @@ type Agent struct {
 	dirty     bool // true when state needs flushing to disk
 
 	// Sandbox
-	workbench []string
-	morph     *swarm.Morphology
+	workbench  []string
+	morph      *swarm.Morphology
 	activeNode string
 	dispatcher swarm.EventDispatcher
 }
@@ -90,7 +90,7 @@ type Config struct {
 	// Session persistence (optional — nil disables persistence)
 	Store     session.Store
 	SessionID string // If set, resume this session
-	
+
 	// Swarm Dispatcher
 	EventDispatcher swarm.EventDispatcher // Dispatches async events to TUI
 }
@@ -135,16 +135,16 @@ func NewAgent(cfg Config) (*Agent, error) {
 		var err error
 		provName := "bedrock"
 		if cfg.Provider != nil && cfg.Client == nil {
-			provName = "ollama" 
+			provName = "ollama"
 		}
-		
+
 		var modelID string
 		if cfg.Client != nil {
 			modelID = cfg.Client.ModelID()
 		} else {
 			modelID = cfg.Provider.ID()
 		}
-		
+
 		systemPrompt, err = cfg.PromptMgr.RenderSystem(cfg.WorkDir, modelID, provName, promptTools, swarmNodes)
 		if err != nil {
 			return nil, fmt.Errorf("rendering system prompt: %w", err)
@@ -750,19 +750,19 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 				Parameters:  prompt.SchemaToToolParams(def.InputSchema),
 			})
 		}
-		
+
 		var swarmNodes []string
 		for nodeID := range a.morph.Nodes {
 			if nodeID != payload.Target {
 				swarmNodes = append(swarmNodes, nodeID)
 			}
 		}
-		
+
 		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
 		if err != nil {
 			return fmt.Sprintf("Error rendering new system prompt for %q: %v", payload.Target, err), types.ToolResultStatusError
 		}
-		
+
 		if hints := a.pluginMgr.LLMHints(); hints != "" {
 			newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints
 		}
@@ -788,7 +788,7 @@ func (a *Agent) handleTodoTool(input json.RawMessage) string {
 	if err := json.Unmarshal(input, &payload); err != nil {
 		return fmt.Sprintf("Error parsing todo input: %v", err)
 	}
-	
+
 	// Prevent assigning tasks to nodes that do not exist
 	if a.morph != nil {
 		for _, item := range payload.Todos {
@@ -1456,7 +1456,7 @@ func (a *Agent) recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrit
 	if a.auditLogger != nil {
 		a.auditLogger.TokenUsage(a.sessionID, modelID, inputTokens, outputTokens, cacheRead, cacheWrite, a.turn, step)
 	}
-	
+
 	if a.dispatcher != nil {
 		a.dispatcher.Dispatch(swarm.TokenUsageMsg{
 			Assignee:              a.activeNode,

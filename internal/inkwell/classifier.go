@@ -4,9 +4,9 @@
 // corrective prompts to enable rapid self-healing.
 //
 // The Inkwell operates on three principles:
-//   1. Classify: Determine the nature and severity of each error
-//   2. Advise: Generate targeted corrective guidance based on error patterns
-//   3. Escalate: Detect looping failures and force strategy changes
+//  1. Classify: Determine the nature and severity of each error
+//  2. Advise: Generate targeted corrective guidance based on error patterns
+//  3. Escalate: Detect looping failures and force strategy changes
 package inkwell
 
 import (
@@ -35,13 +35,13 @@ const (
 
 // ClassifiedError holds a parsed error with structural metadata.
 type ClassifiedError struct {
-	Class       ErrorClass
-	Language    string // Detected language (go, python, typescript, rust, etc.)
-	File        string // File path if extractable
-	Line        int    // Line number if extractable
-	Message     string // Core error message
-	RawOutput   string // Full stderr/output
-	Suggestion  string // Machine-generated hint for the corrective prompt
+	Class      ErrorClass
+	Language   string // Detected language (go, python, typescript, rust, etc.)
+	File       string // File path if extractable
+	Line       int    // Line number if extractable
+	Message    string // Core error message
+	RawOutput  string // Full stderr/output
+	Suggestion string // Machine-generated hint for the corrective prompt
 }
 
 // Classify analyzes tool output and returns a structured error classification.
@@ -96,10 +96,10 @@ func detectLanguage(output string) string {
 }
 
 var (
-	goErrorPattern        = regexp.MustCompile(`(?m)^.+\.go:\d+:\d+:`)
+	goErrorPattern         = regexp.MustCompile(`(?m)^.+\.go:\d+:\d+:`)
 	pythonTracebackPattern = regexp.MustCompile(`(?m)^Traceback \(most recent call last\)|File ".+\.py", line \d+`)
-	tsErrorPattern        = regexp.MustCompile(`(?m)^.+\.tsx?:\d+:\d+ - error TS\d+:`)
-	rustErrorPattern      = regexp.MustCompile(`(?m)^error\[E\d+\]:`)
+	tsErrorPattern         = regexp.MustCompile(`(?m)^.+\.tsx?:\d+:\d+ - error TS\d+:`)
+	rustErrorPattern       = regexp.MustCompile(`(?m)^error\[E\d+\]:`)
 )
 
 // --- Go error parsing ---
@@ -256,7 +256,7 @@ type Diagnosis struct {
 	FailedFile       string // The file being repeatedly targeted
 	DominantClass    ErrorClass
 	RecentErrors     []ClassifiedError
-	ShouldEscalate   bool   // True if the reconciler should force a strategy change
+	ShouldEscalate   bool // True if the reconciler should force a strategy change
 	EscalationReason string
 }
 

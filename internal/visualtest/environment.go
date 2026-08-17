@@ -25,12 +25,12 @@ import (
 
 // Config controls the test environment setup.
 type Config struct {
-	Cols       int    // Terminal columns (default: 100)
-	Rows       int    // Terminal rows (default: 30)
-	FontSize   int    // Font size in pixels (default: 14)
-	C3Binary   string // Path to codecuttlectl (default: from env or /app/bin/codecuttlectl)
-	PluginDir  string // Path to plugins (default: from env or /app/bin/plugins)
-	FrameDir   string // Directory for captured frames (default: /tmp/frames)
+	Cols      int    // Terminal columns (default: 100)
+	Rows      int    // Terminal rows (default: 30)
+	FontSize  int    // Font size in pixels (default: 14)
+	C3Binary  string // Path to codecuttlectl (default: from env or /app/bin/codecuttlectl)
+	PluginDir string // Path to plugins (default: from env or /app/bin/plugins)
+	FrameDir  string // Directory for captured frames (default: /tmp/frames)
 }
 
 func (c *Config) defaults() {

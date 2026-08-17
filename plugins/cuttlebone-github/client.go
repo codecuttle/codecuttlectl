@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	githubAPIBase   = "https://api.github.com"
+	githubAPIBase    = "https://api.github.com"
 	githubAPIVersion = "2022-11-28"
 )
 

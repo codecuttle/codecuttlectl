@@ -20,10 +20,10 @@ type Config struct {
 // This allows users to use intuitive names like "gemini-3.1-flash" even when
 // the official API model name differs.
 var modelAliases = map[string]string{
-	"gemini-3.1-flash":     "gemini-3.1-flash-lite",
-	"gemini-3-flash":       "gemini-3-flash-preview",
-	"gemini-3-pro":         "gemini-3-pro-preview",
-	"gemini-3.1-pro":       "gemini-3.1-pro-preview",
+	"gemini-3.1-flash": "gemini-3.1-flash-lite",
+	"gemini-3-flash":   "gemini-3-flash-preview",
+	"gemini-3-pro":     "gemini-3-pro-preview",
+	"gemini-3.1-pro":   "gemini-3.1-pro-preview",
 }
 
 // resolveModel returns the canonical model name, resolving aliases.
@@ -187,7 +187,8 @@ func toGenAITools(tools []provider.ToolDefinition) []*genai.Tool {
 //     back on model turns for multi-turn function calling to work
 //
 // Our provider.Message history looks like:
-//   [user text] [assistant: text + tool_use blocks] [user: tool_result blocks] ...
+//
+//	[user text] [assistant: text + tool_use blocks] [user: tool_result blocks] ...
 //
 // This maps naturally to Gemini's expected format since BuildToolResultMessage
 // already creates user-role messages with ToolResultBlock content.

@@ -25,23 +25,23 @@ type SessionMeta struct {
 
 // Stats tracks aggregate metrics for a session.
 type Stats struct {
-	InputTokens            int32   `json:"input_tokens"`
-	OutputTokens           int32   `json:"output_tokens"`
-	CacheReadInputTokens   int32   `json:"cache_read_input_tokens"`
-	CacheWriteInputTokens  int32   `json:"cache_write_input_tokens"`
-	ToolCalls              int     `json:"tool_calls"`
-	Turns                  int     `json:"turns"`
-	EstimatedCostUSD       float64 `json:"estimated_cost_usd"`
+	InputTokens           int32   `json:"input_tokens"`
+	OutputTokens          int32   `json:"output_tokens"`
+	CacheReadInputTokens  int32   `json:"cache_read_input_tokens"`
+	CacheWriteInputTokens int32   `json:"cache_write_input_tokens"`
+	ToolCalls             int     `json:"tool_calls"`
+	Turns                 int     `json:"turns"`
+	EstimatedCostUSD      float64 `json:"estimated_cost_usd"`
 }
 
 // SessionState is the full persisted state of a session.
 // This is what gets serialized to disk and loaded on resume.
 type SessionState struct {
 	Meta         SessionMeta `json:"meta"`
-	Messages     []Message   `json:"messages"` // Serializable conversation history
-	Todos        []todo.Item `json:"todos"`    // Current task state
-	Inkwell      []InkEntry  `json:"inkwell"`  // Tool execution diagnostics
-	Audit        AuditTrail  `json:"audit"`    // Session-level governance/audit info
+	Messages     []Message   `json:"messages"`                // Serializable conversation history
+	Todos        []todo.Item `json:"todos"`                   // Current task state
+	Inkwell      []InkEntry  `json:"inkwell"`                 // Tool execution diagnostics
+	Audit        AuditTrail  `json:"audit"`                   // Session-level governance/audit info
 	DraftMessage string      `json:"draft_message,omitempty"` // Content being actively typed
 }
 
@@ -88,35 +88,35 @@ type AuditTrail struct {
 // contain full, unmodified I/O for audit and replay.
 type InkEntry struct {
 	// Identity & Timing
-	Timestamp  time.Time       `json:"timestamp"`
-	EndTime    time.Time       `json:"end_time,omitempty"`    // When execution completed
-	Turn       int             `json:"turn"`
-	Step       int             `json:"step,omitempty"`        // Step within turn (0-indexed)
+	Timestamp time.Time `json:"timestamp"`
+	EndTime   time.Time `json:"end_time,omitempty"` // When execution completed
+	Turn      int       `json:"turn"`
+	Step      int       `json:"step,omitempty"` // Step within turn (0-indexed)
 
 	// Tool Execution
 	ToolName   string          `json:"tool_name"`
 	ToolUseID  string          `json:"tool_use_id"`
-	Input      json.RawMessage `json:"input"`                 // Full input JSON (NEVER truncated)
-	Output     string          `json:"output"`                // Full output (NEVER truncated)
-	Stderr     string          `json:"stderr,omitempty"`      // Separated stderr when available
-	ExitCode   *int            `json:"exit_code,omitempty"`   // For bash_exec results
+	Input      json.RawMessage `json:"input"`               // Full input JSON (NEVER truncated)
+	Output     string          `json:"output"`              // Full output (NEVER truncated)
+	Stderr     string          `json:"stderr,omitempty"`    // Separated stderr when available
+	ExitCode   *int            `json:"exit_code,omitempty"` // For bash_exec results
 	DurationMs int64           `json:"duration_ms"`
 
 	// Error Classification
-	IsError    bool            `json:"is_error"`
-	ErrorType  string          `json:"error_type,omitempty"`  // "compile", "runtime", "permission", "not_found", etc.
+	IsError   bool   `json:"is_error"`
+	ErrorType string `json:"error_type,omitempty"` // "compile", "runtime", "permission", "not_found", etc.
 
 	// Context — what led to this tool call
-	ReasoningContext string    `json:"reasoning_context,omitempty"` // Model's reasoning/text before this call
-	UserIntent       string    `json:"user_intent,omitempty"`       // User message that initiated this turn
+	ReasoningContext string `json:"reasoning_context,omitempty"` // Model's reasoning/text before this call
+	UserIntent       string `json:"user_intent,omitempty"`       // User message that initiated this turn
 
 	// Plugin metadata
-	PluginVersion string       `json:"plugin_version,omitempty"`
+	PluginVersion string `json:"plugin_version,omitempty"`
 
 	// Governance / Safety
-	WasBlocked       bool         `json:"was_blocked,omitempty"`       // Tool discipline blocked execution
-	WasOverridden    bool         `json:"was_overridden,omitempty"`    // Allowed through after N blocks
-	BlockReason      string       `json:"block_reason,omitempty"`
-	RequiredApproval bool         `json:"required_approval,omitempty"` // User was prompted to approve
-	ApprovalDecision string       `json:"approval_decision,omitempty"` // "approved", "denied", "auto_approved"
+	WasBlocked       bool   `json:"was_blocked,omitempty"`    // Tool discipline blocked execution
+	WasOverridden    bool   `json:"was_overridden,omitempty"` // Allowed through after N blocks
+	BlockReason      string `json:"block_reason,omitempty"`
+	RequiredApproval bool   `json:"required_approval,omitempty"` // User was prompted to approve
+	ApprovalDecision string `json:"approval_decision,omitempty"` // "approved", "denied", "auto_approved"
 }

@@ -28,11 +28,11 @@ type grepInput struct {
 
 func (t *grepTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
-		Name:        "grep",
-		Description: "Search file contents using a regular expression pattern. Returns matching file paths and line numbers. Optionally filter by file name pattern (glob). Searches recursively from the given directory.",
-		InputSchema: schema.MustSchema(&grepInput{}),
+		Name:           "grep",
+		Description:    "Search file contents using a regular expression pattern. Returns matching file paths and line numbers. Optionally filter by file name pattern (glob). Searches recursively from the given directory.",
+		InputSchema:    schema.MustSchema(&grepInput{}),
 		LlmContextHint: "Use grep to find files containing specific code patterns, function definitions, variable usages, or error messages. Supports full regex syntax. Use the include parameter to narrow results to specific file types.",
-		Version:     "1.0.0",
+		Version:        "1.0.0",
 		CommandPatterns: []string{
 			"grep *",
 			"rg *",

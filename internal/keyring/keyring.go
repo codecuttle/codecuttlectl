@@ -110,7 +110,7 @@ func getFallbackCredential(key string) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	var creds map[string]string
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return ""
@@ -123,22 +123,22 @@ func setFallbackCredential(key, value string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	
+
 	path := credentialsPath()
 	creds := make(map[string]string)
-	
+
 	// Read existing if present
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &creds)
 	}
-	
+
 	creds[key] = value
-	
+
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	// Write with strict 0600 permissions
 	return os.WriteFile(path, data, 0600)
 }

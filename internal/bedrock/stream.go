@@ -66,9 +66,9 @@ func (MessageStopEvent) streamEvent() {}
 
 // UsageEvent reports token consumption.
 type UsageEvent struct {
-	InputTokens          int32
-	OutputTokens         int32
-	CacheReadInputTokens int32
+	InputTokens           int32
+	OutputTokens          int32
+	CacheReadInputTokens  int32
 	CacheWriteInputTokens int32
 }
 
@@ -123,7 +123,7 @@ func (c *Client) ConverseStream(ctx context.Context, system string, messages []t
 			}
 			input.AdditionalModelRequestFields = document.NewLazyDocument(map[string]interface{}{
 				"reasoning_config": map[string]interface{}{
-					"type":         "enabled",
+					"type":          "enabled",
 					"budget_tokens": budget,
 				},
 			})

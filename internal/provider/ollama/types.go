@@ -58,12 +58,12 @@ type oaiToolCallFunction struct {
 
 // chatCompletion is the non-streaming response.
 type chatCompletion struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []chatChoice   `json:"choices"`
-	Usage   *chatUsage     `json:"usage,omitempty"`
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	Model   string       `json:"model"`
+	Choices []chatChoice `json:"choices"`
+	Usage   *chatUsage   `json:"usage,omitempty"`
 }
 
 // chatChoice represents a single completion choice.

@@ -86,11 +86,11 @@ const (
 // WorkItem represents a unit of deferred work in the backlog.
 type WorkItem struct {
 	// Identity
-	ID        string    `json:"id"`         // wi_<8hex>
+	ID        string    `json:"id"` // wi_<8hex>
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Title     string    `json:"title"`      // Short: "Structured JSON query tool"
-	Kind      Kind      `json:"kind"`       // See Kind constants
+	Title     string    `json:"title"` // Short: "Structured JSON query tool"
+	Kind      Kind      `json:"kind"`  // See Kind constants
 
 	// Scope
 	Project string `json:"project,omitempty"` // Auto-detected or explicit
@@ -123,10 +123,10 @@ type WorkItem struct {
 
 // Origin records what triggered the creation of a work item.
 type Origin struct {
-	SessionID   string `json:"session_id"`
-	Turn        int    `json:"turn"`
+	SessionID   string  `json:"session_id"`
+	Turn        int     `json:"turn"`
 	Trigger     Trigger `json:"trigger"`     // How it was identified
-	Description string `json:"description"` // Natural language why
+	Description string  `json:"description"` // Natural language why
 }
 
 // Snapshot captures a point-in-time context addition to a work item.

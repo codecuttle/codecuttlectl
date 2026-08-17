@@ -24,11 +24,11 @@ type editFileInput struct {
 
 func (t *editFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
-		Name:        "edit_file",
-		Description: "Perform an exact string replacement in a file. Finds the first occurrence of 'old_string' and replaces it with 'new_string'. Use 'replace_all' to replace every occurrence. The file must exist. Always read a file before editing it to ensure you have the correct content to match.",
-		InputSchema: schema.MustSchema(&editFileInput{}),
+		Name:           "edit_file",
+		Description:    "Perform an exact string replacement in a file. Finds the first occurrence of 'old_string' and replaces it with 'new_string'. Use 'replace_all' to replace every occurrence. The file must exist. Always read a file before editing it to ensure you have the correct content to match.",
+		InputSchema:    schema.MustSchema(&editFileInput{}),
 		LlmContextHint: "Use edit_file for surgical modifications to existing files. Always read_file first to see current content. The old_string must match exactly — include sufficient surrounding context (3-5 lines) to ensure a unique match. Prefer edit_file over write_file when modifying existing files.",
-		Version:         "1.0.0",
+		Version:        "1.0.0",
 		Capabilities: &pb.ToolCapabilities{
 			SupportsCancellation: false,
 			MaxTimeoutSeconds:    10,

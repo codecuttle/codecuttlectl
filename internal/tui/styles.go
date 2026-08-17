@@ -69,7 +69,7 @@ var (
 				Bold(true)
 
 	AssistantBodyStyle = lipgloss.NewStyle().
-			Foreground(colorText)
+				Foreground(colorText)
 
 	// Reasoning: commands shown with contrasting background, monospace feel
 	ReasoningPrefixStyle = lipgloss.NewStyle().

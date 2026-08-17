@@ -3,8 +3,8 @@ package tui
 import (
 	"encoding/json"
 
-	"github.com/codecuttle/codecuttlectl/internal/todo"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
+	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
 // --- Bubble Tea message types for the TUI ---
@@ -96,17 +96,17 @@ type ContinueStreamMsg struct {
 
 // ApprovalRequestMsg signals that a tool requires user confirmation before execution.
 type ApprovalRequestMsg struct {
-	ToolIndex       int    // Index in the pending tools slice where approval is needed
-	ToolName        string // Tool name for display
-	ToolUseID       string
+	ToolIndex        int    // Index in the pending tools slice where approval is needed
+	ToolName         string // Tool name for display
+	ToolUseID        string
 	ThoughtSignature string
-	Input           json.RawMessage // Original tool input
-	Command         string          // Human-readable command description
-	Reason          string          // Why confirmation is needed
-	Risk            string          // Risk level string
-	CompletedResults []provider.ToolResultBlock  // Results already collected before this tool
-	CompletedTodos   []json.RawMessage     // Todos collected before this tool
-	RemainingTools   []pendingToolForApproval // Tools after this one still to execute
+	Input            json.RawMessage            // Original tool input
+	Command          string                     // Human-readable command description
+	Reason           string                     // Why confirmation is needed
+	Risk             string                     // Risk level string
+	CompletedResults []provider.ToolResultBlock // Results already collected before this tool
+	CompletedTodos   []json.RawMessage          // Todos collected before this tool
+	RemainingTools   []pendingToolForApproval   // Tools after this one still to execute
 }
 
 // pendingToolForApproval holds serializable pending tool data for approval flow.

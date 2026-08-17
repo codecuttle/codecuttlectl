@@ -4,8 +4,9 @@
 // These tests require the visual test container environment (Xvfb, mlterm, xdotool).
 //
 // Run with:
-//   docker compose -f docker-compose.visual.yml run --rm visual-test \
-//     go test -tags visual -v -timeout 120s ./internal/tui/
+//
+//	docker compose -f docker-compose.visual.yml run --rm visual-test \
+//	  go test -tags visual -v -timeout 120s ./internal/tui/
 package tui_test
 
 import (

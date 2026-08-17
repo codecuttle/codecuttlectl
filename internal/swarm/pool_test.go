@@ -12,7 +12,7 @@ type mockProvider struct {
 	id string
 }
 
-func (m *mockProvider) ID() string { return m.id }
+func (m *mockProvider) ID() string   { return m.id }
 func (m *mockProvider) Name() string { return "mock" }
 func (m *mockProvider) Converse(ctx context.Context, req provider.Request) (*provider.Response, error) {
 	return nil, nil
@@ -20,7 +20,7 @@ func (m *mockProvider) Converse(ctx context.Context, req provider.Request) (*pro
 func (m *mockProvider) ConverseStream(ctx context.Context, req provider.Request) <-chan provider.StreamEvent {
 	return nil
 }
-func (m *mockProvider) ContextWindow() int32 { return 1000 }
+func (m *mockProvider) ContextWindow() int32                      { return 1000 }
 func (m *mockProvider) EstimateCost(usage provider.Usage) float64 { return 1.5 }
 
 func mockFactory(ctx context.Context, providerName, modelID string) (provider.Provider, error) {
@@ -60,7 +60,7 @@ func TestNewPool(t *testing.T) {
 	if pool.Auxiliary().(*mockProvider).id != "google-gemini" {
 		t.Errorf("wrong auxiliary: %v", pool.Auxiliary().(*mockProvider).id)
 	}
-	
+
 	// planning should fallback to primary since no "planning" node
 	if pool.Planning().(*mockProvider).id != "bedrock-opus" {
 		t.Errorf("wrong planning: %v", pool.Planning().(*mockProvider).id)

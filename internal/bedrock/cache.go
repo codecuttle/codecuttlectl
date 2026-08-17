@@ -109,7 +109,8 @@ func buildSystemBlocks(system string) []types.SystemContentBlock {
 // tool-use loops.
 //
 // During a single turn, the agent may make many tool calls:
-//   User msg → Assistant tool_use → Tool result → Assistant tool_use → Tool result → ...
+//
+//	User msg → Assistant tool_use → Tool result → Assistant tool_use → Tool result → ...
 //
 // If we cache at the absolute last message, every step shifts the cache point,
 // forcing a full cache WRITE on each API call in the loop (~$0.02-0.10 each).

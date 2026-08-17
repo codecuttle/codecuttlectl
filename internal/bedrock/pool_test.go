@@ -59,10 +59,10 @@ func TestLookupModel(t *testing.T) {
 
 func TestDefaultRoles(t *testing.T) {
 	tests := []struct {
-		name      string
-		primary   string
-		wantAux   string
-		wantPlan  string
+		name     string
+		primary  string
+		wantAux  string
+		wantPlan string
 	}{
 		{
 			"opus primary gets haiku aux + sonnet plan",

@@ -41,7 +41,7 @@ codecuttlectl --model ollama:deepseek-coder-v2:16b
 **How it works:**
 - Uses Ollama's OpenAI-compatible `/v1/chat/completions` endpoint
 - Supports streaming (SSE), tool calling, and reasoning/thinking
-- **Context window auto-discovered from Ollama's `/api/show` endpoint
+- Context window auto-discovered from Ollama's `/api/show` endpoint
 - Token usage reported via `stream_options.include_usage`
 
 **TUI differences for local models:**

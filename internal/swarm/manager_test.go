@@ -47,7 +47,7 @@ func TestSwarmManager_SubmitConcurrency(t *testing.T) {
 		wg.Add(1)
 		err := mgr.Submit("task_id", "worker", func() {
 			defer wg.Done()
-			
+
 			mu.Lock()
 			active++
 			if active > maxActive {
@@ -62,7 +62,7 @@ func TestSwarmManager_SubmitConcurrency(t *testing.T) {
 			active--
 			mu.Unlock()
 		})
-		
+
 		if err != nil {
 			t.Fatalf("Submit error: %v", err)
 		}
@@ -93,17 +93,17 @@ func TestSwarmManager_UnknownAssignee(t *testing.T) {
 	}
 
 	mgr := NewManager(morph, nil)
-	
+
 	// Submitting to an unknown node should just safely return nil and not panic or run the closure
 	ran := false
 	err := mgr.Submit("task", "unknown_node", func() {
 		ran = true
 	})
-	
+
 	if err != nil {
 		t.Errorf("Expected nil error for unknown node, got %v", err)
 	}
-	
+
 	if ran {
 		t.Error("Closure ran for unknown node")
 	}
