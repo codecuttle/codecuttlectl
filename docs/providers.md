@@ -75,7 +75,7 @@ Use OpenRouter to access hundreds of AI models via a single API with automatic m
 
 ```bash
 # Explicit provider flag
-codecuttlectl --provider=openrouter --model=alibaba/qwen3.8-max
+codecuttlectl --provider=openrouter --model=qwen/qwen-2.5-72b-instruct
 
 # Auto-detect from model prefix
 codecuttlectl --model=openrouter:openai/gpt-4o
