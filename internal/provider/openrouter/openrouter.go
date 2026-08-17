@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
@@ -55,6 +57,73 @@ func (c *Client) ID() string {
 // Name returns a human-friendly display name.
 func (c *Client) Name() string {
 	return c.model
+}
+
+var (
+	modelsCacheMu sync.RWMutex
+	modelsCache   map[string]int32
+)
+
+// ContextWindow returns the model's context window size in tokens.
+func (c *Client) ContextWindow() int32 {
+	modelsCacheMu.RLock()
+	if modelsCache != nil {
+		val := modelsCache[c.model]
+		modelsCacheMu.RUnlock()
+		return val
+	}
+	modelsCacheMu.RUnlock()
+
+	modelsCacheMu.Lock()
+	defer modelsCacheMu.Unlock()
+	// Check again in case another goroutine initialized it
+	if modelsCache != nil {
+		return modelsCache[c.model]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cache, err := fetchModels(ctx, c.httpClient, c.baseURL)
+	if err != nil {
+		return 0
+	}
+	modelsCache = cache
+	return modelsCache[c.model]
+}
+
+// fetchModels retrieves the context windows for all models from OpenRouter.
+func fetchModels(ctx context.Context, httpClient *http.Client, baseURL string) (map[string]int32, error) {
+	url := baseURL + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openrouter: fetching models HTTP %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ContextLength int32  `json:"context_length"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	cache := make(map[string]int32)
+	for _, m := range result.Data {
+		cache[m.ID] = m.ContextLength
+	}
+	return cache, nil
 }
 
 // Converse sends messages and returns a complete response (non-streaming).
