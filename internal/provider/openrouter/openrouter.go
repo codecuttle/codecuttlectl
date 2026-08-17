@@ -187,7 +187,14 @@ func (c *Client) doRequest(ctx context.Context, body []byte) (io.ReadCloser, err
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, string(errBody))
+		errStr := string(errBody)
+
+		// Provide an actionable error message if OpenRouter cannot find a ZDR-compliant provider
+		if resp.StatusCode == http.StatusNotFound && strings.Contains(errStr, "Zero data retention") {
+			return nil, fmt.Errorf("openrouter: no ZDR-compliant endpoints available for model %q. Use --openrouter-zdr=false to allow data collection and proceed", c.model)
+		}
+
+		return nil, fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, errStr)
 	}
 
 	return resp.Body, nil
