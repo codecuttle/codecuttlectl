@@ -17,11 +17,11 @@ const DefaultMaxPerSkill = 8000
 
 // RegisteredSkill is a skill associated with its source plugin and parsed trigger.
 type RegisteredSkill struct {
-	PluginName  string
-	PluginVer   string
-	Skill       *pb.Skill
-	Trigger     TriggerExpr
-	TokenCost   int // Estimated token cost
+	PluginName string
+	PluginVer  string
+	Skill      *pb.Skill
+	Trigger    TriggerExpr
+	TokenCost  int // Estimated token cost
 }
 
 // Registry manages all skills from all loaded plugins.

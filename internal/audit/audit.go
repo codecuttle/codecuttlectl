@@ -39,16 +39,16 @@ func NewLogger(w io.Writer, enabled bool) *Logger {
 type Event struct {
 	// Common fields (present on every event)
 	Timestamp time.Time `json:"ts"`
-	Level     string    `json:"level"`     // "info", "warn", "security"
-	Type      string    `json:"type"`      // Event type identifier
+	Level     string    `json:"level"` // "info", "warn", "security"
+	Type      string    `json:"type"`  // Event type identifier
 	SessionID string    `json:"session_id"`
 
 	// Tool execution events
-	ToolName  string `json:"tool_name,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	DurationMs int64 `json:"duration_ms,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
-	ErrorType string `json:"error_type,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	ToolUseID  string `json:"tool_use_id,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
+	ErrorType  string `json:"error_type,omitempty"`
 
 	// Token accounting
 	InputTokens      int32 `json:"input_tokens,omitempty"`

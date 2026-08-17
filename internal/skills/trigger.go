@@ -28,8 +28,8 @@ const (
 
 // TriggerCondition is a single parsed trigger predicate.
 type TriggerCondition struct {
-	Kind    TriggerKind
-	Value   string // The argument: error class, tool name, file pattern, language, etc.
+	Kind  TriggerKind
+	Value string // The argument: error class, tool name, file pattern, language, etc.
 }
 
 // TriggerExpr is a disjunction (OR) of conditions — any one matching means the trigger fires.

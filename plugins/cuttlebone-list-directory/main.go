@@ -21,11 +21,11 @@ type listDirInput struct {
 
 func (t *listDirTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
-		Name:        "list_directory",
-		Description: "List the contents of a directory. Returns entries with a trailing / for subdirectories. Does not recurse into subdirectories.",
-		InputSchema: schema.MustSchema(&listDirInput{}),
+		Name:           "list_directory",
+		Description:    "List the contents of a directory. Returns entries with a trailing / for subdirectories. Does not recurse into subdirectories.",
+		InputSchema:    schema.MustSchema(&listDirInput{}),
 		LlmContextHint: "Use list_directory to understand project structure before navigating. Check directory layout before creating files to avoid placing them in the wrong location.",
-		Version:     "1.0.0",
+		Version:        "1.0.0",
 		CommandPatterns: []string{
 			"ls *",
 			"dir *",

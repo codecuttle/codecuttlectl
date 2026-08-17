@@ -150,7 +150,7 @@ func toBedrockTools(tools []ToolDefinition) []types.Tool {
 }
 
 // Helper functions used by cache.go
-func strPtr(s string) *string { return aws.String(s) }
+func strPtr(s string) *string                  { return aws.String(s) }
 func lazyDoc(v interface{}) document.Interface { return document.NewLazyDocument(v) }
 
 func parseConverseOutput(output *bedrockruntime.ConverseOutput) *Response {

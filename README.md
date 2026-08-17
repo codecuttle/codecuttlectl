@@ -53,6 +53,7 @@ codecuttlectl supports multiple LLM providers through a unified interface:
 |----------|------|--------|------|
 | **AWS Bedrock** (default) | `--provider bedrock` | Claude Opus 4.6, Sonnet, Haiku | Pay-per-token |
 | **Google AI** | `--provider google` | Gemini 2.5 Pro, Flash | Pay-per-token |
+| **OpenRouter** | `--provider openrouter` | Any model (Qwen, Claude, Llama) | Pay-per-token |
 | **Ollama** | `--provider ollama` | gemma4, llama3, qwen3, any local model | Free (local) |
 
 The provider is auto-detected from the model name prefix (e.g., `ollama:gemma4:31b`). See [`docs/providers.md`](docs/providers.md) for details.

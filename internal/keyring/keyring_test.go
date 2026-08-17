@@ -25,7 +25,7 @@ func TestEnsureGeminiAPIKey_KeyringFallback(t *testing.T) {
 
 	// Set up mock keyring
 	zkeyring.MockInit()
-	
+
 	// Pre-populate the mock keyring
 	err := zkeyring.Set("codecuttlectl", "GEMINI_API_KEY", "test-keyring-key")
 	if err != nil {
@@ -46,7 +46,7 @@ func TestEnsureGeminiAPIKey_KeyringFallback(t *testing.T) {
 func TestEnsureGeminiAPIKey_LocalFileFallback(t *testing.T) {
 	// Clear the environment variable
 	t.Setenv("GEMINI_API_KEY", "")
-	
+
 	// Create a temporary XDG_CONFIG_HOME for testing
 	tmpDir, err := os.MkdirTemp("", "codecuttlectl-test-config-*")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestEnsureGeminiAPIKey_LocalFileFallback(t *testing.T) {
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {
 		t.Fatalf("Failed to create codecuttlectl dir: %v", err)
 	}
-	
+
 	credPath := filepath.Join(cfgDir, "credentials.json")
 	credData := map[string]string{"GEMINI_API_KEY": "test-file-key"}
 	data, _ := json.Marshal(credData)
@@ -81,4 +81,3 @@ func TestEnsureGeminiAPIKey_LocalFileFallback(t *testing.T) {
 		t.Errorf("Expected environment variable to be set to 'test-file-key', got '%s'", key)
 	}
 }
-

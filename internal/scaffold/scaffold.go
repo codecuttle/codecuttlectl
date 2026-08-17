@@ -45,10 +45,10 @@ type CapSpec struct {
 
 // Result holds the generated output.
 type Result struct {
-	Dir       string // Directory containing generated files
+	Dir        string // Directory containing generated files
 	BinaryName string // Expected binary name (cuttlebone-<name>)
-	MainGo    string // Path to generated main.go
-	GoMod     string // Path to generated go.mod
+	MainGo     string // Path to generated main.go
+	GoMod      string // Path to generated go.mod
 }
 
 // Generate produces a complete, buildable plugin stub in a temporary directory.

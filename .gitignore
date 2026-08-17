@@ -47,3 +47,6 @@ scripts/__pycache__/
 
 # Plugin binaries (built artifacts, not source)
 cuttlebone-*
+
+# Research notes (kept locally, not checked into VC)
+research_notes/

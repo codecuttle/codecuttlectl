@@ -53,7 +53,7 @@ type schemaDoc struct {
 
 // schemaProp is a minimal representation of a single property in a JSON Schema.
 type schemaProp struct {
-	Type        interface{} `json:"type"`        // string or []string
+	Type        interface{} `json:"type"` // string or []string
 	Description string      `json:"description"`
 	Enum        []string    `json:"enum"`
 	OneOf       []oneOfItem `json:"oneOf"`

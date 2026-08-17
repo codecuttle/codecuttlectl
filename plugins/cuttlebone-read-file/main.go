@@ -24,11 +24,11 @@ type readFileInput struct {
 
 func (t *readFileTool) Describe(ctx context.Context) (*pb.DescribeResponse, error) {
 	return &pb.DescribeResponse{
-		Name:        "read_file",
-		Description: "Read the contents of a file at the given absolute path. Returns the file contents with line numbers prefixed. Use offset and limit to read specific sections of large files.",
-		InputSchema: schema.MustSchema(&readFileInput{}),
+		Name:           "read_file",
+		Description:    "Read the contents of a file at the given absolute path. Returns the file contents with line numbers prefixed. Use offset and limit to read specific sections of large files.",
+		InputSchema:    schema.MustSchema(&readFileInput{}),
 		LlmContextHint: "Use read_file to inspect file contents before making edits. Always read a file before modifying it. Use offset/limit for large files to avoid overwhelming context.",
-		Version:     "1.0.0",
+		Version:        "1.0.0",
 		CommandPatterns: []string{
 			"cat *",
 			"head *",

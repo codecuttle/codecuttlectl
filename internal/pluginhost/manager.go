@@ -25,8 +25,8 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
-	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
+	pb "github.com/codecuttle/codecuttlectl/internal/cuttlebone/v1"
 	pluginschema "github.com/codecuttle/codecuttlectl/internal/pluginkit/schema"
 	"github.com/codecuttle/codecuttlectl/internal/skills"
 )
@@ -158,7 +158,7 @@ type ManagedPlugin struct {
 	CommandPatterns []string // Shell patterns this tool claims (for tool discipline)
 	Path            string   // Binary path for restart
 	MaxTimeout      time.Duration
-	CanStream       bool     // Whether plugin supports ExecuteStream
+	CanStream       bool // Whether plugin supports ExecuteStream
 
 	client    *plugin.Client
 	rpcClient *grpcClient
@@ -294,18 +294,18 @@ func (m *Manager) LoadPlugin(ctx context.Context, path string) error {
 	}
 
 	managed := &ManagedPlugin{
-		Name:           desc.Name,
-		Description:    desc.Description,
-		InputSchema:    json.RawMessage(desc.InputSchema),
-		LLMHint:        desc.LlmContextHint,
-		Version:        desc.Version,
+		Name:            desc.Name,
+		Description:     desc.Description,
+		InputSchema:     json.RawMessage(desc.InputSchema),
+		LLMHint:         desc.LlmContextHint,
+		Version:         desc.Version,
 		CommandPatterns: desc.CommandPatterns,
-		Path:           path,
-		MaxTimeout:     maxTimeout,
-		CanStream:      canStream,
-		client:         client,
-		rpcClient:      toolClient,
-		healthy:        true,
+		Path:            path,
+		MaxTimeout:      maxTimeout,
+		CanStream:       canStream,
+		client:          client,
+		rpcClient:       toolClient,
+		healthy:         true,
 	}
 
 	m.mu.Lock()
@@ -503,9 +503,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, name string, input json.Raw
 
 	// Call streaming RPC
 	execCtx, cancel := context.WithTimeout(ctx, p.MaxTimeout)
-	
+
 	unlock := m.acquireFileLock(name, input, workDir)
-	
+
 	eventCh, err := p.rpcClient.ExecuteStream(execCtx, &pb.ExecuteRequest{
 		Input:            string(input),
 		WorkingDirectory: workDir,

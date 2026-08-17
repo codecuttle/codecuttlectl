@@ -21,9 +21,10 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
+	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
 	googleprov "github.com/codecuttle/codecuttlectl/internal/provider/google"
 	"github.com/codecuttle/codecuttlectl/internal/provider/ollama"
-	bedrockprov "github.com/codecuttle/codecuttlectl/internal/provider/bedrock"
+	"github.com/codecuttle/codecuttlectl/internal/provider/openrouter"
 	"github.com/codecuttle/codecuttlectl/internal/session"
 	"github.com/codecuttle/codecuttlectl/internal/swarm"
 	"github.com/codecuttle/codecuttlectl/internal/tui"
@@ -36,8 +37,11 @@ func main() {
 		planModel            = flag.String("plan-model", "", "Planning model for mid-tier tasks (transitional, will be superseded by --morph)")
 		region               = flag.String("region", "", "AWS region (default: AWS_REGION env or us-west-2)")
 		profile              = flag.String("profile", "", "AWS profile name")
-		providerF            = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', or 'ollama'")
+		providerF            = flag.String("provider", "", "LLM provider: 'bedrock' (default), 'google', 'ollama', or 'openrouter'")
 		ollamaURL            = flag.String("ollama-url", "", "Ollama server URL (default: http://localhost:11434)")
+		openrouterURL        = flag.String("openrouter-url", "", "OpenRouter server URL (default: https://openrouter.ai/api/v1)")
+		openrouterZDR        = flag.Bool("openrouter-zdr", true, "Enable Zero Data Retention (ZDR) on OpenRouter requests (default true, use --openrouter-zdr=false to disable)")
+		openrouterFallbacks  = flag.String("openrouter-fallbacks", "", "Comma-separated list of fallback models for OpenRouter")
 		googleCacheThreshold = flag.Int("google-cache-threshold", 32000, "Token threshold to trigger Google Context Caching API (default 32000)")
 		morphPath            = flag.String("morph", "", "Path to a Swarm Morphology YAML file (overrides model/provider flags)")
 		workDir              = flag.String("workdir", "", "Working directory (default: current directory)")
@@ -145,6 +149,23 @@ func main() {
 					BaseURL: *ollamaURL,
 					Model:   modID,
 				}), nil
+			case "openrouter":
+				if err := keyring.EnsureOpenRouterAPIKey(); err != nil {
+					return nil, fmt.Errorf("failed to ensure OpenRouter API key: %w", err)
+				}
+				var fallbacks []string
+				if *openrouterFallbacks != "" {
+					for _, f := range strings.Split(*openrouterFallbacks, ",") {
+						fallbacks = append(fallbacks, strings.TrimSpace(f))
+					}
+				}
+				return openrouter.New(openrouter.Config{
+					BaseURL:    *openrouterURL,
+					Model:      modID,
+					Fallbacks:  fallbacks,
+					EnforceZDR: *openrouterZDR,
+					APIKey:     os.Getenv("OPENROUTER_API_KEY"),
+				}), nil
 			case "google":
 				if err := keyring.EnsureGeminiAPIKey(); err != nil {
 					return nil, fmt.Errorf("failed to ensure Gemini API key: %w", err)
@@ -181,10 +202,10 @@ func main() {
 		}
 
 		genericPool = pool
-		
+
 		// Map genericPool to legacy components for smooth transition
 		llmProvider = pool.Primary()
-		
+
 		if *verbose {
 			fmt.Fprintf(os.Stderr, "[swarm] morphology loaded: %s (%s)\n", morph.Name, morph.Presentation)
 			fmt.Fprintf(os.Stderr, "[swarm] primary node=%s\n", pool.Info("primary").DisplayName)
@@ -194,6 +215,9 @@ func main() {
 		if providerName == "" && strings.HasPrefix(*modelID, "ollama:") {
 			providerName = "ollama"
 			*modelID = strings.TrimPrefix(*modelID, "ollama:")
+		} else if providerName == "" && strings.HasPrefix(*modelID, "openrouter:") {
+			providerName = "openrouter"
+			*modelID = strings.TrimPrefix(*modelID, "openrouter:")
 		}
 		if providerName == "" {
 			providerName = "bedrock"
@@ -208,6 +232,29 @@ func main() {
 			llmProvider = ollamaClient
 			if *verbose {
 				fmt.Fprintf(os.Stderr, "[provider] ollama model=%s url=%s\n", *modelID, ollamaClient.ID())
+			}
+
+		case "openrouter":
+			if err := keyring.EnsureOpenRouterAPIKey(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error ensuring OpenRouter API key: %v\n", err)
+				os.Exit(1)
+			}
+			var fallbacks []string
+			if *openrouterFallbacks != "" {
+				for _, f := range strings.Split(*openrouterFallbacks, ",") {
+					fallbacks = append(fallbacks, strings.TrimSpace(f))
+				}
+			}
+			orClient := openrouter.New(openrouter.Config{
+				BaseURL:    *openrouterURL,
+				Model:      *modelID,
+				Fallbacks:  fallbacks,
+				EnforceZDR: *openrouterZDR,
+				APIKey:     os.Getenv("OPENROUTER_API_KEY"),
+			})
+			llmProvider = orClient
+			if *verbose {
+				fmt.Fprintf(os.Stderr, "[provider] openrouter model=%s fallbacks=%v zdr=%v\n", *modelID, fallbacks, *openrouterZDR)
 			}
 
 		case "google":
@@ -255,7 +302,7 @@ func main() {
 			}
 
 		default:
-			fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama)\n", providerName)
+			fmt.Fprintf(os.Stderr, "Unknown provider: %s (supported: bedrock, google, ollama, openrouter)\n", providerName)
 			os.Exit(1)
 		}
 	}
@@ -615,6 +662,8 @@ func runListModels(providerName, currentModel string) {
 		runListGoogleModels()
 	case "ollama":
 		fmt.Println("Ollama models — use 'ollama list' to see locally available models.")
+	case "openrouter":
+		fmt.Println("OpenRouter models — visit https://openrouter.ai/models for a full list.")
 	case "bedrock":
 		fmt.Println("AWS Bedrock models (common Anthropic models):")
 		fmt.Println("  us.anthropic.claude-opus-4-6-v1          (Claude Opus 4)")

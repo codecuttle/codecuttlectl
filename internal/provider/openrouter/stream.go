@@ -1,4 +1,4 @@
-package ollama
+package openrouter
 
 import (
 	"bufio"
@@ -9,7 +9,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
-// parseSSEStream reads Server-Sent Events from the Ollama streaming response
+// parseSSEStream reads Server-Sent Events from the OpenRouter streaming response
 // and translates them into provider.StreamEvent sent on the events channel.
 func parseSSEStream(body io.Reader, events chan<- provider.StreamEvent) {
 	scanner := bufio.NewScanner(body)

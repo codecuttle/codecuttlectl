@@ -69,6 +69,32 @@ Local models have smaller parameter counts and benefit from additional harness s
 
 3. **Read-Only Grounding** — System prompt explicitly instructs models not to implement features found in design docs or backlogs when performing exploratory tasks.
 
+## OpenRouter
+
+Use OpenRouter to access hundreds of AI models via a single API with automatic model fallbacks and Zero Data Retention (ZDR) capabilities for codebase privacy.
+
+```bash
+# Explicit provider flag
+codecuttlectl --provider=openrouter --model=qwen/qwen3.8-max
+
+# Auto-detect from model prefix
+codecuttlectl --model=openrouter:openai/gpt-4o
+
+# Zero Data Retention (ZDR) is enabled by default to protect codebase privacy.
+# To explicitly allow data collection (e.g., to use cheaper non-ZDR endpoints):
+codecuttlectl --model=openrouter:anthropic/claude-3.5-sonnet --openrouter-zdr=false
+
+# Auto-fallback if primary model fails (Zero-Completion Insurance)
+codecuttlectl --model=openrouter:deepseek/deepseek-coder --openrouter-fallbacks="anthropic/claude-3-5-sonnet,openai/gpt-4o"
+```
+
+Requires the `OPENROUTER_API_KEY` environment variable. If not set, codecuttlectl will securely prompt for it and save it to the system keyring (or local fallback credentials file on headless servers).
+
+**Features exclusive to OpenRouter:**
+- **Zero Data Retention (ZDR):** Enabled by default to protect codebase privacy. `codecuttlectl` passes the `provider.zdr = true` and `provider.data_collection = "deny"` parameters. OpenRouter will only route these requests to models/endpoints that legally guarantee no data logging or training. You can disable this by passing `--openrouter-zdr=false`.
+- **Model Fallbacks:** By providing a comma-separated list of models via `--openrouter-fallbacks`, `codecuttlectl` sends an array of models. If the primary model fails (5xx or 429), OpenRouter will seamlessly cascade to the next model without hanging your Swarm execution loops.
+- **App Attribution:** Automatically sends attribution headers so token usage can be visualized in your OpenRouter dashboard.
+
 ## Google AI (Gemini)
 
 Use Google's Gemini models directly via the `google.golang.org/genai` SDK.
@@ -161,7 +187,6 @@ The provider abstraction lives in `internal/provider/`. Adding a new provider re
 
 Candidates for future integration:
 - **Anthropic API** (direct, non-Bedrock)
-- **OpenAI** (GPT-4o, o1)
 - **vLLM** (self-hosted inference servers)
 - **LM Studio** (OpenAI-compatible local servers)
 

@@ -31,16 +31,16 @@ type githubInput struct {
 	Repo  string `json:"repo,omitempty" jsonschema_description:"Repository name. Defaults to 'codecuttlectl' if not specified."`
 
 	// PR fields
-	Title  string `json:"title,omitempty" jsonschema_description:"PR/issue title"`
-	Body   string `json:"body,omitempty" jsonschema_description:"PR/issue body (markdown)"`
-	Head   string `json:"head,omitempty" jsonschema_description:"PR head branch (source)"`
-	Base   string `json:"base,omitempty" jsonschema_description:"PR base branch (target, default: main)"`
-	Draft  bool   `json:"draft,omitempty" jsonschema_description:"Create PR as draft"`
+	Title  string        `json:"title,omitempty" jsonschema_description:"PR/issue title"`
+	Body   string        `json:"body,omitempty" jsonschema_description:"PR/issue body (markdown)"`
+	Head   string        `json:"head,omitempty" jsonschema_description:"PR head branch (source)"`
+	Base   string        `json:"base,omitempty" jsonschema_description:"PR base branch (target, default: main)"`
+	Draft  bool          `json:"draft,omitempty" jsonschema_description:"Create PR as draft"`
 	Number types.FlexInt `json:"number,omitempty" jsonschema_description:"PR or issue number"`
 
 	// PR merge
-	MergeMethod string `json:"merge_method,omitempty" jsonschema:"enum=merge,enum=squash,enum=rebase" jsonschema_description:"Merge method: merge, squash, or rebase (default: merge)"`
-	CommitTitle string `json:"commit_title,omitempty" jsonschema_description:"Custom merge commit title"`
+	MergeMethod   string `json:"merge_method,omitempty" jsonschema:"enum=merge,enum=squash,enum=rebase" jsonschema_description:"Merge method: merge, squash, or rebase (default: merge)"`
+	CommitTitle   string `json:"commit_title,omitempty" jsonschema_description:"Custom merge commit title"`
 	CommitMessage string `json:"commit_message,omitempty" jsonschema_description:"Custom merge commit message"`
 
 	// Issue fields
@@ -52,13 +52,13 @@ type githubInput struct {
 	Comment string `json:"comment,omitempty" jsonschema_description:"Comment body text (markdown)"`
 
 	// Release
-	Tag        string `json:"tag,omitempty" jsonschema_description:"Tag name for release"`
+	Tag         string `json:"tag,omitempty" jsonschema_description:"Tag name for release"`
 	ReleaseName string `json:"release_name,omitempty" jsonschema_description:"Release title"`
-	Prerelease bool   `json:"prerelease,omitempty" jsonschema_description:"Mark as prerelease"`
+	Prerelease  bool   `json:"prerelease,omitempty" jsonschema_description:"Mark as prerelease"`
 
 	// Generic API
-	Method string `json:"method,omitempty" jsonschema:"enum=GET,enum=POST,enum=PUT,enum=PATCH,enum=DELETE" jsonschema_description:"HTTP method for 'api' command"`
-	Path   string `json:"path,omitempty" jsonschema_description:"API path for 'api' command (e.g. /repos/owner/repo/topics)"`
+	Method  string          `json:"method,omitempty" jsonschema:"enum=GET,enum=POST,enum=PUT,enum=PATCH,enum=DELETE" jsonschema_description:"HTTP method for 'api' command"`
+	Path    string          `json:"path,omitempty" jsonschema_description:"API path for 'api' command (e.g. /repos/owner/repo/topics)"`
 	APIBody json.RawMessage `json:"api_body,omitempty" jsonschema_description:"JSON body for 'api' command"`
 }
 
@@ -191,10 +191,16 @@ func (p *githubPlugin) prList(params githubInput) (string, error) {
 		Number int    `json:"number"`
 		Title  string `json:"title"`
 		State  string `json:"state"`
-		Head   struct{ Ref string `json:"ref"` } `json:"head"`
-		Base   struct{ Ref string `json:"ref"` } `json:"base"`
-		User   struct{ Login string `json:"login"` } `json:"user"`
-		Draft  bool   `json:"draft"`
+		Head   struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Draft     bool   `json:"draft"`
 		CreatedAt string `json:"created_at"`
 	}
 	if err := json.Unmarshal(body, &prs); err != nil {
@@ -284,14 +290,20 @@ func (p *githubPlugin) prGet(params githubInput) (string, error) {
 		HTMLURL   string `json:"html_url"`
 		Mergeable *bool  `json:"mergeable"`
 		Draft     bool   `json:"draft"`
-		Head      struct{ Ref string `json:"ref"` } `json:"head"`
-		Base      struct{ Ref string `json:"ref"` } `json:"base"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
-		Additions int    `json:"additions"`
-		Deletions int    `json:"deletions"`
-		ChangedFiles int `json:"changed_files"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
+		Head      struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Additions    int    `json:"additions"`
+		Deletions    int    `json:"deletions"`
+		ChangedFiles int    `json:"changed_files"`
+		CreatedAt    string `json:"created_at"`
+		UpdatedAt    string `json:"updated_at"`
 	}
 	json.Unmarshal(body, &pr)
 
@@ -425,13 +437,17 @@ func (p *githubPlugin) issueList(params githubInput) (string, error) {
 	}
 
 	var issues []struct {
-		Number    int      `json:"number"`
-		Title     string   `json:"title"`
-		State     string   `json:"state"`
-		Labels    []struct{ Name string `json:"name"` } `json:"labels"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 		PullRequest *struct{} `json:"pull_request"`
-		CreatedAt string   `json:"created_at"`
+		CreatedAt   string    `json:"created_at"`
 	}
 	if err := json.Unmarshal(body, &issues); err != nil {
 		return "", fmt.Errorf("parsing response: %w", err)
@@ -515,17 +531,23 @@ func (p *githubPlugin) issueGet(params githubInput) (string, error) {
 	}
 
 	var issue struct {
-		Number    int      `json:"number"`
-		Title     string   `json:"title"`
-		State     string   `json:"state"`
-		Body      string   `json:"body"`
-		HTMLURL   string   `json:"html_url"`
-		Labels    []struct{ Name string `json:"name"` } `json:"labels"`
-		Assignees []struct{ Login string `json:"login"` } `json:"assignees"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
-		Comments  int      `json:"comments"`
-		CreatedAt string   `json:"created_at"`
-		UpdatedAt string   `json:"updated_at"`
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		State   string `json:"state"`
+		Body    string `json:"body"`
+		HTMLURL string `json:"html_url"`
+		Labels  []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Assignees []struct {
+			Login string `json:"login"`
+		} `json:"assignees"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Comments  int    `json:"comments"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
 	}
 	json.Unmarshal(body, &issue)
 
@@ -616,17 +638,17 @@ func (p *githubPlugin) repoGet(params githubInput) (string, error) {
 	}
 
 	var repo struct {
-		FullName      string `json:"full_name"`
-		Description   string `json:"description"`
-		Private       bool   `json:"private"`
-		DefaultBranch string `json:"default_branch"`
-		Language      string `json:"language"`
-		StarCount     int    `json:"stargazers_count"`
-		ForksCount    int    `json:"forks_count"`
-		OpenIssues    int    `json:"open_issues_count"`
-		HTMLURL       string `json:"html_url"`
-		CreatedAt     string `json:"created_at"`
-		PushedAt      string `json:"pushed_at"`
+		FullName      string   `json:"full_name"`
+		Description   string   `json:"description"`
+		Private       bool     `json:"private"`
+		DefaultBranch string   `json:"default_branch"`
+		Language      string   `json:"language"`
+		StarCount     int      `json:"stargazers_count"`
+		ForksCount    int      `json:"forks_count"`
+		OpenIssues    int      `json:"open_issues_count"`
+		HTMLURL       string   `json:"html_url"`
+		CreatedAt     string   `json:"created_at"`
+		PushedAt      string   `json:"pushed_at"`
 		Topics        []string `json:"topics"`
 	}
 	json.Unmarshal(body, &repo)

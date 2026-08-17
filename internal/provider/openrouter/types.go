@@ -1,12 +1,20 @@
-package ollama
+package openrouter
 
 import "encoding/json"
 
-// --- OpenAI-compatible API types ---
+// ProviderPrefs controls OpenRouter's automatic fallback and ZDR behavior.
+type ProviderPrefs struct {
+	ZDR            bool     `json:"zdr,omitempty"`
+	DataCollection string   `json:"data_collection,omitempty"` // "deny" prevents training
+	AllowFallbacks bool     `json:"allow_fallbacks,omitempty"` // Auto-failover on 5xx/429
+	Order          []string `json:"order,omitempty"`
+}
 
-// chatRequest is the OpenAI chat completions request body.
+// chatRequest is the OpenRouter/OpenAI chat completions request body.
 type chatRequest struct {
 	Model         string         `json:"model"`
+	Models        []string       `json:"models,omitempty"`   // Fallback models for OpenRouter
+	Provider      *ProviderPrefs `json:"provider,omitempty"` // OpenRouter-specific preferences
 	Messages      []chatMessage  `json:"messages"`
 	Tools         []oaiTool      `json:"tools,omitempty"`
 	Stream        bool           `json:"stream"`
