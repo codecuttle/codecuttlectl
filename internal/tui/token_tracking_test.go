@@ -148,17 +148,82 @@ func TestCacheHitPercentage(t *testing.T) {
 	}
 }
 
-func TestRenderTodoBar_EmptySwarmProgress(t *testing.T) {
-	m := &Model{
-		width:             100,
-		todos:             todo.NewList(),
-		activeSwarmTasks:  1,
-		swarmProgress:     make(map[string]string),
+func TestContextWindowPercentage(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      int32
+		cacheRead  int32
+		cacheWrite int32
+		wantPct    int
+	}{
+		{"no tokens", 0, 0, 0, 0},
+		{"25% used (250k)", 50000, 175000, 25000, 25},
+		{"50% used (500k)", 100000, 350000, 50000, 50},
+		{"100% used (1M)", 200000, 700000, 100000, 100},
+		{"small session", 5000, 0, 13000, 1}, // 18000/1000000 = 1%
 	}
 
-	// Should not panic when activeSwarmTasks > 0 but swarmProgress is empty
-	got := m.renderTodoBar()
-	if got == "" {
-		t.Errorf("renderTodoBar returned empty string")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctxUsed := tt.input + tt.cacheRead + tt.cacheWrite
+			got := 0
+			if ctxUsed > 0 {
+				got = int(float64(ctxUsed) / float64(defaultContextWindowSize) * 100)
+			}
+			if got != tt.wantPct {
+				t.Errorf("context window %% = %d, want %d", got, tt.wantPct)
+			}
+		})
 	}
 }
+
+func TestRenderTodoBar_EmptySwarmProgress(t *testing.T) {
+	tests := []struct {
+		name             string
+		activeSwarmTasks int
+		swarmProgress    map[string]string
+		contains         string
+	}{
+		{
+			name:             "active task with progress",
+			activeSwarmTasks: 1,
+			swarmProgress:    map[string]string{"flash_coder": "reading files..."},
+			contains:         "1 background task (flash_coder: reading files...)",
+		},
+		{
+			name:             "active task with empty progress map",
+			activeSwarmTasks: 1,
+			swarmProgress:    map[string]string{},
+			contains:         "1 background tasks",
+		},
+		{
+			name:             "multiple active tasks with partial progress",
+			activeSwarmTasks: 2,
+			swarmProgress:    map[string]string{"flash_coder": "compiling"},
+			contains:         "1 background task (flash_coder: compiling)",
+		},
+		{
+			name:             "multiple active tasks with multiple progress entries",
+			activeSwarmTasks: 2,
+			swarmProgress:    map[string]string{"flash_coder": "compiling", "deep_coder": "reviewing"},
+			contains:         "2 background tasks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Model{
+				width:            120,
+				todos:            todo.NewList(),
+				activeSwarmTasks: tt.activeSwarmTasks,
+				swarmProgress:    tt.swarmProgress,
+			}
+
+			got := m.renderTodoBar()
+			if got == "" {
+				t.Errorf("renderTodoBar returned empty string")
+			}
+		})
+	}
+}
+
