@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codecuttle/codecuttlectl/internal/provider"
+	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
 // mockBedrockProvider implements provider.Provider and provider.CostEstimator
@@ -175,3 +176,54 @@ func TestContextWindowPercentage(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderTodoBar_EmptySwarmProgress(t *testing.T) {
+	tests := []struct {
+		name             string
+		activeSwarmTasks int
+		swarmProgress    map[string]string
+		contains         string
+	}{
+		{
+			name:             "active task with progress",
+			activeSwarmTasks: 1,
+			swarmProgress:    map[string]string{"flash_coder": "reading files..."},
+			contains:         "1 background task (flash_coder: reading files...)",
+		},
+		{
+			name:             "active task with empty progress map",
+			activeSwarmTasks: 1,
+			swarmProgress:    map[string]string{},
+			contains:         "1 background tasks",
+		},
+		{
+			name:             "multiple active tasks with partial progress",
+			activeSwarmTasks: 2,
+			swarmProgress:    map[string]string{"flash_coder": "compiling"},
+			contains:         "1 background task (flash_coder: compiling)",
+		},
+		{
+			name:             "multiple active tasks with multiple progress entries",
+			activeSwarmTasks: 2,
+			swarmProgress:    map[string]string{"flash_coder": "compiling", "deep_coder": "reviewing"},
+			contains:         "2 background tasks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Model{
+				width:            120,
+				todos:            todo.NewList(),
+				activeSwarmTasks: tt.activeSwarmTasks,
+				swarmProgress:    tt.swarmProgress,
+			}
+
+			got := m.renderTodoBar()
+			if got == "" {
+				t.Errorf("renderTodoBar returned empty string")
+			}
+		})
+	}
+}
+

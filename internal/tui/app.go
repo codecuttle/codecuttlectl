@@ -2181,9 +2181,13 @@ func (m *Model) renderTodoBar() string {
 			msgs = append(msgs, fmt.Sprintf("%s: %s", assignee, prog))
 		}
 
-		bgMsg := fmt.Sprintf(" %d background tasks (%s)", m.activeSwarmTasks, strings.Join(msgs, ", "))
-		if m.activeSwarmTasks == 1 {
+		var bgMsg string
+		if len(msgs) == 1 {
 			bgMsg = fmt.Sprintf(" 1 background task (%s)", msgs[0])
+		} else if len(msgs) > 1 {
+			bgMsg = fmt.Sprintf(" %d background tasks (%s)", m.activeSwarmTasks, strings.Join(msgs, ", "))
+		} else {
+			bgMsg = fmt.Sprintf(" %d background tasks", m.activeSwarmTasks)
 		}
 		content += " │ " + SpinnerStyle.Render(m.spinner.View()) + bgMsg
 	}
