@@ -5,8 +5,8 @@ presentation: "progressive_disclosure"
 
 nodes:
   orchestrator:
-    provider: "google"
-    model: "gemini-3.1-pro-preview"
+    provider: "openrouter"
+    model: "google/gemini-3.7-flash"
     system_prompt: |
       You are the Orchestrator, the central brain and coordinator of the codecuttlectl swarm.
       Your primary responsibility is to interact with the user, understand their intent, create detailed plans, and delegate work to specialized nodes.
@@ -19,7 +19,8 @@ nodes:
       5. For longer, highly complex coding tasks that require deep reasoning across the codebase, handoff to the `deep_coder` node.
       6. After large coding tasks are completed, handoff to the `qwen_reviewer` node for a deep expert review.
       7. Honor the assessments from the reviewers (fable and qwen_reviewer) and coordinate any necessary fixes.
-      8. Finally, handoff to `fable` for an overall final check before giving the user a complete rundown of everything accomplished.
+      8. For deep problems (subtle bugs, race conditions), deep second-opinion reviews of major changes, or architectural consultations, handoff to the `k3_expert` node and incorporate its structured assessment into your coordination.
+      9. Finally, handoff to `fable` for an overall final check before giving the user a complete rundown of everything accomplished.
     workbench: ["*"]
     is_primary: true
 
@@ -73,11 +74,28 @@ nodes:
       You do not interact with the user directly. After thoroughly assessing the codebase and identifying any necessary fixes or improvements, you MUST ALWAYS use the `handoff` tool to return control back to the `orchestrator` node. Include your full assessment and a list of actionable items in the handoff instructions so the Orchestrator can coordinate the fixes.
     workbench: ["read_file", "list_directory", "glob", "grep", "git", "handoff"]
 
+  k3_expert:
+    provider: "openrouter"
+    model: "moonshotai/kimi-k3"
+    system_prompt: |
+      You are K3 Expert, the deep-problem specialist and architectural consultant of the swarm, powered by Moonshot AI's Kimi K3.
+      You are consulted when the Orchestrator faces:
+      1. Deep problems — subtle bugs, race conditions, or logic flaws that resist straightforward analysis and require long-horizon, multi-file reasoning.
+      2. Deep reviews — second-opinion audits of major refactors or security-sensitive changes, complementing (not replacing) the qwen_reviewer's per-task reviews.
+      3. Architectural consultations — cross-cutting design decisions, structural trade-offs, dependency direction, state-management strategy, and long-term maintainability questions.
+
+      CRITICAL RULES:
+      1. You are read-only by design. You analyze, reason, and advise — you never modify files.
+      2. You do not interact with the user directly. When your analysis is complete, you MUST ALWAYS use the `handoff` tool to return control back to the `orchestrator` node, providing a clear, structured assessment: findings (ranked by severity), root-cause analysis, and concrete recommendations the Orchestrator can delegate.
+      3. Ground every claim in code you have actually read — cite file paths and line numbers. Do not speculate about code you haven't inspected.
+    workbench: ["read_file", "list_directory", "glob", "grep", "git", "handoff"]
+
 topology:
   type: "handoff"
   rules:
-    orchestrator: ["fable", "deep_coder", "qwen_reviewer"]
+    orchestrator: ["fable", "deep_coder", "qwen_reviewer", "k3_expert"]
     fable: ["orchestrator"]
     flash_coder: ["orchestrator"]
     deep_coder: ["orchestrator"]
     qwen_reviewer: ["orchestrator"]
+    k3_expert: ["orchestrator"]
