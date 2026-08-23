@@ -70,6 +70,13 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 	var result []providerPkg.Message
 	toolNames := make(map[string]string) // ToolUseID -> Name
 
+	// Track toolUse ID frequencies to disambiguate duplicated IDs across
+	// resumes or different nodes. Upstream providers (such as Google via
+	// OpenRouter) strictly enforce unique tool_use IDs in a conversation
+	// and reject duplicate IDs with "function response turn comes immediately
+	// after a function call turn".
+	toolUseCounts := make(map[string]int)
+
 	for _, msg := range messages {
 		var role providerPkg.Role
 		switch msg.Role {
@@ -96,20 +103,33 @@ func UnmarshalProviderHistory(messages []Message) []providerPkg.Message {
 				if len(input) == 0 {
 					input = json.RawMessage("{}")
 				}
+				toolUseID := item.ToolUseID
+				toolUseCounts[toolUseID]++
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
+				toolNames[toolUseID] = item.Name
 				toolNames[item.ToolUseID] = item.Name
 				blocks = append(blocks, providerPkg.ToolUseBlock{
-					ToolUseID:        item.ToolUseID,
+					ToolUseID:        toolUseID,
 					Name:             item.Name,
 					Input:            input,
 					ThoughtSignature: item.Signature,
 				})
 			case "tool_result":
+				toolUseID := item.ResultFor
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
 				name := item.Name
+				if name == "" {
+					name = toolNames[toolUseID]
+				}
 				if name == "" {
 					name = toolNames[item.ResultFor]
 				}
 				blocks = append(blocks, providerPkg.ToolResultBlock{
-					ToolUseID: item.ResultFor,
+					ToolUseID: toolUseID,
 					Name:      name,
 					Content:   item.Content,
 					IsError:   item.Status == "error",
@@ -188,18 +208,56 @@ func MarshalHistory(messages []types.Message) ([]Message, error) {
 // This reconstructs document.NewLazyDocument() for tool_use Input fields.
 func UnmarshalHistory(messages []Message) ([]types.Message, error) {
 	result := make([]types.Message, 0, len(messages))
+	toolUseCounts := make(map[string]int)
 
 	for i, msg := range messages {
 		bedrockMsg := types.Message{
 			Role: types.ConversationRole(msg.Role),
 		}
 
+		// Reasoning blocks without a signature (e.g. produced by Gemini or
+		// OpenRouter models) cannot be replayed through Bedrock: Anthropic
+		// models reject thinking blocks that lack a valid signature with
+		// "thinking.signature: Field required". Skip them, but remember the
+		// text so a reasoning-only message doesn't become empty.
+		var skippedReasoning string
+
 		for j, item := range msg.Blocks {
+			if item.Type == "reasoning" && item.Signature == "" {
+				if skippedReasoning != "" {
+					skippedReasoning += "\n"
+				}
+				skippedReasoning += item.Text
+				continue
+			}
+
+			// Disambiguate duplicate tool use IDs
+			if item.Type == "tool_use" {
+				toolUseCounts[item.ToolUseID]++
+				if count := toolUseCounts[item.ToolUseID]; count > 1 {
+					item.ToolUseID = fmt.Sprintf("%s_%d", item.ToolUseID, count)
+				}
+			} else if item.Type == "tool_result" {
+				if count := toolUseCounts[item.ResultFor]; count > 1 {
+					item.ResultFor = fmt.Sprintf("%s_%d", item.ResultFor, count)
+				}
+			}
+
 			block, err := unmarshalContentItem(item)
 			if err != nil {
 				return nil, fmt.Errorf("message %d block %d: %w", i, j, err)
 			}
 			bedrockMsg.Content = append(bedrockMsg.Content, block)
+		}
+
+		// A message with no content blocks is rejected by Bedrock. Downgrade
+		// skipped reasoning to plain text to preserve role alternation and
+		// conversational context.
+		if len(bedrockMsg.Content) == 0 {
+			if skippedReasoning == "" {
+				continue // drop genuinely empty messages
+			}
+			bedrockMsg.Content = append(bedrockMsg.Content, &types.ContentBlockMemberText{Value: skippedReasoning})
 		}
 
 		result = append(result, bedrockMsg)
