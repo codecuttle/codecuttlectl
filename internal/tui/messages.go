@@ -129,6 +129,11 @@ type UserSubmitMsg struct {
 	Text string
 }
 
+// DraftDebounceTickMsg is sent when the draft auto-save debounce timer fires.
+type DraftDebounceTickMsg struct {
+	ID uint64
+}
+
 // CacheKeepaliveTickMsg fires periodically to trigger a cache TTL refresh.
 type CacheKeepaliveTickMsg struct{}
 

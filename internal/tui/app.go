@@ -108,9 +108,10 @@ type Model struct {
 	todoExpanded bool
 
 	// Session persistence
-	store          session.Store
-	sessionID      string
-	lastSavedDraft string
+	store               session.Store
+	sessionID           string
+	lastSavedDraft      string
+	draftDebounceSeq    uint64
 
 	// Stats
 	totalInputTokens           int32
@@ -1107,6 +1108,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reschedule the next tick regardless.
 		return m, m.cacheKeepaliveTick()
 
+	case DraftDebounceTickMsg:
+		// Only save if the sequence matches the latest keystroke burst
+		if msg.ID == m.draftDebounceSeq && m.input.Value() != m.lastSavedDraft {
+			m.lastSavedDraft = m.input.Value()
+			m.saveSession()
+		}
+		return m, nil
+
 	case CacheKeepaliveDoneMsg:
 		// Keepalive completed. If it succeeded, update lastAPICallTime so we
 		// don't send another ping until the next interval elapses.
@@ -1138,10 +1147,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 
-		// Save draft message if it changed
+		// Debounce draft message saving to avoid blocking UI keystrokes with synchronous disk I/O
 		if m.input.Value() != m.lastSavedDraft {
-			m.lastSavedDraft = m.input.Value()
-			m.saveSession()
+			m.draftDebounceSeq++
+			seq := m.draftDebounceSeq
+			cmds = append(cmds, func() tea.Msg {
+				time.Sleep(1500 * time.Millisecond)
+				return DraftDebounceTickMsg{ID: seq}
+			})
 		}
 
 		// If textarea height changed (dynamic grow/shrink), recalculate layout

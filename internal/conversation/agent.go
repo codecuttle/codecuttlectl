@@ -969,12 +969,14 @@ func (a *Agent) effectiveSystemPrompt() string {
 	prompt := a.systemPrompt
 
 	// Skill injection (knowledge/workflows based on context)
-	skillCtx := a.buildSkillContext()
-	matched := a.pluginMgr.Skills().Evaluate(skillCtx)
-	if len(matched) > 0 {
-		skillContent := a.pluginMgr.Skills().Render(matched)
-		if skillContent != "" {
-			prompt += skillContent
+	if a.pluginMgr != nil && a.pluginMgr.Skills() != nil {
+		skillCtx := a.buildSkillContext()
+		matched := a.pluginMgr.Skills().Evaluate(skillCtx)
+		if len(matched) > 0 {
+			skillContent := a.pluginMgr.Skills().Render(matched)
+			if skillContent != "" {
+				prompt += skillContent
+			}
 		}
 	}
 
@@ -1059,9 +1061,11 @@ func BuiltinToolDefs(morph *swarm.Morphology) []bedrock.ToolDefinition {
 // filtered by the given workbench sandbox.
 func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm.Morphology) []bedrock.ToolDefinition {
 	var filtered []bedrock.ToolDefinition
-	for _, def := range pluginMgr.Definitions() {
-		if IsToolAllowed(def.Name, workbench) {
-			filtered = append(filtered, def)
+	if pluginMgr != nil {
+		for _, def := range pluginMgr.Definitions() {
+			if IsToolAllowed(def.Name, workbench) {
+				filtered = append(filtered, def)
+			}
 		}
 	}
 
