@@ -194,12 +194,36 @@ func UnmarshalHistory(messages []Message) ([]types.Message, error) {
 			Role: types.ConversationRole(msg.Role),
 		}
 
+		// Reasoning blocks without a signature (e.g. produced by Gemini or
+		// OpenRouter models) cannot be replayed through Bedrock: Anthropic
+		// models reject thinking blocks that lack a valid signature with
+		// "thinking.signature: Field required". Skip them, but remember the
+		// text so a reasoning-only message doesn't become empty.
+		var skippedReasoning string
+
 		for j, item := range msg.Blocks {
+			if item.Type == "reasoning" && item.Signature == "" {
+				if skippedReasoning != "" {
+					skippedReasoning += "\n"
+				}
+				skippedReasoning += item.Text
+				continue
+			}
 			block, err := unmarshalContentItem(item)
 			if err != nil {
 				return nil, fmt.Errorf("message %d block %d: %w", i, j, err)
 			}
 			bedrockMsg.Content = append(bedrockMsg.Content, block)
+		}
+
+		// A message with no content blocks is rejected by Bedrock. Downgrade
+		// skipped reasoning to plain text to preserve role alternation and
+		// conversational context.
+		if len(bedrockMsg.Content) == 0 {
+			if skippedReasoning == "" {
+				continue // drop genuinely empty messages
+			}
+			bedrockMsg.Content = append(bedrockMsg.Content, &types.ContentBlockMemberText{Value: skippedReasoning})
 		}
 
 		result = append(result, bedrockMsg)

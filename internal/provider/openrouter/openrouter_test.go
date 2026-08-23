@@ -196,3 +196,64 @@ func TestConverseStream_ToolCalls(t *testing.T) {
 		t.Error("expected MessageStopEvent")
 	}
 }
+
+func TestProviderMsgToOAI_ReasoningOnlyAssistant(t *testing.T) {
+	// An assistant message containing only reasoning must not serialize to an
+	// empty assistant message — some upstream providers (e.g. Google) reject
+	// those with 400 INVALID_ARGUMENT. Reasoning is downgraded to content.
+	msg := provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.ContentBlock{
+			provider.ReasoningBlock{Text: "planning the next step"},
+		},
+	}
+
+	out := providerMsgToOAI(msg)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out))
+	}
+	if out[0].Content != "planning the next step" {
+		t.Errorf("content=%q, want reasoning text as content", out[0].Content)
+	}
+}
+
+func TestProviderMsgToOAI_EmptyAssistantDropped(t *testing.T) {
+	// A completely empty assistant message is dropped rather than sent.
+	msg := provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: nil,
+	}
+
+	out := providerMsgToOAI(msg)
+	if len(out) != 0 {
+		t.Fatalf("expected empty assistant message to be dropped, got %d messages", len(out))
+	}
+}
+
+func TestProviderMsgToOAI_ReasoningWithTextAndTools(t *testing.T) {
+	// When text or tool calls are present, reasoning is dropped (not replayed)
+	// and the rest of the message is preserved.
+	msg := provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.ContentBlock{
+			provider.ReasoningBlock{Text: "thinking"},
+			provider.TextBlock{Text: "here is the answer"},
+			provider.ToolUseBlock{
+				ToolUseID: "call_1",
+				Name:      "read_file",
+				Input:     []byte(`{"path":"a.go"}`),
+			},
+		},
+	}
+
+	out := providerMsgToOAI(msg)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out))
+	}
+	if out[0].Content != "here is the answer" {
+		t.Errorf("content=%q, want text only (reasoning dropped)", out[0].Content)
+	}
+	if len(out[0].ToolCalls) != 1 || out[0].ToolCalls[0].ID != "call_1" {
+		t.Errorf("tool calls not preserved: %+v", out[0].ToolCalls)
+	}
+}

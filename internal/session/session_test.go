@@ -1077,3 +1077,107 @@ func TestSessionRestoreEmptySession(t *testing.T) {
 		t.Errorf("expected 0 bedrock messages, got %d", len(bedrockMsgs))
 	}
 }
+
+func TestUnmarshalHistorySkipsSignaturelessReasoning(t *testing.T) {
+	// Reasoning blocks without signatures (e.g. from Gemini via OpenRouter)
+	// must not be replayed to Bedrock: Anthropic models reject thinking
+	// blocks lacking a signature ("thinking.signature: Field required").
+	serialized := []Message{
+		{
+			Role: "user",
+			Blocks: []ContentItem{
+				{Type: "text", Text: "hello"},
+			},
+		},
+		{
+			Role: "assistant",
+			Blocks: []ContentItem{
+				{Type: "reasoning", Text: "unsigned thought"},
+				{Type: "text", Text: "answer"},
+			},
+		},
+	}
+
+	restored, err := UnmarshalHistory(serialized)
+	if err != nil {
+		t.Fatalf("UnmarshalHistory() error: %v", err)
+	}
+	if len(restored) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(restored))
+	}
+
+	assistant := restored[1]
+	if len(assistant.Content) != 1 {
+		t.Fatalf("expected reasoning block to be dropped, got %d blocks", len(assistant.Content))
+	}
+	text, ok := assistant.Content[0].(*types.ContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected ContentBlockMemberText, got %T", assistant.Content[0])
+	}
+	if text.Value != "answer" {
+		t.Errorf("expected 'answer', got %q", text.Value)
+	}
+}
+
+func TestUnmarshalHistoryReasoningOnlyMessageDowngradesToText(t *testing.T) {
+	// An assistant message consisting only of signatureless reasoning must
+	// not become empty (Bedrock rejects empty messages) — the reasoning is
+	// downgraded to plain text to preserve role alternation.
+	serialized := []Message{
+		{
+			Role: "assistant",
+			Blocks: []ContentItem{
+				{Type: "reasoning", Text: "thinking about the plan"},
+			},
+		},
+	}
+
+	restored, err := UnmarshalHistory(serialized)
+	if err != nil {
+		t.Fatalf("UnmarshalHistory() error: %v", err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(restored))
+	}
+	if len(restored[0].Content) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(restored[0].Content))
+	}
+	text, ok := restored[0].Content[0].(*types.ContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected ContentBlockMemberText, got %T", restored[0].Content[0])
+	}
+	if text.Value != "thinking about the plan" {
+		t.Errorf("expected reasoning text downgraded to text, got %q", text.Value)
+	}
+}
+
+func TestUnmarshalHistorySignedReasoningPreserved(t *testing.T) {
+	// Reasoning blocks WITH signatures must continue to round-trip intact.
+	serialized := []Message{
+		{
+			Role: "assistant",
+			Blocks: []ContentItem{
+				{Type: "reasoning", Text: "signed thought", Signature: "sig123"},
+			},
+		},
+	}
+
+	restored, err := UnmarshalHistory(serialized)
+	if err != nil {
+		t.Fatalf("UnmarshalHistory() error: %v", err)
+	}
+	if len(restored) != 1 || len(restored[0].Content) != 1 {
+		t.Fatalf("expected 1 message with 1 block, got %+v", restored)
+	}
+	reasoning, ok := restored[0].Content[0].(*types.ContentBlockMemberReasoningContent)
+	if !ok {
+		t.Fatalf("expected ContentBlockMemberReasoningContent, got %T", restored[0].Content[0])
+	}
+	rt, ok := reasoning.Value.(*types.ReasoningContentBlockMemberReasoningText)
+	if !ok {
+		t.Fatalf("expected ReasoningContentBlockMemberReasoningText, got %T", reasoning.Value)
+	}
+	if aws.ToString(rt.Value.Signature) != "sig123" {
+		t.Errorf("expected signature 'sig123', got %q", aws.ToString(rt.Value.Signature))
+	}
+}
