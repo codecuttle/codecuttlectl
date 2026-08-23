@@ -112,10 +112,10 @@ type Model struct {
 	todoExpanded bool
 
 	// Session persistence
-	store               session.Store
-	sessionID           string
-	lastSavedDraft      string
-	draftDebounceSeq    uint64
+	store            session.Store
+	sessionID        string
+	lastSavedDraft   string
+	draftDebounceSeq uint64
 
 	// Stats
 	totalInputTokens           int32
@@ -1117,7 +1117,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.cacheKeepaliveTick()
 
 	case DraftDebounceTickMsg:
-		// Only save if the sequence matches the latest keystroke burst
 		if msg.ID == m.draftDebounceSeq && m.input.Value() != m.lastSavedDraft {
 			m.lastSavedDraft = m.input.Value()
 			m.saveSession()

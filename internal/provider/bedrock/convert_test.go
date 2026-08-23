@@ -24,12 +24,15 @@ func TestProviderMsgToBedrock_EmptyToolInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := providerMsgToBedrock(provider.Message{
+			msg, ok := providerMsgToBedrock(provider.Message{
 				Role: provider.RoleAssistant,
 				Content: []provider.ContentBlock{
 					provider.ToolUseBlock{ToolUseID: "tu1", Name: "reload_plugins", Input: tc.input},
 				},
 			})
+			if !ok {
+				t.Fatalf("expected providerMsgToBedrock to return ok=true")
+			}
 
 			if len(msg.Content) != 1 {
 				t.Fatalf("expected 1 content block, got %d", len(msg.Content))
@@ -55,12 +58,15 @@ func TestProviderMsgToBedrock_EmptyToolInput(t *testing.T) {
 
 // TestProviderMsgToBedrock_ValidToolInput ensures normal inputs are preserved.
 func TestProviderMsgToBedrock_ValidToolInput(t *testing.T) {
-	msg := providerMsgToBedrock(provider.Message{
+	msg, ok := providerMsgToBedrock(provider.Message{
 		Role: provider.RoleAssistant,
 		Content: []provider.ContentBlock{
 			provider.ToolUseBlock{ToolUseID: "tu1", Name: "read_file", Input: []byte(`{"path":"/foo"}`)},
 		},
 	})
+	if !ok {
+		t.Fatalf("expected providerMsgToBedrock to return ok=true")
+	}
 
 	tu, ok := msg.Content[0].(*types.ContentBlockMemberToolUse)
 	if !ok {
@@ -72,5 +78,57 @@ func TestProviderMsgToBedrock_ValidToolInput(t *testing.T) {
 	}
 	if string(data) != `{"path":"/foo"}` {
 		t.Errorf("unexpected input serialization: %q", string(data))
+	}
+}
+
+func TestProviderMsgToBedrock_ReasoningHandling(t *testing.T) {
+	// Unsigned reasoning mixed with text: reasoning should be dropped, text kept.
+	msg, ok := providerMsgToBedrock(provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.ContentBlock{
+			provider.ReasoningBlock{Text: "unsigned thought"},
+			provider.TextBlock{Text: "real answer"},
+		},
+	})
+	if !ok || len(msg.Content) != 1 {
+		t.Fatalf("expected 1 block, got %d (ok=%v)", len(msg.Content), ok)
+	}
+	txt, ok := msg.Content[0].(*types.ContentBlockMemberText)
+	if !ok || txt.Value != "real answer" {
+		t.Fatalf("expected text 'real answer', got %+v", msg.Content[0])
+	}
+
+	// Unsigned reasoning only: downgraded to text to preserve message.
+	msg, ok = providerMsgToBedrock(provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.ContentBlock{
+			provider.ReasoningBlock{Text: "only thoughts"},
+		},
+	})
+	if !ok || len(msg.Content) != 1 {
+		t.Fatalf("expected 1 block, got %d (ok=%v)", len(msg.Content), ok)
+	}
+	txt, ok = msg.Content[0].(*types.ContentBlockMemberText)
+	if !ok || txt.Value != "only thoughts" {
+		t.Fatalf("expected text 'only thoughts', got %+v", msg.Content[0])
+	}
+
+	// Signed reasoning: kept as reasoning content with signature.
+	msg, ok = providerMsgToBedrock(provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.ContentBlock{
+			provider.ReasoningBlock{Text: "signed thought", Signature: "sig123"},
+		},
+	})
+	if !ok || len(msg.Content) != 1 {
+		t.Fatalf("expected 1 block, got %d (ok=%v)", len(msg.Content), ok)
+	}
+	rc, ok := msg.Content[0].(*types.ContentBlockMemberReasoningContent)
+	if !ok {
+		t.Fatalf("expected reasoning content, got %T", msg.Content[0])
+	}
+	rt, ok := rc.Value.(*types.ReasoningContentBlockMemberReasoningText)
+	if !ok || rt.Value.Signature == nil || *rt.Value.Signature != "sig123" {
+		t.Fatalf("expected signature sig123, got %+v", rc.Value)
 	}
 }

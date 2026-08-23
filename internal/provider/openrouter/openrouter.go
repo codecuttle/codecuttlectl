@@ -313,10 +313,13 @@ func providerMsgToOAI(msg provider.Message) []chatMessage {
 		}
 
 		var textParts []string
+		var reasoningParts []string
 		for _, block := range msg.Content {
 			switch b := block.(type) {
 			case provider.TextBlock:
 				textParts = append(textParts, b.Text)
+			case provider.ReasoningBlock:
+				reasoningParts = append(reasoningParts, b.Text)
 			case provider.ToolUseBlock:
 				m.ToolCalls = append(m.ToolCalls, oaiToolCall{
 					ID:   b.ToolUseID,
@@ -338,6 +341,17 @@ func providerMsgToOAI(msg provider.Message) []chatMessage {
 				combined += p
 			}
 			m.Content = combined
+		}
+
+		// An assistant message with empty content and no tool calls is
+		// rejected by some upstream providers (e.g. Google returns
+		// INVALID_ARGUMENT). If the message consisted only of reasoning,
+		// downgrade the reasoning to plain text; otherwise drop it.
+		if m.Content == "" && len(m.ToolCalls) == 0 {
+			if len(reasoningParts) == 0 {
+				return nil
+			}
+			m.Content = strings.Join(reasoningParts, "\n")
 		}
 
 		return []chatMessage{m}

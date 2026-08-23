@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -86,6 +87,8 @@ func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 // Used for cache keepalive pings which use the raw Bedrock client.
 func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 	var result []types.Message
+	toolUseCounts := make(map[string]int)
+
 	for _, msg := range msgs {
 		var role types.ConversationRole
 		switch msg.Role {
@@ -97,21 +100,26 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 			role = types.ConversationRole(string(msg.Role))
 		}
 
-		var blocks []types.ContentBlock
+		var content []types.ContentBlock
+		var skippedReasoning string
+
 		for _, block := range msg.Content {
 			switch b := block.(type) {
 			case provider.TextBlock:
-				blocks = append(blocks, &types.ContentBlockMemberText{Value: b.Text})
+				content = append(content, &types.ContentBlockMemberText{Value: b.Text})
 			case provider.ReasoningBlock:
-				var sig *string
-				if b.Signature != "" {
-					sig = aws.String(b.Signature)
+				if b.Signature == "" {
+					if skippedReasoning != "" {
+						skippedReasoning += "\n"
+					}
+					skippedReasoning += b.Text
+					continue
 				}
-				blocks = append(blocks, &types.ContentBlockMemberReasoningContent{
+				content = append(content, &types.ContentBlockMemberReasoningContent{
 					Value: &types.ReasoningContentBlockMemberReasoningText{
 						Value: types.ReasoningTextBlock{
 							Text:      aws.String(b.Text),
-							Signature: sig,
+							Signature: aws.String(b.Signature),
 						},
 					},
 				})
@@ -125,9 +133,14 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if inputMap == nil {
 					inputMap = map[string]interface{}{}
 				}
-				blocks = append(blocks, &types.ContentBlockMemberToolUse{
+				toolUseID := b.ToolUseID
+				toolUseCounts[toolUseID]++
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
+				content = append(content, &types.ContentBlockMemberToolUse{
 					Value: types.ToolUseBlock{
-						ToolUseId: aws.String(b.ToolUseID),
+						ToolUseId: aws.String(toolUseID),
 						Name:      aws.String(b.Name),
 						Input:     document.NewLazyDocument(inputMap),
 					},
@@ -137,9 +150,13 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if b.IsError {
 					status = types.ToolResultStatusError
 				}
-				blocks = append(blocks, &types.ContentBlockMemberToolResult{
+				toolUseID := b.ToolUseID
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
+				content = append(content, &types.ContentBlockMemberToolResult{
 					Value: types.ToolResultBlock{
-						ToolUseId: aws.String(b.ToolUseID),
+						ToolUseId: aws.String(toolUseID),
 						Content: []types.ToolResultContentBlock{
 							&types.ToolResultContentBlockMemberText{Value: b.Content},
 						},
@@ -149,7 +166,14 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 			}
 		}
 
-		result = append(result, types.Message{Role: role, Content: blocks})
+		if len(content) == 0 {
+			if skippedReasoning == "" {
+				continue
+			}
+			content = append(content, &types.ContentBlockMemberText{Value: skippedReasoning})
+		}
+
+		result = append(result, types.Message{Role: role, Content: content})
 	}
 	return result
 }

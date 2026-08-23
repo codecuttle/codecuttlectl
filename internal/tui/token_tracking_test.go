@@ -227,23 +227,21 @@ func TestRenderTodoBar_EmptySwarmProgress(t *testing.T) {
 	}
 }
 
-func TestDraftDebouncingMessage(t *testing.T) {
+func TestDraftDebounceTickMsg(t *testing.T) {
 	m := &Model{
-		lastSavedDraft:   "previous draft",
-		draftDebounceSeq: 5,
+		lastSavedDraft:   "old draft",
+		draftDebounceSeq: 3,
 	}
 
-	// DraftDebounceTickMsg with matching sequence should update lastSavedDraft
-	msg := DraftDebounceTickMsg{ID: 5}
+	// Message with matching sequence ID
+	msg := DraftDebounceTickMsg{ID: 3}
 	if msg.ID != m.draftDebounceSeq {
 		t.Errorf("expected sequence ID to match")
 	}
 
-	// Stale sequence ID should be ignored
-	staleMsg := DraftDebounceTickMsg{ID: 4}
+	// Stale sequence ID
+	staleMsg := DraftDebounceTickMsg{ID: 2}
 	if staleMsg.ID == m.draftDebounceSeq {
 		t.Errorf("expected stale sequence ID not to match current debounce sequence")
 	}
 }
-
-
