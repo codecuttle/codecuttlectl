@@ -2,6 +2,7 @@ package bedrockprov
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -13,8 +14,10 @@ import (
 // providerToBedrock converts provider-agnostic messages to Bedrock SDK messages.
 func providerToBedrock(msgs []provider.Message) []types.Message {
 	var result []types.Message
+	toolUseCounts := make(map[string]int)
+
 	for _, msg := range msgs {
-		bedrockMsg, ok := providerMsgToBedrock(msg)
+		bedrockMsg, ok := providerMsgToBedrockWithCounts(msg, toolUseCounts)
 		if ok {
 			result = append(result, bedrockMsg)
 		}
@@ -26,6 +29,10 @@ func providerToBedrock(msgs []provider.Message) []types.Message {
 // It returns false if the message has no valid content blocks for Bedrock
 // (e.g. signatureless reasoning blocks that cannot be replayed).
 func providerMsgToBedrock(msg provider.Message) (types.Message, bool) {
+	return providerMsgToBedrockWithCounts(msg, make(map[string]int))
+}
+
+func providerMsgToBedrockWithCounts(msg provider.Message, toolUseCounts map[string]int) (types.Message, bool) {
 	var role types.ConversationRole
 	switch msg.Role {
 	case provider.RoleUser:
@@ -75,9 +82,14 @@ func providerMsgToBedrock(msg provider.Message) (types.Message, bool) {
 			if inputMap == nil {
 				inputMap = map[string]interface{}{}
 			}
+			toolUseID := b.ToolUseID
+			toolUseCounts[toolUseID]++
+			if count := toolUseCounts[toolUseID]; count > 1 {
+				toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+			}
 			content = append(content, &types.ContentBlockMemberToolUse{
 				Value: types.ToolUseBlock{
-					ToolUseId: aws.String(b.ToolUseID),
+					ToolUseId: aws.String(toolUseID),
 					Name:      aws.String(b.Name),
 					Input:     document.NewLazyDocument(inputMap),
 				},
@@ -87,9 +99,13 @@ func providerMsgToBedrock(msg provider.Message) (types.Message, bool) {
 			if b.IsError {
 				status = types.ToolResultStatusError
 			}
+			toolUseID := b.ToolUseID
+			if count := toolUseCounts[toolUseID]; count > 1 {
+				toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+			}
 			content = append(content, &types.ContentBlockMemberToolResult{
 				Value: types.ToolResultBlock{
-					ToolUseId: aws.String(b.ToolUseID),
+					ToolUseId: aws.String(toolUseID),
 					Content: []types.ToolResultContentBlock{
 						&types.ToolResultContentBlockMemberText{Value: b.Content},
 					},

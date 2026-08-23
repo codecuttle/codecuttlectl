@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -86,6 +87,8 @@ func bedrockToProviderMessages(msgs []types.Message) []provider.Message {
 // Used for cache keepalive pings which use the raw Bedrock client.
 func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 	var result []types.Message
+	toolUseCounts := make(map[string]int)
+
 	for _, msg := range msgs {
 		var role types.ConversationRole
 		switch msg.Role {
@@ -130,9 +133,14 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if inputMap == nil {
 					inputMap = map[string]interface{}{}
 				}
+				toolUseID := b.ToolUseID
+				toolUseCounts[toolUseID]++
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
 				content = append(content, &types.ContentBlockMemberToolUse{
 					Value: types.ToolUseBlock{
-						ToolUseId: aws.String(b.ToolUseID),
+						ToolUseId: aws.String(toolUseID),
 						Name:      aws.String(b.Name),
 						Input:     document.NewLazyDocument(inputMap),
 					},
@@ -142,9 +150,13 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if b.IsError {
 					status = types.ToolResultStatusError
 				}
+				toolUseID := b.ToolUseID
+				if count := toolUseCounts[toolUseID]; count > 1 {
+					toolUseID = fmt.Sprintf("%s_%d", toolUseID, count)
+				}
 				content = append(content, &types.ContentBlockMemberToolResult{
 					Value: types.ToolResultBlock{
-						ToolUseId: aws.String(b.ToolUseID),
+						ToolUseId: aws.String(toolUseID),
 						Content: []types.ToolResultContentBlock{
 							&types.ToolResultContentBlockMemberText{Value: b.Content},
 						},

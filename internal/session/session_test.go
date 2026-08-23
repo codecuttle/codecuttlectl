@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
 
@@ -1179,5 +1180,57 @@ func TestUnmarshalHistorySignedReasoningPreserved(t *testing.T) {
 	}
 	if aws.ToString(rt.Value.Signature) != "sig123" {
 		t.Errorf("expected signature 'sig123', got %q", aws.ToString(rt.Value.Signature))
+	}
+}
+
+func TestUnmarshalProviderHistoryDisambiguatesDuplicateToolUseIDs(t *testing.T) {
+	serialized := []Message{
+		{
+			Role: "assistant",
+			Blocks: []ContentItem{
+				{Type: "tool_use", ToolUseID: "call_abc", Name: "read_file", Input: []byte(`{}`)},
+			},
+		},
+		{
+			Role: "user",
+			Blocks: []ContentItem{
+				{Type: "tool_result", ResultFor: "call_abc", Content: "file 1"},
+			},
+		},
+		{
+			Role: "assistant",
+			Blocks: []ContentItem{
+				{Type: "tool_use", ToolUseID: "call_abc", Name: "read_file", Input: []byte(`{}`)},
+			},
+		},
+		{
+			Role: "user",
+			Blocks: []ContentItem{
+				{Type: "tool_result", ResultFor: "call_abc", Content: "file 2"},
+			},
+		},
+	}
+
+	restored := UnmarshalProviderHistory(serialized)
+	if len(restored) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(restored))
+	}
+
+	tu1 := restored[0].Content[0].(provider.ToolUseBlock)
+	tr1 := restored[1].Content[0].(provider.ToolResultBlock)
+	tu2 := restored[2].Content[0].(provider.ToolUseBlock)
+	tr2 := restored[3].Content[0].(provider.ToolResultBlock)
+
+	if tu1.ToolUseID != "call_abc" {
+		t.Errorf("expected first tool use ID 'call_abc', got %q", tu1.ToolUseID)
+	}
+	if tr1.ToolUseID != "call_abc" {
+		t.Errorf("expected first tool result ID 'call_abc', got %q", tr1.ToolUseID)
+	}
+	if tu2.ToolUseID != "call_abc_2" {
+		t.Errorf("expected disambiguated second tool use ID 'call_abc_2', got %q", tu2.ToolUseID)
+	}
+	if tr2.ToolUseID != "call_abc_2" {
+		t.Errorf("expected disambiguated second tool result ID 'call_abc_2', got %q", tr2.ToolUseID)
 	}
 }
