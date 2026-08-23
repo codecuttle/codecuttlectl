@@ -412,6 +412,7 @@ func main() {
 		os.Exit(1)
 	}
 	agent.SetSystemPrompt(systemPrompt)
+	engine := conversation.NewEngine(agent)
 
 	// Full-screen TUI mode
 	model := tui.New(tui.Config{
@@ -428,6 +429,7 @@ func main() {
 		SessionID:      *sessionID,
 		Morph:          morph,
 		Agent:          agent,
+		Engine:         engine,
 	})
 
 	p := tea.NewProgram(model)
@@ -465,6 +467,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 		os.Exit(1)
 	}
 	agent.SetSystemPrompt(system)
+	engine := conversation.NewEngine(agent)
 
 	// Create a new session if not resuming
 	if sessionID == "" {
@@ -485,7 +488,7 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 		}
 	}
 
-	response, err := agent.Turn(ctx, message)
+	response, err := engine.Agent().Turn(ctx, message)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

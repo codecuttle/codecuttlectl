@@ -46,6 +46,7 @@ type Config struct {
 	SessionID string            // If set, resume this session
 	Morph     *swarm.Morphology // Pass down morph config
 	Agent     *conversation.Agent
+	Engine    *conversation.Engine
 }
 
 // Model is the main Bubble Tea application model.
@@ -65,6 +66,8 @@ type Model struct {
 	enableThinking bool
 	thinkingBudget int
 	morph          *swarm.Morphology
+	engine         *conversation.Engine
+	agent          *conversation.Agent
 
 	// Conversation state
 	history           []provider.Message
@@ -146,7 +149,6 @@ type Model struct {
 	lastAPICallTime time.Time
 
 	// Swarm integration
-	agent               *conversation.Agent
 	swarmMgr            *swarm.Manager
 	swarmEventCh        chan any
 	pendingAsyncResults []string
@@ -240,6 +242,7 @@ func New(cfg Config) Model {
 		sessionID:        cfg.SessionID,
 		morph:            cfg.Morph,
 		agent:            cfg.Agent,
+		engine:           cfg.Engine,
 		swarmEventCh:     make(chan any, 100),
 		dispatchedTasks:  make(map[string]bool),
 		swarmProgress:    make(map[string]string),
@@ -247,6 +250,10 @@ func New(cfg Config) Model {
 
 	if m.morph != nil {
 		m.swarmMgr = swarm.NewManager(m.morph, chanDispatcher{ch: m.swarmEventCh})
+	}
+
+	if m.engine == nil && m.agent != nil {
+		m.engine = conversation.NewEngine(m.agent)
 	}
 
 	// If pool is provided, use its primary client
