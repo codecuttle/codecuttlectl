@@ -615,6 +615,12 @@ func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
 	return m
 }
 
+// ExecuteTool dispatches a tool call to the appropriate handler.
+// Exported so Engine and TUI can reuse the identical execution logic without duplication.
+func (a *Agent) ExecuteTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
+	return a.executeTool(ctx, name, input)
+}
+
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
 	// Security Gate: Workbench Sandboxing
