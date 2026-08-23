@@ -97,21 +97,26 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 			role = types.ConversationRole(string(msg.Role))
 		}
 
-		var blocks []types.ContentBlock
+		var content []types.ContentBlock
+		var skippedReasoning string
+
 		for _, block := range msg.Content {
 			switch b := block.(type) {
 			case provider.TextBlock:
-				blocks = append(blocks, &types.ContentBlockMemberText{Value: b.Text})
+				content = append(content, &types.ContentBlockMemberText{Value: b.Text})
 			case provider.ReasoningBlock:
-				var sig *string
-				if b.Signature != "" {
-					sig = aws.String(b.Signature)
+				if b.Signature == "" {
+					if skippedReasoning != "" {
+						skippedReasoning += "\n"
+					}
+					skippedReasoning += b.Text
+					continue
 				}
-				blocks = append(blocks, &types.ContentBlockMemberReasoningContent{
+				content = append(content, &types.ContentBlockMemberReasoningContent{
 					Value: &types.ReasoningContentBlockMemberReasoningText{
 						Value: types.ReasoningTextBlock{
 							Text:      aws.String(b.Text),
-							Signature: sig,
+							Signature: aws.String(b.Signature),
 						},
 					},
 				})
@@ -125,7 +130,7 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if inputMap == nil {
 					inputMap = map[string]interface{}{}
 				}
-				blocks = append(blocks, &types.ContentBlockMemberToolUse{
+				content = append(content, &types.ContentBlockMemberToolUse{
 					Value: types.ToolUseBlock{
 						ToolUseId: aws.String(b.ToolUseID),
 						Name:      aws.String(b.Name),
@@ -137,7 +142,7 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 				if b.IsError {
 					status = types.ToolResultStatusError
 				}
-				blocks = append(blocks, &types.ContentBlockMemberToolResult{
+				content = append(content, &types.ContentBlockMemberToolResult{
 					Value: types.ToolResultBlock{
 						ToolUseId: aws.String(b.ToolUseID),
 						Content: []types.ToolResultContentBlock{
@@ -149,7 +154,14 @@ func providerToBedrockMessages(msgs []provider.Message) []types.Message {
 			}
 		}
 
-		result = append(result, types.Message{Role: role, Content: blocks})
+		if len(content) == 0 {
+			if skippedReasoning == "" {
+				continue
+			}
+			content = append(content, &types.ContentBlockMemberText{Value: skippedReasoning})
+		}
+
+		result = append(result, types.Message{Role: role, Content: content})
 	}
 	return result
 }

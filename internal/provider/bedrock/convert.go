@@ -14,13 +14,18 @@ import (
 func providerToBedrock(msgs []provider.Message) []types.Message {
 	var result []types.Message
 	for _, msg := range msgs {
-		result = append(result, providerMsgToBedrock(msg))
+		bedrockMsg, ok := providerMsgToBedrock(msg)
+		if ok {
+			result = append(result, bedrockMsg)
+		}
 	}
 	return result
 }
 
 // providerMsgToBedrock converts a single provider message to Bedrock format.
-func providerMsgToBedrock(msg provider.Message) types.Message {
+// It returns false if the message has no valid content blocks for Bedrock
+// (e.g. signatureless reasoning blocks that cannot be replayed).
+func providerMsgToBedrock(msg provider.Message) (types.Message, bool) {
 	var role types.ConversationRole
 	switch msg.Role {
 	case provider.RoleUser:
@@ -32,20 +37,29 @@ func providerMsgToBedrock(msg provider.Message) types.Message {
 	}
 
 	var content []types.ContentBlock
+	var skippedReasoning string
+
 	for _, block := range msg.Content {
 		switch b := block.(type) {
 		case provider.TextBlock:
 			content = append(content, &types.ContentBlockMemberText{Value: b.Text})
 		case provider.ReasoningBlock:
-			var sig *string
-			if b.Signature != "" {
-				sig = aws.String(b.Signature)
+			// Reasoning blocks without a signature (e.g. from Gemini or OpenRouter)
+			// cannot be replayed to Bedrock: Anthropic models reject them with
+			// "thinking.signature: Field required". Skip them, but remember the text
+			// so reasoning-only messages can be downgraded to plain text.
+			if b.Signature == "" {
+				if skippedReasoning != "" {
+					skippedReasoning += "\n"
+				}
+				skippedReasoning += b.Text
+				continue
 			}
 			content = append(content, &types.ContentBlockMemberReasoningContent{
 				Value: &types.ReasoningContentBlockMemberReasoningText{
 					Value: types.ReasoningTextBlock{
 						Text:      aws.String(b.Text),
-						Signature: sig,
+						Signature: aws.String(b.Signature),
 					},
 				},
 			})
@@ -85,7 +99,14 @@ func providerMsgToBedrock(msg provider.Message) types.Message {
 		}
 	}
 
-	return types.Message{Role: role, Content: content}
+	if len(content) == 0 {
+		if skippedReasoning == "" {
+			return types.Message{}, false
+		}
+		content = append(content, &types.ContentBlockMemberText{Value: skippedReasoning})
+	}
+
+	return types.Message{Role: role, Content: content}, true
 }
 
 // providerToolsToBedrock converts provider tool definitions to bedrock tool definitions.
