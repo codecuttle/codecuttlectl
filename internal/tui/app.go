@@ -140,6 +140,10 @@ type Model struct {
 	height int
 	ready  bool
 
+	// Auto-scroll sticky state: when true (default), new messages and streaming tokens
+	// scroll the viewport to the bottom. When false (user scrolled up), position is preserved.
+	autoScroll bool
+
 	// Mouse mode toggle: when true, mouse is captured (scroll works).
 	// When false, terminal handles mouse natively (text selection works).
 	mouseEnabled bool
@@ -234,6 +238,7 @@ func New(cfg Config) Model {
 		messages:         []chatMessage{},
 		streamBuf:        &strings.Builder{},
 		reasoningBuf:     &strings.Builder{},
+		autoScroll:       true,
 		mouseEnabled:     true,
 		currentToolInput: &strings.Builder{},
 		activeToolOutput: &strings.Builder{},
@@ -421,6 +426,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if text != "" {
 					m.input.Reset()
 					m.input.SetHeight(1)
+					m.autoScroll = true // Reset auto-scroll on new message submission
 					m.recalcLayout()
 					return m, m.submitMessage(text)
 				}
@@ -473,14 +479,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						content: "*(generation interrupted by user)*",
 					})
 					m.saveSession()
-					m.viewport.SetContent(m.renderMessages())
-					m.viewport.GotoBottom()
+					m.updateViewportContent()
 					return m, nil
 				}
 				// First esc: show confirmation prompt
 				m.interruptPending = true
-				m.viewport.SetContent(m.renderMessages())
-				m.viewport.GotoBottom()
+				m.updateViewportContent()
 				return m, nil
 			}
 			// Not streaming: clear interrupt state, handle other esc uses
@@ -501,8 +505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			role:    "system",
 			content: fmt.Sprintf("↻ [Swarm] Background task started: %q (Node: %s)", msg.TaskID, msg.Assignee),
 		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 
 		var cmd tea.Cmd
 		if m.activeSwarmTasks == 1 && !m.streaming {
@@ -562,8 +565,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role:    "system_nudge",
 				content: "↻ auto-continuing to review background task...",
 			})
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
+			m.updateViewportContent()
 
 			return m, tea.Batch(m.listenSwarmEvents(), m.launchStream())
 		}
@@ -585,16 +587,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// we receive a newline (paragraph boundary) or every 200 bytes.
 		// This prevents layout thrashing from partial markdown re-interpretation.
 		if strings.HasSuffix(msg.Text, "\n") || m.streamBuf.Len()%200 < len(msg.Text) {
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
+			m.updateViewportContent()
 		}
 		return m, m.readNextStreamEvent()
 
 	case StreamReasoningMsg:
 		m.inReasoning = true
 		m.reasoningBuf.WriteString(msg.Text)
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, m.readNextStreamEvent()
 
 	case StreamReasoningDoneMsg:
@@ -608,8 +608,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reasoningBuf.Reset()
 		}
 		m.inReasoning = false
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, m.readNextStreamEvent()
 
 	case StreamToolStartMsg:
@@ -634,8 +633,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content: fmt.Sprintf("Calling %s...", msg.Name),
 			name:    msg.Name,
 		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, m.readNextStreamEvent()
 
 	case StreamToolInputMsg:
@@ -750,8 +748,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						role:    "system_nudge",
 						content: "↻ auto-continuing…",
 					})
-					m.viewport.SetContent(m.renderMessages())
-					m.viewport.GotoBottom()
+					m.updateViewportContent()
 					return m, m.launchStream()
 				}
 
@@ -771,8 +768,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.streamCh = nil
 		m.saveSession()
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 
 		// Flush any async results that arrived while we were streaming
 		if len(m.pendingAsyncResults) > 0 {
@@ -792,8 +788,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role:    "system_nudge",
 				content: "↻ auto-continuing to review background task...",
 			})
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
+			m.updateViewportContent()
 			return m, m.launchStream()
 		}
 
@@ -810,7 +805,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastCallCacheWriteInputTokens = msg.CacheWriteInputTokens
 		// Usage arrives after MessageStop. Continue reading for the channel close
 		// which will emit StreamDoneMsg to finalize the turn.
-		m.viewport.SetContent(m.renderMessages())
+		m.updateViewportContent()
 		return m, m.readNextStreamEvent()
 
 	case StreamErrorMsg:
@@ -821,16 +816,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content: fmt.Sprintf("Error: %v", msg.Err),
 			isError: true,
 		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, nil
 
 	case ToolOutputDeltaMsg:
 		// Live tool output streaming — update the active tool preview
 		m.activeToolName = msg.Name
 		m.activeToolOutput.WriteString(msg.Delta)
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, nil
 
 	case ToolExecResultMsg:
@@ -843,8 +836,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name:    msg.Name,
 			isError: msg.IsError,
 		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, nil
 
 	case ApprovalRequestMsg:
@@ -876,8 +868,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content: fmt.Sprintf("⚠️  APPROVAL REQUIRED (%s risk)\n   Tool: %s\n   Command: %s\n   Reason: %s\n\n   Press 'y' to approve, 'n' to deny", msg.Risk, msg.ToolName, msg.Command, msg.Reason),
 			name:    msg.ToolName,
 		})
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		return m, nil
 
 	case ApprovalDecisionMsg:
@@ -889,8 +880,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role:    "tool_result",
 				content: "✓ Approved — executing...",
 			})
-			m.viewport.SetContent(m.renderMessages())
-			m.viewport.GotoBottom()
+			m.updateViewportContent()
 			tool := m.approvalTool
 			m.approvalTool = nil
 			remaining := m.approvalRemaining
@@ -903,6 +893,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content: "✗ Denied by user — operation was not executed",
 			isError: true,
 		})
+		m.updateViewportContent()
 		tool := m.approvalTool
 		m.approvalTool = nil
 		remaining := m.approvalRemaining
@@ -1064,8 +1055,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				isError: isErr,
 			})
 		}
-		m.viewport.SetContent(m.renderMessages())
-		m.viewport.GotoBottom()
+		m.updateViewportContent()
 		// Add tool results to history and start new stream
 		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
@@ -1180,17 +1170,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		cmds = append(cmds, vpCmd)
+		// If mouse wheel scrolled up, disable autoScroll; if at bottom, enable autoScroll
+		if m.viewport.AtBottom() {
+			m.autoScroll = true
+		} else {
+			m.autoScroll = false
+		}
 	case tea.WindowSizeMsg:
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		cmds = append(cmds, vpCmd)
 	case tea.KeyMsg:
-		// Only pass navigation keys to viewport (not typing keys)
+		// Handle navigation keys: home/end and scroll keys
 		switch msg.String() {
-		case "pgup", "pgdown", "home", "end", "ctrl+u", "ctrl+d":
+		case "home":
+			m.viewport.GotoTop()
+			m.autoScroll = false
+		case "end":
+			m.viewport.GotoBottom()
+			m.autoScroll = true
+		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
 			var vpCmd tea.Cmd
 			m.viewport, vpCmd = m.viewport.Update(msg)
 			cmds = append(cmds, vpCmd)
+			if m.viewport.AtBottom() {
+				m.autoScroll = true
+			} else {
+				m.autoScroll = false
+			}
 		}
 	}
 
@@ -2187,10 +2194,15 @@ func (m *Model) renderTodoPanel() string {
 }
 
 func (m *Model) renderHelpBar() string {
+	mouseState := "scroll"
+	if !m.mouseEnabled {
+		mouseState = "select"
+	}
 	keys := []struct{ key, desc string }{
 		{"enter", "send"},
 		{"shift+enter", "newline"},
-		{"ctrl+m", "mouse"},
+		{"ctrl+m", "mouse (" + mouseState + ")"},
+		{"home/end", "top/bot"},
 		{"ctrl+r", "thinking"},
 		{"ctrl+t", "tasks"},
 		{"ctrl+c", "quit"},
@@ -2404,6 +2416,15 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// updateViewportContent sets the viewport content and scrolls to the bottom
+// only if autoScroll is enabled (the user hasn't scrolled up to read history).
+func (m *Model) updateViewportContent() {
+	m.viewport.SetContent(m.renderMessages())
+	if m.autoScroll {
+		m.viewport.GotoBottom()
+	}
 }
 
 func max(a, b int) int {
