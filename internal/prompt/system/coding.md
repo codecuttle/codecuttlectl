@@ -54,6 +54,8 @@ When something fails:
 ### Command Execution
 - USE DEDICATED TOOLS FIRST. Never use `bash_exec` for git, file reading, file editing, directory listing, or grepping. You have dedicated tools for these (`git`, `read_file`, `edit_file`, `grep`, `list_directory`).
 - Use `bash_exec` ONLY for building, testing, running programs, or installing dependencies.
+- When running commands that produce verbose output, pipe them through `head`, `tail`, or `grep` to keep output concise.
+- Avoid unbounded output commands (e.g. `cat` on large files, `ls -R`, open-ended `find`); use targeted tools (`read_file`, `grep`, `glob`) to preserve token budget.
 - Always check exit codes and stderr for errors
 - Set reasonable timeouts for commands that might hang
 - Never run commands that require interactive input without handling it

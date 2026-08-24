@@ -333,20 +333,24 @@ type ExecuteResult struct {
 // history. Oversized outputs (e.g. `docker logs` dumping tens of MB) would
 // otherwise be sent verbatim to the model, instantly blowing provider input
 // token limits (Google: 1,048,576) and triggering throttling on Bedrock.
-// 100 KiB is roughly 25k tokens — generous for real work, safe for providers.
-const MaxToolOutputBytes = 100 * 1024
+// MaxToolOutputBytes is the hard cap for tool output (30 KiB, roughly 7.5k tokens).
+// This protects the LLM context window from unbounded command output while preserving
+// critical head and tail diagnostics.
+const MaxToolOutputBytes = 30 * 1024
 
-// capToolOutput truncates oversized tool output, preserving the head and tail
-// (errors typically appear at the end of long logs) with an explicit marker so
-// the model knows content was elided.
-func capToolOutput(s string) string {
-	if len(s) <= MaxToolOutputBytes {
+// TruncateHeadTail truncates oversized output, preserving head and tail lines with an ANSI reset
+// and clear omission notice.
+func TruncateHeadTail(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
 		return s
 	}
-	const headBytes = MaxToolOutputBytes * 6 / 10
-	const tailBytes = MaxToolOutputBytes - headBytes
+
+	headBytes := maxBytes / 2
+	tailBytes := maxBytes - headBytes
+
 	head := s[:headBytes]
 	tail := s[len(s)-tailBytes:]
+
 	// Avoid splitting mid-line where practical.
 	if i := strings.LastIndexByte(head, '\n'); i > 0 {
 		head = head[:i]
@@ -354,9 +358,22 @@ func capToolOutput(s string) string {
 	if i := strings.IndexByte(tail, '\n'); i >= 0 && i < len(tail)-1 {
 		tail = tail[i+1:]
 	}
-	omitted := len(s) - len(head) - len(tail)
-	return fmt.Sprintf("%s\n\n[... tool output truncated: %d bytes omitted (%d total). Re-run with a narrower query (e.g. grep, head/tail, --since/--tail flags) to see specific sections ...]\n\n%s",
-		head, omitted, len(s), tail)
+
+	omittedBytes := len(s) - len(head) - len(tail)
+	omittedLines := strings.Count(s, "\n") - strings.Count(head, "\n") - strings.Count(tail, "\n")
+	if omittedLines < 0 {
+		omittedLines = 0
+	}
+
+	return fmt.Sprintf("%s\x1b[0m\n\n[... tool output truncated: %d lines / %d bytes omitted (%d total bytes). Re-run with a narrower query (e.g. grep, head/tail, --since/--tail flags) to see specific sections ...]\n\n%s",
+		head, omittedLines, omittedBytes, len(s), tail)
+}
+
+// capToolOutput truncates oversized tool output, preserving the head and tail
+// (errors typically appear at the end of long logs) with an explicit marker so
+// the model knows content was elided.
+func capToolOutput(s string) string {
+	return TruncateHeadTail(s, MaxToolOutputBytes)
 }
 
 // Execute invokes a tool by name with the given JSON input.

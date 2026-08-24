@@ -245,4 +245,3 @@ func TestDraftDebounceTickMsg(t *testing.T) {
 		t.Errorf("expected stale sequence ID not to match current debounce sequence")
 	}
 }
-

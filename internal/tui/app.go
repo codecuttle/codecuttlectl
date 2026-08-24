@@ -15,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/approval"
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
@@ -46,6 +47,7 @@ type Config struct {
 	SessionID string            // If set, resume this session
 	Morph     *swarm.Morphology // Pass down morph config
 	Agent     *conversation.Agent
+	Engine    *conversation.Engine
 }
 
 // Model is the main Bubble Tea application model.
@@ -65,6 +67,8 @@ type Model struct {
 	enableThinking bool
 	thinkingBudget int
 	morph          *swarm.Morphology
+	engine         *conversation.Engine
+	agent          *conversation.Agent
 
 	// Conversation state
 	history           []provider.Message
@@ -146,7 +150,6 @@ type Model struct {
 	lastAPICallTime time.Time
 
 	// Swarm integration
-	agent               *conversation.Agent
 	swarmMgr            *swarm.Manager
 	swarmEventCh        chan any
 	pendingAsyncResults []string
@@ -240,6 +243,7 @@ func New(cfg Config) Model {
 		sessionID:        cfg.SessionID,
 		morph:            cfg.Morph,
 		agent:            cfg.Agent,
+		engine:           cfg.Engine,
 		swarmEventCh:     make(chan any, 100),
 		dispatchedTasks:  make(map[string]bool),
 		swarmProgress:    make(map[string]string),
@@ -247,6 +251,10 @@ func New(cfg Config) Model {
 
 	if m.morph != nil {
 		m.swarmMgr = swarm.NewManager(m.morph, chanDispatcher{ch: m.swarmEventCh})
+	}
+
+	if m.engine == nil && m.agent != nil {
+		m.engine = conversation.NewEngine(m.agent)
 	}
 
 	// If pool is provided, use its primary client
@@ -1532,129 +1540,29 @@ func (m *Model) executePendingTools() tea.Cmd {
 				}
 			}
 
-			// Handle native Swarm handoff
-			if tool.name == "handoff" {
-				if m.morph == nil {
-					results = append(results, provider.ToolResultBlock{
-						ToolUseID: tool.id,
-						Name:      tool.name,
-						Content:   "Error: Morphology is not enabled. Cannot handoff.",
-						IsError:   true,
-					})
-					continue
-				}
-
-				var payload struct {
-					Target       string `json:"target"`
-					Instructions string `json:"instructions"`
-				}
-				if err := json.Unmarshal(tool.input, &payload); err != nil {
-					results = append(results, provider.ToolResultBlock{
-						ToolUseID: tool.id,
-						Name:      tool.name,
-						Content:   fmt.Sprintf("Error parsing handoff input: %v", err),
-						IsError:   true,
-					})
-					continue
-				}
-
-				targetNode, ok := m.morph.Nodes[payload.Target]
-				if !ok {
-					results = append(results, provider.ToolResultBlock{
-						ToolUseID: tool.id,
-						Name:      tool.name,
-						Content:   fmt.Sprintf("Error: Node %q does not exist in the active morphology.", payload.Target),
-						IsError:   true,
-					})
-					continue
-				}
-
-				targetProv, ok := m.pool.GetNode(payload.Target)
-				if !ok {
-					results = append(results, provider.ToolResultBlock{
-						ToolUseID: tool.id,
-						Name:      tool.name,
-						Content:   fmt.Sprintf("Error: Provider for node %q failed to initialize.", payload.Target),
-						IsError:   true,
-					})
-					continue
-				}
-
-				// Apply Persona Shift
-				m.llmProvider = targetProv
-				m.client = nil // Disconnect direct bedrock client to force interface usage
-
-				// Re-render System Prompt for new Persona
-				// We need a promptMgr locally since TUI doesn't keep it
-				promptMgr, err := prompt.NewManager()
-				if err == nil {
-					promptTools := []prompt.ToolDef{}
-					for _, def := range m.pluginMgr.Definitions() {
-						if !conversation.IsToolAllowed(def.Name, targetNode.Workbench) {
-							continue
-						}
-						promptTools = append(promptTools, prompt.ToolDef{
-							Name:        def.Name,
-							Description: def.Description,
-							Parameters:  prompt.SchemaToToolParams(def.InputSchema),
-						})
+			// Execute tool via unified Agent/Engine handler if agent is present, else pluginhost fallback
+			var output string
+			var isErr bool
+			if m.agent != nil {
+				res, status := m.agent.ExecuteTool(ctx, tool.name, tool.input)
+				output = res
+				isErr = (status == types.ToolResultStatusError)
+			} else {
+				res, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
+				if err != nil {
+					if res == "" {
+						res = fmt.Sprintf("Error: %s", err.Error())
 					}
-
-					// Inject builtins for handoff re-render
-					builtins := []prompt.ToolDef{
-						{Name: "todo_manage", Description: "Create and maintain a structured task list.", Parameters: []prompt.ToolParam{}},
-						{Name: "tool_info", Description: "Introspect available tools.", Parameters: []prompt.ToolParam{}},
-						{Name: "get_skill", Description: "Retrieve a skill, workflow, or knowledge document.", Parameters: []prompt.ToolParam{}},
-						{Name: "handoff", Description: "Yield conversational control.", Parameters: []prompt.ToolParam{}},
-					}
-					for _, b := range builtins {
-						if conversation.IsToolAllowed(b.Name, targetNode.Workbench) {
-							promptTools = append(promptTools, b)
-						}
-					}
-
-					var swarmNodes []string
-					for nid := range m.morph.Nodes {
-						if nid != payload.Target {
-							swarmNodes = append(swarmNodes, nid)
-						}
-					}
-
-					newSysPrompt, err := promptMgr.RenderSystem(m.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
-					if err == nil {
-						if hints := m.pluginMgr.LLMHints(); hints != "" {
-							newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints
-						}
-						if targetNode.SystemPrompt != "" {
-							newSysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
-						}
-						m.system = newSysPrompt
-					}
+					isErr = true
 				}
-
-				results = append(results, provider.ToolResultBlock{
-					ToolUseID: tool.id,
-					Name:      tool.name,
-					Content:   fmt.Sprintf("Handoff successful. You are now operating as the %q node. Instructions from caller: %s", payload.Target, payload.Instructions),
-					IsError:   false,
-				})
-				continue
-			}
-
-			output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-			status := false
-			if err != nil {
-				if output == "" {
-					output = fmt.Sprintf("Error: %s", err.Error())
-				}
-				status = true
+				output = res
 			}
 
 			results = append(results, provider.ToolResultBlock{
 				ToolUseID: tool.id,
 				Name:      tool.name,
 				Content:   output,
-				IsError:   status,
+				IsError:   isErr,
 			})
 		}
 
@@ -1673,14 +1581,22 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 		var results []provider.ToolResultBlock
 		var todoInputs []json.RawMessage
 
-		// Execute the approved tool
-		output, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
-		status := false
-		if err != nil {
-			if output == "" {
-				output = fmt.Sprintf("Error: %s", err.Error())
+		// Execute the approved tool via Agent if present
+		var output string
+		var status bool
+		if m.agent != nil {
+			res, st := m.agent.ExecuteTool(ctx, tool.name, tool.input)
+			output = res
+			status = (st == types.ToolResultStatusError)
+		} else {
+			res, err := pluginMgr.Execute(ctx, tool.name, tool.input, workDir)
+			if err != nil {
+				if res == "" {
+					res = fmt.Sprintf("Error: %s", err.Error())
+				}
+				status = true
 			}
-			status = true
+			output = res
 		}
 		results = append(results, provider.ToolResultBlock{
 			ToolUseID: tool.id,
@@ -1728,13 +1644,21 @@ func (m *Model) executeApprovedTool(tool *pendingTool, remaining []pendingTool) 
 				}
 			}
 
-			rtOutput, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
-			rtStatus := false
-			if rtErr != nil {
-				if rtOutput == "" {
-					rtOutput = fmt.Sprintf("Error: %s", rtErr.Error())
+			var rtOutput string
+			var rtStatus bool
+			if m.agent != nil {
+				res, st := m.agent.ExecuteTool(ctx, rt.name, rt.input)
+				rtOutput = res
+				rtStatus = (st == types.ToolResultStatusError)
+			} else {
+				res, rtErr := pluginMgr.Execute(ctx, rt.name, rt.input, workDir)
+				if rtErr != nil {
+					if res == "" {
+						res = fmt.Sprintf("Error: %s", rtErr.Error())
+					}
+					rtStatus = true
 				}
-				rtStatus = true
+				rtOutput = res
 			}
 			results = append(results, provider.ToolResultBlock{
 				ToolUseID: rt.id,

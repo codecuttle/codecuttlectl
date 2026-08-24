@@ -615,6 +615,12 @@ func jsonToMapAgent(data json.RawMessage) map[string]interface{} {
 	return m
 }
 
+// ExecuteTool dispatches a tool call to the appropriate handler.
+// Exported so Engine and TUI can reuse the identical execution logic without duplication.
+func (a *Agent) ExecuteTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
+	return a.executeTool(ctx, name, input)
+}
+
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
 	// Security Gate: Workbench Sandboxing
@@ -736,6 +742,15 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 	a.provider = targetProv
 	a.client = nil // Ensure we only use the provider interface, avoiding fork logic
 	a.workbench = targetNode.Workbench
+
+	// Sanitize conversation history for the new provider (fixes Issue #62)
+	targetID := ""
+	if targetProv != nil {
+		targetID = targetProv.ID()
+	}
+	if len(a.provHistory) > 0 {
+		a.provHistory = provider.SanitizeHistoryForProvider(a.provHistory, targetID)
+	}
 
 	// Re-render System Prompt for the new Persona
 	if a.promptMgr != nil {
@@ -969,12 +984,14 @@ func (a *Agent) effectiveSystemPrompt() string {
 	prompt := a.systemPrompt
 
 	// Skill injection (knowledge/workflows based on context)
-	skillCtx := a.buildSkillContext()
-	matched := a.pluginMgr.Skills().Evaluate(skillCtx)
-	if len(matched) > 0 {
-		skillContent := a.pluginMgr.Skills().Render(matched)
-		if skillContent != "" {
-			prompt += skillContent
+	if a.pluginMgr != nil && a.pluginMgr.Skills() != nil {
+		skillCtx := a.buildSkillContext()
+		matched := a.pluginMgr.Skills().Evaluate(skillCtx)
+		if len(matched) > 0 {
+			skillContent := a.pluginMgr.Skills().Render(matched)
+			if skillContent != "" {
+				prompt += skillContent
+			}
 		}
 	}
 
@@ -1059,9 +1076,11 @@ func BuiltinToolDefs(morph *swarm.Morphology) []bedrock.ToolDefinition {
 // filtered by the given workbench sandbox.
 func allToolDefs(pluginMgr *pluginhost.Manager, workbench []string, morph *swarm.Morphology) []bedrock.ToolDefinition {
 	var filtered []bedrock.ToolDefinition
-	for _, def := range pluginMgr.Definitions() {
-		if IsToolAllowed(def.Name, workbench) {
-			filtered = append(filtered, def)
+	if pluginMgr != nil {
+		for _, def := range pluginMgr.Definitions() {
+			if IsToolAllowed(def.Name, workbench) {
+				filtered = append(filtered, def)
+			}
 		}
 	}
 
