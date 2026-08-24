@@ -20,6 +20,7 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/bedrock"
 	"github.com/codecuttle/codecuttlectl/internal/compact"
 	"github.com/codecuttle/codecuttlectl/internal/conversation"
+	"github.com/codecuttle/codecuttlectl/internal/inkwell"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -1221,7 +1222,11 @@ func (m Model) View() tea.View {
 
 	sections = append(sections, inputArea, todoBar, helpBar)
 
-	view := tea.NewView(strings.Join(sections, "\n"))
+	rendered := strings.Join(sections, "\n")
+	// Wrap in DECSET 2026 synchronized updates sequence to prevent tearing on modern terminal emulators
+	syncWrapped := "\x1b[?2026h" + rendered + "\x1b[?2026l"
+
+	view := tea.NewView(syncWrapped)
 	view.AltScreen = true
 	if m.mouseEnabled {
 		// Mouse captured: scroll wheel works, shift+drag for selection
@@ -2309,12 +2314,11 @@ func (m *Model) renderMessages() string {
 		} else if m.streamBuf.Len() > 0 {
 			prefix := AssistantPrefixStyle.Render(" ◆ ")
 			lines = append(lines, prefix+"codecuttle")
-			// During streaming, show plain text (not markdown-rendered) to avoid
-			// layout jumps as partial markdown is re-interpreted each frame.
-			// Markdown rendering happens once the message is finalized.
 			content := sanitizeModelText(m.streamBuf.String())
 			if strings.TrimSpace(content) != "" {
-				lines = append(lines, m.wrapText(content))
+				lexer := inkwell.NewStreamMarkdownLexer()
+				styled := lexer.RenderStreamChunk(content)
+				lines = append(lines, m.wrapText(styled))
 			}
 			lines = append(lines, StreamingCursorStyle.Render("█"))
 		} else if !m.inReasoning && m.streamBuf.Len() == 0 && m.reasoningBuf.Len() == 0 && len(m.pendingToolCalls) == 0 {
