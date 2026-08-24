@@ -743,6 +743,15 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 	a.client = nil // Ensure we only use the provider interface, avoiding fork logic
 	a.workbench = targetNode.Workbench
 
+	// Sanitize conversation history for the new provider (fixes Issue #62)
+	targetID := ""
+	if targetProv != nil {
+		targetID = targetProv.ID()
+	}
+	if len(a.provHistory) > 0 {
+		a.provHistory = provider.SanitizeHistoryForProvider(a.provHistory, targetID)
+	}
+
 	// Re-render System Prompt for the new Persona
 	if a.promptMgr != nil {
 		promptTools := []prompt.ToolDef{}
