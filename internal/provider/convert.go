@@ -6,6 +6,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -97,4 +98,82 @@ func ToolDefsFromBedrock(defs []struct {
 		})
 	}
 	return result
+}
+
+// SanitizeHistoryForProvider cleans and transcodes conversation messages when switching
+// across different LLM backends (e.g. Bedrock Claude -> Google Gemini / OpenRouter),
+// preventing HTTP 400 INVALID_ARGUMENT errors from foreign block formats or missing signatures.
+func SanitizeHistoryForProvider(msgs []Message, targetProvider string) []Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	knownToolCalls := make(map[string]bool)
+	var sanitized []Message
+
+	for _, msg := range msgs {
+		var cleanBlocks []ContentBlock
+		var textBlocks []string
+		var reasoningText []string
+
+		for _, b := range msg.Content {
+			switch block := b.(type) {
+			case TextBlock:
+				if block.Text != "" {
+					cleanBlocks = append(cleanBlocks, block)
+					textBlocks = append(textBlocks, block.Text)
+				}
+			case ReasoningBlock:
+				// For non-Bedrock or cross-provider transitions, keep reasoning text
+				// but allow downgrading to text if the provider doesn't support reasoning blocks
+				if block.Text != "" {
+					cleanBlocks = append(cleanBlocks, block)
+					reasoningText = append(reasoningText, block.Text)
+				}
+			case ToolUseBlock:
+				if block.ToolUseID != "" && block.Name != "" {
+					knownToolCalls[block.ToolUseID] = true
+					cleanBlocks = append(cleanBlocks, block)
+				}
+			case ToolResultBlock:
+				// Ensure tool result has valid non-empty ToolUseID
+				if block.ToolUseID != "" {
+					cleanBlocks = append(cleanBlocks, block)
+				}
+			}
+		}
+
+		// Assistant turn validation: if empty content & no tool calls, downgrade reasoning to text if available
+		if msg.Role == RoleAssistant {
+			hasToolUse := false
+			hasText := false
+			for _, cb := range cleanBlocks {
+				if _, ok := cb.(ToolUseBlock); ok {
+					hasToolUse = true
+				}
+				if _, ok := cb.(TextBlock); ok {
+					hasText = true
+				}
+			}
+
+			if !hasToolUse && !hasText {
+				if len(reasoningText) > 0 {
+					// Convert reasoning to standard text block
+					cleanBlocks = []ContentBlock{TextBlock{Text: strings.Join(reasoningText, "\n")}}
+				} else {
+					// Drop empty assistant turns that cause upstream 400s
+					continue
+				}
+			}
+		}
+
+		if len(cleanBlocks) > 0 {
+			sanitized = append(sanitized, Message{
+				Role:    msg.Role,
+				Content: cleanBlocks,
+			})
+		}
+	}
+
+	return sanitized
 }
