@@ -191,6 +191,9 @@ type UsageEvent struct {
 	OutputTokens     int32
 	CacheReadTokens  int32
 	CacheWriteTokens int32
+	// InputTokensUnknown marks usage snapshots with no reported input count.
+	// The zero value preserves existing adapters' authoritative count semantics.
+	InputTokensUnknown bool
 }
 
 func (UsageEvent) streamEvent() {}

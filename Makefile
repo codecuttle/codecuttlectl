@@ -11,7 +11,7 @@ GOFLAGS := -trimpath
 # Plugin sources
 PLUGINS := $(wildcard plugins/cuttlebone-*)
 
-.PHONY: all build build-plugins clean test lint run
+.PHONY: all build build-plugins clean test lint run test-tui-smoke validate
 
 all: build build-plugins
 
@@ -35,6 +35,18 @@ run: all
 ## test: Run all unit tests
 test:
 	$(GO) test -v ./...
+
+## test-tui-smoke: Build a temporary binary and test real terminal input offline
+test-tui-smoke:
+	python3 scripts/tui-smoke.py
+
+## validate: Run unit/race/vet/build checks plus a fresh-binary TUI smoke test
+validate:
+	$(GO) test -count=1 ./...
+	$(GO) test -race -count=1 ./internal/...
+	$(GO) vet ./...
+	$(GO) build ./...
+	$(MAKE) test-tui-smoke
 
 ## test-integration: Build everything and run an integration test
 test-integration: all

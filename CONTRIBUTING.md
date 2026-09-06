@@ -77,6 +77,21 @@ Name your binary `cuttlebone-<name>` and place it in the plugins directory.
 ## Testing
 
 - Unit tests: `go test ./...`
+- Required pre-PR routine for provider/TUI changes: `make validate` (unit tests,
+  internal race tests, vet, build, and a newly built binary exercised in tmux).
+- Isolated offline binary smoke test: `make test-tui-smoke`. Requires Go, Python 3
+  standard library, and tmux; no provider credentials or external calls. Tests
+  startup, literal typing without premature inference, Enter, and response display
+  through a local OpenRouter fixture with repeated terminal/usage frames.
+- Optional authorized live smoke: `python3 scripts/tui-smoke.py --live --model google/gemini-2.5-flash`.
+  Uses locally configured OpenRouter credentials, at most one streaming request
+  with a 128-output-token cap, disables reasoning, and stubs title generation and
+  model metadata locally. The normal system prompt still incurs input tokens.
+  Do not run live checks automatically in CI or print credentials/raw responses.
+- Smoke tests use temporary binaries, workspace/session directories, and a private
+  tmux socket; they do not replace `bin/codecuttlectl` or touch active sessions.
+  The live mode caps/forwards the request via a local proxy, so it is a bounded
+  provider/terminal smoke test, not a test of every production setting or tools.
 - E2E tests: `python3 scripts/tui-test.py --verbose`
 - Update golden files: `python3 scripts/tui-test.py --update-golden`
 - Run from repo root (not package directories)

@@ -155,12 +155,14 @@ func (c *Client) ConverseStream(ctx context.Context, req provider.Request) <-cha
 
 		respBody, err := c.doRequest(ctx, body)
 		if err != nil {
-			events <- provider.StreamErrorEvent{Err: err}
+			_ = sendStreamEvent(ctx, events, provider.StreamErrorEvent{Err: err})
 			return
 		}
 		defer respBody.Close()
 
-		parseSSEStream(respBody, events)
+		if err := parseSSEStream(ctx, respBody, events); err != nil {
+			_ = sendStreamEvent(ctx, events, provider.StreamErrorEvent{Err: err})
+		}
 	}()
 
 	return events
