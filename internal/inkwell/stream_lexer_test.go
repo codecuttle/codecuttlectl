@@ -3,7 +3,29 @@ package inkwell
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestStreamMarkdownLexerBullets(t *testing.T) {
+	for _, input := range []string{"- item", "* item"} {
+		got := ansi.Strip(NewStreamMarkdownLexer().RenderStreamChunk(input))
+		if got != "  • item" {
+			t.Errorf("RenderStreamChunk(%q) = %q", input, got)
+		}
+	}
+}
+
+func TestStreamMarkdownLexerSnapshots(t *testing.T) {
+	lexer := NewStreamMarkdownLexer()
+	for _, snapshot := range []string{"```go\n界", "```go\n界\n```\nplain", "a new response"} {
+		got := lexer.RenderStreamChunk(snapshot)
+		want := NewStreamMarkdownLexer().RenderStreamChunk(snapshot)
+		if got != want {
+			t.Fatalf("snapshot depends on previous render: %q", got)
+		}
+	}
+}
 
 func TestStreamMarkdownLexer_RenderStreamChunk(t *testing.T) {
 	lexer := NewStreamMarkdownLexer()

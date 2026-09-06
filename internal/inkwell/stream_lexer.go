@@ -4,23 +4,18 @@ import (
 	"strings"
 )
 
-// StreamMarkdownLexer incrementally lexes and formats streaming markdown text
-// into styled ANSI escape sequences on a line-by-line basis.
-type StreamMarkdownLexer struct {
-	inCodeBlock bool
-	codeLang    string
-}
+// StreamMarkdownLexer formats an accumulated streaming Markdown snapshot.
+// It reparses the snapshot on each render; it is not a stateful chunk parser.
+// Formatting is intentionally lightweight until the final Glamour render.
+type StreamMarkdownLexer struct{}
 
 // NewStreamMarkdownLexer creates a new incremental markdown streaming lexer.
 func NewStreamMarkdownLexer() *StreamMarkdownLexer {
 	return &StreamMarkdownLexer{}
 }
 
-// Reset clears the lexer state for a new stream.
-func (l *StreamMarkdownLexer) Reset() {
-	l.inCodeBlock = false
-	l.codeLang = ""
-}
+// Reset is a no-op because each render accepts the complete snapshot.
+func (l *StreamMarkdownLexer) Reset() {}
 
 // RenderStreamChunk formats streaming markdown text up to the current progress.
 func (l *StreamMarkdownLexer) RenderStreamChunk(raw string) string {
@@ -74,7 +69,7 @@ func formatMarkdownLine(line string) string {
 
 	// Bullet points
 	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
-		return "  \x1b[32m•\x1b[0m " + strings.TrimPrefix(trimmed, "- ")
+		return "  \x1b[32m•\x1b[0m " + trimmed[2:]
 	}
 
 	// Inline code highlighting (simple replace `code` with styled ANSI)

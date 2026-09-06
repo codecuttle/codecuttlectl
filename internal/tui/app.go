@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/approval"
@@ -1229,11 +1230,9 @@ func (m Model) View() tea.View {
 
 	sections = append(sections, inputArea, todoBar, helpBar)
 
-	rendered := strings.Join(sections, "\n")
-	// Wrap in DECSET 2026 synchronized updates sequence to prevent tearing on modern terminal emulators
-	syncWrapped := "\x1b[?2026h" + rendered + "\x1b[?2026l"
-
-	view := tea.NewView(syncWrapped)
+	// Bubble Tea negotiates synchronized output and wraps terminal updates itself.
+	// Keep renderer-owned control modes out of the cell content.
+	view := tea.NewView(strings.Join(sections, "\n"))
 	view.AltScreen = true
 	if m.mouseEnabled {
 		// Mouse captured: scroll wheel works, shift+drag for selection
@@ -2383,25 +2382,8 @@ func (m *Model) wrapText(text string) string {
 		maxW = 20
 	}
 
-	var result strings.Builder
-	for _, line := range strings.Split(text, "\n") {
-		if lipgloss.Width(line) <= maxW {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-		// Hard-wrap long lines at maxW characters
-		for len(line) > 0 {
-			end := maxW
-			if end > len(line) {
-				end = len(line)
-			}
-			result.WriteString(line[:end])
-			result.WriteString("\n")
-			line = line[end:]
-		}
-	}
-	return strings.TrimRight(result.String(), "\n")
+	// Wrap by display cells without splitting ANSI sequences or grapheme clusters.
+	return strings.TrimRight(ansi.Hardwrap(text, maxW, true), "\n")
 }
 
 func truncateToolResult(s string, maxLen int) string {

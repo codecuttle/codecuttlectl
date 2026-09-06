@@ -2,6 +2,24 @@ package tui
 
 import "testing"
 
+func TestRingBufferResetReleasesItems(t *testing.T) {
+	rb := NewRingBuffer(2)
+	rb.Push("retained output")
+	rb.Reset()
+	if rb.Size() != 0 || len(rb.GetAll()) != 0 {
+		t.Fatal("reset did not empty buffer")
+	}
+	for _, item := range rb.items {
+		if item != "" {
+			t.Fatal("reset retained references to old output")
+		}
+	}
+	rb.Push("fresh")
+	if got := rb.GetAll(); len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("unexpected contents after reset: %v", got)
+	}
+}
+
 func TestRingBuffer_PushAndGetAll(t *testing.T) {
 	rb := NewRingBuffer(3)
 

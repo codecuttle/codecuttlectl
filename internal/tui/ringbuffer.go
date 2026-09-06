@@ -60,6 +60,7 @@ func (r *RingBuffer) Size() int {
 func (r *RingBuffer) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	clear(r.items)
 	r.head = 0
 	r.size = 0
 }
