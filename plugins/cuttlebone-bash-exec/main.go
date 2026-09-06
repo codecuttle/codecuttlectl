@@ -124,40 +124,12 @@ func (t *bashExecTool) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb
 
 	err := cmd.Run()
 
-	stdout := stdoutBuf.String()
-	stderr := stderrBuf.String()
-	// Combined output for the model (same behavior as before)
-	result := stdout
-	if stderr != "" {
-		if result != "" {
-			result += "\n"
-		}
-		result += stderr
+	resp := commandOutcome(timeoutCtx, cmd.ProcessState, err, stdoutBuf.String(), stderrBuf.String())
+	if resp.IsError {
+		return resp, nil
 	}
-	metadata := map[string]string{}
-
-	// Always include separated stderr in metadata for Inkwell capture
-	if stderr != "" {
-		metadata["stderr"] = stderr
-	}
-
-	if timeoutCtx.Err() == context.DeadlineExceeded {
-		return &pb.ExecuteResponse{
-			Output:   fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result),
-			IsError:  true,
-			Metadata: map[string]string{"timeout": "true", "stderr": stderr},
-		}, nil
-	}
-
-	if err != nil {
-		metadata["exit_error"] = err.Error()
-		return &pb.ExecuteResponse{
-			Output:   fmt.Sprintf("Exit code: %s\n\n%s", err.Error(), result),
-			Metadata: metadata,
-		}, nil
-	}
-
-	metadata["exit_code"] = "0"
+	metadata := resp.Metadata
+	result := resp.Output
 
 	// If this command was allowed through after repeated blocks, tag the output
 	if warning := detectToolMisuseDynamic(params.Command, req.AvailableTools); warning != "" {
@@ -350,10 +322,7 @@ func (t *bashExecTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugi
 
 	if err := cmd.Start(); err != nil {
 		return stream.Send(&pb.ExecuteStreamEvent{
-			Event: &pb.ExecuteStreamEvent_Final{Final: &pb.ExecuteResponse{
-				IsError:      true,
-				ErrorMessage: fmt.Sprintf("starting command: %v", err),
-			}},
+			Event: &pb.ExecuteStreamEvent_Final{Final: commandOutcome(timeoutCtx, cmd.ProcessState, err, "", "")},
 		})
 	}
 
@@ -403,35 +372,7 @@ func (t *bashExecTool) ExecuteStream(req *pb.ExecuteRequest, stream pb.ToolPlugi
 
 	cmdErr := cmd.Wait()
 
-	// Build final response
-	result := stdoutBuf.String()
-	stderrStr := stderrBuf.String()
-	if stderrStr != "" && result != "" {
-		result += "\n" + stderrStr
-	} else if stderrStr != "" {
-		result = stderrStr
-	}
-
-	metadata := map[string]string{}
-	if stderrStr != "" {
-		metadata["stderr"] = stderrStr
-	}
-
-	resp := &pb.ExecuteResponse{Metadata: metadata}
-
-	if timeoutCtx.Err() == context.DeadlineExceeded {
-		resp.Output = fmt.Sprintf("Command timed out after %d seconds\n\n%s", timeout, result)
-		resp.IsError = true
-		metadata["timeout"] = "true"
-	} else if cmdErr != nil {
-		metadata["exit_error"] = cmdErr.Error()
-		resp.Output = fmt.Sprintf("Exit code: %s\n\n%s", cmdErr.Error(), result)
-	} else {
-		metadata["exit_code"] = "0"
-		resp.Output = result
-	}
-
-	resp.Metadata = metadata
+	resp := commandOutcome(timeoutCtx, cmd.ProcessState, cmdErr, stdoutBuf.String(), stderrBuf.String())
 	return stream.Send(&pb.ExecuteStreamEvent{
 		Event: &pb.ExecuteStreamEvent_Final{Final: resp},
 	})
