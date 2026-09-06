@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/swarm"
 	"github.com/codecuttle/codecuttlectl/internal/todo"
 )
@@ -24,8 +25,11 @@ func TestHandleTodoTool_InvalidAssignee(t *testing.T) {
 
 	inputJSON := `{"todos":[{"id":"1","title":"test","content":"do work","status":"pending","priority":"high","assignee":"researcher","async":true}]}`
 
-	result := agent.handleTodoTool(json.RawMessage(inputJSON))
+	result, status := agent.handleTodoTool(json.RawMessage(inputJSON))
 
+	if status != types.ToolResultStatusError {
+		t.Fatalf("invalid assignee returned status %s", status)
+	}
 	if !strings.Contains(result, "Error: Cannot assign task to \"researcher\"") {
 		t.Errorf("expected error indicating invalid node, got: %v", result)
 	}
@@ -50,8 +54,11 @@ func TestHandleTodoTool_ValidAssignee(t *testing.T) {
 
 	inputJSON := `{"todos":[{"id":"1","title":"test","content":"do work","status":"pending","priority":"high","assignee":"planner","async":true}]}`
 
-	result := agent.handleTodoTool(json.RawMessage(inputJSON))
+	result, status := agent.handleTodoTool(json.RawMessage(inputJSON))
 
+	if status != types.ToolResultStatusSuccess {
+		t.Fatalf("valid assignee returned status %s", status)
+	}
 	if strings.Contains(result, "Error") {
 		t.Errorf("expected success, got error: %v", result)
 	}

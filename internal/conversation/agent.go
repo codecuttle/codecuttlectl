@@ -631,20 +631,17 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 
 	// Built-in: todo_manage
 	if name == "todo_manage" {
-		result := a.handleTodoTool(input)
-		return result, types.ToolResultStatusSuccess
+		return a.handleTodoTool(input)
 	}
 
 	// Built-in: tool_info
 	if name == "tool_info" {
-		result := a.handleToolInfo(input)
-		return result, types.ToolResultStatusSuccess
+		return a.handleToolInfo(input)
 	}
 
 	// Built-in: get_skill
 	if name == "get_skill" {
-		result := a.handleGetSkill(input)
-		return result, types.ToolResultStatusSuccess
+		return a.handleGetSkill(input)
 	}
 
 	// Built-in: scaffold_plugin
@@ -796,12 +793,12 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 	return successMsg, types.ToolResultStatusSuccess
 }
 
-func (a *Agent) handleTodoTool(input json.RawMessage) string {
+func (a *Agent) handleTodoTool(input json.RawMessage) (string, types.ToolResultStatus) {
 	var payload struct {
 		Todos []todo.Item `json:"todos"`
 	}
 	if err := json.Unmarshal(input, &payload); err != nil {
-		return fmt.Sprintf("Error parsing todo input: %v", err)
+		return fmt.Sprintf("Error parsing todo input: %v", err), types.ToolResultStatusError
 	}
 
 	// Prevent assigning tasks to nodes that do not exist
@@ -813,24 +810,24 @@ func (a *Agent) handleTodoTool(input json.RawMessage) string {
 					for n := range a.morph.Nodes {
 						availableNodes = append(availableNodes, n)
 					}
-					return fmt.Sprintf("Error: Cannot assign task to %q. Node does not exist in the active morphology. Available nodes: %s", item.Assignee, strings.Join(availableNodes, ", "))
+					return fmt.Sprintf("Error: Cannot assign task to %q. Node does not exist in the active morphology. Available nodes: %s", item.Assignee, strings.Join(availableNodes, ", ")), types.ToolResultStatusError
 				}
 			}
 		}
 	}
 
 	if err := a.todos.Replace(payload.Todos); err != nil {
-		return fmt.Sprintf("Error updating todos: %v", err)
+		return fmt.Sprintf("Error updating todos: %v", err), types.ToolResultStatusError
 	}
-	return fmt.Sprintf("Todo list updated: %s", a.todos.Summary())
+	return fmt.Sprintf("Todo list updated: %s", a.todos.Summary()), types.ToolResultStatusSuccess
 }
 
-func (a *Agent) handleToolInfo(input json.RawMessage) string {
+func (a *Agent) handleToolInfo(input json.RawMessage) (string, types.ToolResultStatus) {
 	var params struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
-		return fmt.Sprintf("Error parsing input: %v", err)
+		return fmt.Sprintf("Error parsing input: %v", err), types.ToolResultStatusError
 	}
 
 	defs := a.allToolDefs()
@@ -843,7 +840,7 @@ func (a *Agent) handleToolInfo(input json.RawMessage) string {
 			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", d.Name, d.Description))
 		}
 		sb.WriteString(fmt.Sprintf("\nTotal: %d tools. Use tool_info with a specific name to see full parameter schema.", len(defs)))
-		return sb.String()
+		return sb.String(), types.ToolResultStatusSuccess
 	}
 
 	// Look up specific tool
@@ -866,19 +863,19 @@ func (a *Agent) handleToolInfo(input json.RawMessage) string {
 				sb.Write(d.InputSchema)
 			}
 			sb.WriteString("\n```\n")
-			return sb.String()
+			return sb.String(), types.ToolResultStatusSuccess
 		}
 	}
 
-	return fmt.Sprintf("Tool %q not found. Use tool_info without a name to list all available tools.", params.Name)
+	return fmt.Sprintf("Tool %q not found. Use tool_info without a name to list all available tools.", params.Name), types.ToolResultStatusError
 }
 
-func (a *Agent) handleGetSkill(input json.RawMessage) string {
+func (a *Agent) handleGetSkill(input json.RawMessage) (string, types.ToolResultStatus) {
 	var params struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
-		return fmt.Sprintf("Error parsing input: %v", err)
+		return fmt.Sprintf("Error parsing input: %v", err), types.ToolResultStatusError
 	}
 
 	registry := a.pluginMgr.Skills()
@@ -887,7 +884,7 @@ func (a *Agent) handleGetSkill(input json.RawMessage) string {
 	if params.Name == "" {
 		allSkills := registry.List()
 		if len(allSkills) == 0 {
-			return "No skills are currently registered. Skills are shipped by plugins as embedded knowledge, workflows, and guidance."
+			return "No skills are currently registered. Skills are shipped by plugins as embedded knowledge, workflows, and guidance.", types.ToolResultStatusSuccess
 		}
 
 		var sb strings.Builder
@@ -899,13 +896,13 @@ func (a *Agent) handleGetSkill(input json.RawMessage) string {
 				s.Skill.ContentType, s.TokenCost))
 		}
 		sb.WriteString("\nUse get_skill with a name to retrieve the full content.")
-		return sb.String()
+		return sb.String(), types.ToolResultStatusSuccess
 	}
 
 	// Look up specific skill
 	skill, ok := registry.GetByName(params.Name)
 	if !ok {
-		return fmt.Sprintf("Skill %q not found. Use get_skill without a name to list available skills.", params.Name)
+		return fmt.Sprintf("Skill %q not found. Use get_skill without a name to list available skills.", params.Name), types.ToolResultStatusError
 	}
 
 	var sb strings.Builder
@@ -915,7 +912,7 @@ func (a *Agent) handleGetSkill(input json.RawMessage) string {
 	sb.WriteString(fmt.Sprintf("**Trigger:** `%s`\n\n", skill.Skill.Trigger))
 	sb.WriteString("---\n\n")
 	sb.WriteString(skill.Skill.Content)
-	return sb.String()
+	return sb.String(), types.ToolResultStatusSuccess
 }
 
 func (a *Agent) handleScaffoldPlugin(input json.RawMessage) (string, types.ToolResultStatus) {

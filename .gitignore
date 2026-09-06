@@ -47,6 +47,9 @@ scripts/__pycache__/
 
 # Plugin binaries (built artifacts, not source)
 cuttlebone-*
+# Permit Go source and tests inside plugin source directories.
+!plugins/cuttlebone-*/
+!plugins/cuttlebone-*/*.go
 
 # Research notes (kept locally, not checked into VC)
 research_notes/
