@@ -122,6 +122,66 @@ func TestStreamUsageSnapshotsDoNotEraseOrDoubleCount(t *testing.T) {
 	}
 }
 
+func TestStreamRepeatedTerminalChoiceWithUsage(t *testing.T) {
+	for _, finish := range []string{"stop", "tool_calls"} {
+		t.Run(finish, func(t *testing.T) {
+			first := `{"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}`
+			if finish == "tool_calls" {
+				first = `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+			}
+			metadata := fmt.Sprintf(`{"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":%q}],"usage":{"prompt_tokens":123,"completion_tokens":4}}`, finish)
+			stops, usages, tools := 0, 0, 0
+			for _, event := range collectStream(t, sse(first, metadata, metadata, `[DONE]`)) {
+				switch e := event.(type) {
+				case provider.MessageStopEvent:
+					stops++
+					if e.StopReason != finish {
+						t.Fatalf("stop=%q, want %q", e.StopReason, finish)
+					}
+				case provider.UsageEvent:
+					usages++
+					if e.InputTokens != 123 || e.OutputTokens != 4 {
+						t.Fatalf("unexpected usage: %+v", e)
+					}
+				case provider.ToolUseStopEvent:
+					tools++
+				case provider.StreamErrorEvent:
+					t.Fatal(e.Err)
+				}
+			}
+			wantTools := 0
+			if finish == "tool_calls" {
+				wantTools = 1
+			}
+			if stops != 1 || usages != 1 || tools != wantTools {
+				t.Fatalf("stops=%d usages=%d tools=%d", stops, usages, tools)
+			}
+		})
+	}
+}
+
+func TestStreamRejectsContentAfterCompletion(t *testing.T) {
+	for _, delta := range []string{
+		`{"delta":{"content":"late text"}}`,
+		`{"delta":{"reasoning":"late reasoning"}}`,
+		`{"delta":{"tool_calls":[{"index":0}]}}`,
+		`{"delta":{},"finish_reason":"length"}`,
+	} {
+		errors := 0
+		for _, event := range collectStream(t, sse(`{"choices":[{"finish_reason":"stop"}]}`, `{"choices":[`+delta+`]}`, `[DONE]`)) {
+			switch event.(type) {
+			case provider.StreamErrorEvent:
+				errors++
+			case provider.MessageStopEvent, provider.ToolUseStartEvent:
+				t.Fatalf("invalid stream emitted success event: %T", event)
+			}
+		}
+		if errors != 1 {
+			t.Fatalf("errors=%d, want 1", errors)
+		}
+	}
+}
+
 func TestStreamUsagePresence(t *testing.T) {
 	for _, tc := range []struct {
 		name, payload string

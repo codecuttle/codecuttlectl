@@ -96,7 +96,14 @@ func parseSSEStream(ctx context.Context, body io.Reader, events chan<- provider.
 			}
 			delta := choice.Delta
 			if finished {
-				return fmt.Errorf("openrouter: choice received after finish reason")
+				// OpenRouter's final usage frame may repeat the terminal choice
+				// with an empty delta (including role/content placeholders).
+				// Accept metadata, but never new content or a changed stop reason.
+				if delta.Content != "" || delta.Reasoning != "" || len(delta.ToolCalls) > 0 ||
+					(choice.FinishReason != "" && choice.FinishReason != finishReason) {
+					return fmt.Errorf("openrouter: content or conflicting finish reason after completion")
+				}
+				continue
 			}
 			if delta.Reasoning != "" {
 				if err := emit(provider.ReasoningDeltaEvent{Text: delta.Reasoning}); err != nil {
