@@ -800,10 +800,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalOutputTokens += msg.OutputTokens
 		m.totalCacheReadInputTokens += msg.CacheReadInputTokens
 		m.totalCacheWriteInputTokens += msg.CacheWriteInputTokens
-		// Track per-call stats for context window % calculation
-		m.lastCallInputTokens = msg.InputTokens
-		m.lastCallCacheReadInputTokens = msg.CacheReadInputTokens
-		m.lastCallCacheWriteInputTokens = msg.CacheWriteInputTokens
+		// Partial usage must not erase the last authoritative context count.
+		if !msg.InputTokensUnknown {
+			m.lastCallInputTokens = msg.InputTokens
+			m.lastCallCacheReadInputTokens = msg.CacheReadInputTokens
+			m.lastCallCacheWriteInputTokens = msg.CacheWriteInputTokens
+		}
 		// Usage arrives after MessageStop. Continue reading for the channel close
 		// which will emit StreamDoneMsg to finalize the turn.
 		m.updateViewportContent()
@@ -1385,6 +1387,7 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 					OutputTokens:          e.OutputTokens,
 					CacheReadInputTokens:  e.CacheReadTokens,
 					CacheWriteInputTokens: e.CacheWriteTokens,
+					InputTokensUnknown:    e.InputTokensUnknown,
 				}
 			case provider.StreamErrorEvent:
 				return StreamErrorMsg{Err: e.Err}
