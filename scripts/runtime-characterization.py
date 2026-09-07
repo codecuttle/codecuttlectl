@@ -142,7 +142,7 @@ def run_case(binary, plugins, mode, scenario, root):
         expected_count = 1 if scenario == "text" or (scenario == "limit" and mode != "tui") else 2 if scenario == "limit" else 3
         assert len(trace) == expected_count, (mode, scenario, len(trace), expected_count)
         names = {t["function"]["name"] for t in trace[0].get("tools", [])}
-        assert names == ({"bash_exec"} if mode == "tui" else NATIVES | {"bash_exec"}), names
+        assert names == (NATIVES | {"bash_exec"}), names
         if scenario != "text":
             assert (work / "effects").read_text() == ("AB" if scenario == "multi" else "A"), "wrong side effects"
         if len(trace) >= 2:

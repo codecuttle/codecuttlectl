@@ -6,6 +6,14 @@ type EventDispatcher interface {
 	Dispatch(msg any)
 }
 
+// NodeChangedMsg is dispatched after a successful synchronous handoff so the
+// frontend can re-read the Agent's authoritative provider, persona and catalog.
+type NodeChangedMsg struct {
+	Source     string
+	Target     string
+	ProviderID string
+}
+
 // TaskStartedMsg indicates a background agent has begun working on a task.
 type TaskStartedMsg struct {
 	TaskID   string // The Todo Item ID

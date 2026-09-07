@@ -1083,6 +1083,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.updateViewportContent()
+
+		// If a handoff just executed successfully in the agent, sync the TUI model state
+		// (provider, system prompt, context window) to match the new active node!
+		if m.agent != nil && m.morph != nil && m.pool != nil {
+			activeID := m.agent.ActiveNode()
+			if activeID != "" {
+				if prov, ok := m.pool.GetNode(activeID); ok && prov != nil {
+					m.llmProvider = prov
+					m.system = m.agent.SystemPrompt()
+					if cwp, ok := prov.(provider.ContextWindowProvider); ok {
+						m.contextWindow = cwp.ContextWindow()
+					}
+				}
+			}
+		}
+
 		// Add tool results to history and start new stream
 		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
@@ -2530,15 +2546,16 @@ func (m *Model) providerToolDefs() []provider.ToolDefinition {
 		})
 	}
 
-	// Add Swarm native tools
-	if m.morph != nil {
-		if activeWorkbench == nil || conversation.IsToolAllowed("handoff", activeWorkbench) {
-			result = append(result, provider.ToolDefinition{
-				Name:        "handoff",
-				Description: conversation.HandoffToolDefinition().Description,
-				InputSchema: conversation.HandoffToolDefinition().InputSchema,
-			})
+	// Add built-in tools allowed in active workbench
+	for _, d := range conversation.BuiltinToolDefs(m.morph) {
+		if activeWorkbench != nil && !conversation.IsToolAllowed(d.Name, activeWorkbench) {
+			continue
 		}
+		result = append(result, provider.ToolDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
 	}
 
 	return result

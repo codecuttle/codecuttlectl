@@ -7,49 +7,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/codecuttle/codecuttlectl/internal/pluginhost"
 	"github.com/codecuttle/codecuttlectl/internal/prompt"
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 	"github.com/codecuttle/codecuttlectl/internal/swarm"
 )
 
-func TestKnownDivergence_PrimaryProfileNotApplied(t *testing.T) {
+func TestPrimaryProfileApplied(t *testing.T) {
 	pm, err := prompt.NewManager()
 	if err != nil {
 		t.Fatal(err)
 	}
 	morph := &swarm.Morphology{Nodes: map[string]swarm.Node{
-		"lead": {IsPrimary: true, Provider: "fixture", Model: "fixture", SystemPrompt: "PRIMARY_PERSONA_SENTINEL", Workbench: []string{"read_file"}},
+		"lead": {IsPrimary: true, Provider: "fixture", Model: "fixture", SystemPrompt: "PRIMARY_PERSONA_SENTINEL", Workbench: []string{"todo_manage"}},
 	}}
 	a, err := NewAgent(Config{Provider: &mockEchoProvider{}, PluginMgr: pluginhost.NewManager(false), Morph: morph, PromptMgr: pm, WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.activeNode != "lead" || len(a.workbench) != 0 || strings.Contains(a.systemPrompt, "PRIMARY_PERSONA_SENTINEL") {
-		t.Fatal("baseline changed: primary identity is applied, but persona/workbench are not")
+	if a.activeNode != "lead" || len(a.workbench) != 1 || a.workbench[0] != "todo_manage" || !strings.Contains(a.systemPrompt, "PRIMARY_PERSONA_SENTINEL") {
+		t.Fatalf("expected primary profile applied: activeNode=%q, workbench=%v, systemPrompt=%q", a.activeNode, a.workbench, a.systemPrompt)
 	}
 	names := make(map[string]bool)
 	for _, tool := range a.allProviderToolDefs() {
 		names[tool.Name] = true
 	}
-	for _, name := range []string{"todo_manage", "tool_info", "get_skill", "scaffold_plugin", "reload_plugins", "handoff"} {
-		if !names[name] {
-			t.Fatalf("expected baseline native catalog to contain %s", name)
-		}
+	if !names["todo_manage"] {
+		t.Errorf("expected todo_manage in active tool defs")
+	}
+	// "handoff" shouldn't be in defs if workbench is strictly ["todo_manage"]
+	if names["handoff"] {
+		t.Errorf("handoff should not be allowed under strict todo_manage workbench")
 	}
 }
 
-func TestKnownDivergence_HandoffWithoutPoolPanics(t *testing.T) {
+func TestHandoffWithoutPoolReturnsError(t *testing.T) {
 	a, err := NewAgent(Config{Provider: &mockEchoProvider{}, Morph: &swarm.Morphology{Nodes: map[string]swarm.Node{"target": {}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if recover() == nil {
-			t.Error("baseline changed: replace known panic with typed-error regression")
-		}
-	}()
-	a.handleHandoff([]byte(`{"target":"target","instructions":"test"}`))
+	msg, status := a.handleHandoff([]byte(`{"target":"target","instructions":"test"}`))
+	if status != types.ToolResultStatusError {
+		t.Fatalf("expected error status, got %v (msg: %s)", status, msg)
+	}
+	if !strings.Contains(msg, "Error:") {
+		t.Fatalf("expected error message, got: %s", msg)
+	}
 }
 
 type terminalErrorProvider struct{ mockEchoProvider }
