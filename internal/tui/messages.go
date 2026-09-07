@@ -9,6 +9,15 @@ import (
 
 // --- Bubble Tea message types for the TUI ---
 
+// streamEnvelope associates asynchronous events with their originating request.
+type streamEnvelope struct {
+	Generation uint64
+	Message    interface{}
+}
+
+// StreamRetryMsg reports adapter-owned backoff without adding conversation text.
+type StreamRetryMsg provider.RetryEvent
+
 // StreamStartMsg signals that streaming has begun for a new turn.
 type StreamStartMsg struct{}
 

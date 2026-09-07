@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -26,6 +27,19 @@ func (m *mockEchoProvider) ConverseStream(ctx context.Context, req provider.Requ
 		ch <- provider.MessageStopEvent{StopReason: "end_turn"}
 	}()
 	return ch
+}
+
+func TestStreamCancellationIsNotSuccessfulEmptyTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	model := &mockEchoProvider{}
+	agent, err := NewAgent(Config{Provider: model, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.StreamTurn(ctx, "cancelled", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
 }
 
 func TestEngine_StreamTurnAsync(t *testing.T) {

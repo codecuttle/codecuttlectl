@@ -78,10 +78,16 @@ type Model struct {
 	streaming         bool
 	streamBuf         *strings.Builder
 	streamCh          <-chan provider.StreamEvent // Active stream channel (provider-agnostic)
-	streamStep        int                         // Counts consecutive tool-use rounds in this turn (for grounding)
-	stateDict         *stateDict                  // State dictionary for small-model grounding (nil for large models)
-	lastExecutedTools []pendingTool               // Tools from the last execution (for state dict tracking)
-	autoNudgeCount    int                         // Number of auto-nudges in this turn (capped to prevent infinite loops)
+	streamCancel      context.CancelFunc
+	streamContext     context.Context
+	streamGeneration  uint64
+	retryUntil        time.Time
+	retryAttempt      int
+	retryMax          int
+	streamStep        int           // Counts consecutive tool-use rounds in this turn (for grounding)
+	stateDict         *stateDict    // State dictionary for small-model grounding (nil for large models)
+	lastExecutedTools []pendingTool // Tools from the last execution (for state dict tracking)
+	autoNudgeCount    int           // Number of auto-nudges in this turn (capped to prevent infinite loops)
 
 	// Interrupt state
 	interruptPending bool // true when user pressed esc once, waiting for confirmation
@@ -357,6 +363,12 @@ var spinnerGradient = []string{
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if envelope, ok := msg.(streamEnvelope); ok {
+		if envelope.Generation != m.streamGeneration {
+			return m, nil
+		}
+		msg = envelope.Message
+	}
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -375,6 +387,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
+			m.stopModelStream()
 			return m, tea.Quit
 		case "ctrl+t":
 			m.todoExpanded = !m.todoExpanded
@@ -437,6 +450,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.streaming {
 				if m.interruptPending {
 					// Second esc: confirm interrupt — stop the stream
+					m.stopModelStream()
 					m.streaming = false
 					m.streamCh = nil
 					m.interruptPending = false
@@ -572,6 +586,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case StreamTextMsg:
+		m.retryUntil = time.Time{}
 		// Clear interrupt pending on new content (user didn't confirm)
 		m.interruptPending = false
 		// If we were in reasoning, finalize it before text starts
@@ -593,6 +608,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.readNextStreamEvent()
 
 	case StreamReasoningMsg:
+		m.retryUntil = time.Time{}
 		m.inReasoning = true
 		m.reasoningBuf.WriteString(msg.Text)
 		m.updateViewportContent()
@@ -613,6 +629,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.readNextStreamEvent()
 
 	case StreamToolStartMsg:
+		m.retryUntil = time.Time{}
 		// Text emitted before a tool call is the model's internal reasoning
 		// about what to do — treat it as thinking, not as a response
 		if m.streamBuf.Len() > 0 {
@@ -657,7 +674,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.readNextStreamEvent()
 
+	case StreamRetryMsg:
+		m.retryUntil = time.Now().Add(msg.Delay)
+		m.retryAttempt, m.retryMax = msg.Attempt, msg.MaxRetries
+		return m, m.readNextStreamEvent()
+
 	case StreamDoneMsg:
+		m.stopModelStream()
 		// If we have pending tool calls, build a single assistant message
 		// containing any text AND the tool_use blocks, then execute tools.
 		if len(m.pendingToolCalls) > 0 {
@@ -812,6 +835,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.readNextStreamEvent()
 
 	case StreamErrorMsg:
+		m.stopModelStream()
 		m.streaming = false
 		m.streamCh = nil
 		m.messages = append(m.messages, chatMessage{
@@ -1247,8 +1271,20 @@ func (m Model) View() tea.View {
 
 // --- Stream management ---
 
+// stopModelStream cancels inference/backoff and invalidates queued stream events.
+// Tool execution and swarm tasks have separate lifecycles.
+func (m *Model) stopModelStream() {
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
+	m.streamGeneration++
+	m.retryUntil = time.Time{}
+}
+
 // launchStream starts a new ConverseStream and reads the first event.
 func (m *Model) launchStream() tea.Cmd {
+	m.stopModelStream()
 	m.streaming = true
 	m.streamBuf.Reset()
 	m.reasoningBuf.Reset()
@@ -1265,7 +1301,8 @@ func (m *Model) launchStream() tea.Cmd {
 	// in the session file and Inkwell (never truncated there).
 	m.maybeCompact()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamContext, m.streamCancel = ctx, cancel
 
 	// Determine the effective system prompt. For smaller/local models that
 	// struggle with long agentic loops, append grounding context after several
@@ -1357,9 +1394,25 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 	if ch == nil {
 		return func() tea.Msg { return StreamDoneMsg{StopReason: "no_channel"} }
 	}
-	return func() tea.Msg {
+	generation, ctx := m.streamGeneration, m.streamContext
+	return func() (message tea.Msg) {
+		defer func() {
+			if generation != 0 {
+				message = streamEnvelope{Generation: generation, Message: message}
+			}
+		}()
 		for {
-			event, ok := <-ch
+			var event provider.StreamEvent
+			var ok bool
+			if ctx == nil {
+				event, ok = <-ch
+			} else {
+				select {
+				case <-ctx.Done():
+					return StreamErrorMsg{Err: ctx.Err()}
+				case event, ok = <-ch:
+				}
+			}
 			if !ok {
 				return StreamDoneMsg{StopReason: "end_turn"}
 			}
@@ -1389,6 +1442,8 @@ func (m *Model) readNextStreamEvent() tea.Cmd {
 					CacheWriteInputTokens: e.CacheWriteTokens,
 					InputTokensUnknown:    e.InputTokensUnknown,
 				}
+			case provider.RetryEvent:
+				return StreamRetryMsg(e)
 			case provider.StreamErrorEvent:
 				return StreamErrorMsg{Err: e.Err}
 			default:
@@ -2109,6 +2164,9 @@ func (m *Model) renderInput() string {
 		var content string
 		if m.interruptPending {
 			content = ErrorStyle.Render("Press esc again to interrupt, or wait...")
+		} else if !m.retryUntil.IsZero() {
+			remaining := max(0, int(time.Until(m.retryUntil).Seconds())+1)
+			content = fmt.Sprintf("Rate limited (429): retry %d/%d in %ds — esc twice to cancel", m.retryAttempt, m.retryMax, remaining)
 		} else {
 			content = SpinnerStyle.Render(m.spinner.View()) + " thinking..."
 		}

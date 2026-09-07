@@ -29,10 +29,16 @@ def main():
     parser.add_argument("--model", default="google/gemini-2.5-flash")
     parser.add_argument("--binary", type=Path, help="test an existing binary instead of building")
     parser.add_argument("--tool-failure", action="store_true", help="offline: build bash plugin and verify a failed command round trip")
+    parser.add_argument("--rate-limit", choices=["http", "sse", "exhaust", "cancel"], help="offline 429 recovery scenario")
     args = parser.parse_args()
-    if args.live and args.tool_failure:
-        parser.error("--tool-failure is offline only")
-    state = {"requests": 0, "completed_requests": 0, "finished": False, "shapes": [], "failure": None, "tool_failure_seen": False}
+    if args.live and (args.tool_failure or args.rate_limit):
+        parser.error("tool-failure and rate-limit scenarios are offline only")
+    if args.tool_failure and args.rate_limit == "cancel":
+        parser.error("use cancel without tool-failure")
+    expected = (2 if args.tool_failure else 1) + (2 if args.rate_limit == "exhaust" else 1 if args.rate_limit else 0)
+    if args.rate_limit == "cancel":
+        expected = 1
+    state = {"requests": 0, "completed_requests": 0, "finished": False, "shapes": [], "failure": None, "tool_failure_seen": False, "retry_body": None}
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -62,10 +68,25 @@ def main():
             with lock:
                 state["requests"] += 1
                 count = state["requests"]
-            if count > (2 if args.tool_failure else 1):
-                self.send_error(429, "Smoke test request limit reached")
+            if count > expected:
+                self.send_error(400, "Smoke test request limit reached")
                 return
             try:
+                first_retry_request = 2 if args.tool_failure else 1
+                if args.rate_limit and count >= first_retry_request:
+                    with lock:
+                        if state["retry_body"] is None:
+                            state["retry_body"] = body
+                        elif body != state["retry_body"]:
+                            raise OSError("retry mutated history or replayed tools")
+                    if count == first_retry_request or args.rate_limit in ("exhaust", "cancel"):
+                        self.send_response(200 if args.rate_limit == "sse" else 429)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Retry-After", "2")
+                        self.end_headers()
+                        if args.rate_limit == "sse":
+                            self.wfile.write(b'data: {"error":{"code":429}}\n\n')
+                        return
                 if args.live:
                     body["model"] = args.model
                     body.pop("models", None)
@@ -90,7 +111,7 @@ def main():
                         payloads = [{"choices": [{"index": 0, "delta": {"tool_calls": [{
                             "index": 0, "id": "failure-check", "type": "function",
                             "function": {"name": "bash_exec", "arguments": json.dumps({
-                                "command": "printf FAILURE_SENTINEL >&2; exit 1"})}
+                                "command": "printf x >> smoke-executions; printf FAILURE_SENTINEL >&2; exit 1"})}
                         }]}, "finish_reason": "tool_calls"}]}]
                     elif args.tool_failure:
                         results = [m.get("content", "") for m in body.get("messages", [])
@@ -131,7 +152,7 @@ def main():
             finally:
                 with lock:
                     state["completed_requests"] += 1
-                    state["finished"] = state["completed_requests"] == (2 if args.tool_failure else 1) or state["failure"] is not None
+                    state["finished"] = state["completed_requests"] == expected or state["failure"] is not None
 
     with tempfile.TemporaryDirectory(prefix="codecuttle-tui-smoke-") as tmp:
         tmp = Path(tmp)
@@ -187,15 +208,32 @@ def main():
             assert "Error:" not in screen(), "Error while typing"
             print("PASS: fresh binary starts and typing renders without inference", flush=True)
             tmux("send-keys", "-t", "smoke", "Enter")
+            if args.rate_limit:
+                wait_for(lambda s: "Rate limited (429): retry 1/2" in s, "visible retry countdown")
+                if args.rate_limit == "cancel":
+                    tmux("send-keys", "-t", "smoke", "Escape")
+                    wait_for(lambda s: "Press esc again" in s, "cancel confirmation")
+                    tmux("send-keys", "-t", "smoke", "Escape")
+                    wait_for(lambda s: "generation interrupted" in s, "canceled generation")
+                    time.sleep(3)
+                    assert state["requests"] == 1, "Canceled backoff issued another request"
+                    print("PASS: cancel stops actual retry timer with no extra requests", flush=True)
+                    return
             wait_for(lambda _: state["finished"], "provider response", seconds=60)
+            if args.rate_limit == "exhaust":
+                wait_for(lambda s: "retry limit reached" in s, "visible retry exhaustion")
+                assert state["requests"] == expected, "Retry budget exceeded"
+                print("PASS: exhausted retry budget surfaces terminal error", flush=True)
+                return
             time.sleep(1)
             current = screen()
             with lock:
-                diagnostic = json.dumps(state, indent=2)
+                diagnostic = json.dumps({k: v for k, v in state.items() if k != "retry_body"}, indent=2)
             if state["failure"] or "Error:" in current or "panic:" in current:
                 raise RuntimeError(f"Submission failed\nSafe stream metadata:\n{diagnostic}\nTerminal:\n{current}")
-            assert state["requests"] == (2 if args.tool_failure else 1), "Unexpected inference request count"
+            assert state["requests"] == expected, "Unexpected inference request count"
             if args.tool_failure:
+                assert (tmp / "smoke-executions").read_text() == "x", "Completed tool was replayed"
                 assert state["tool_failure_seen"], "Missing failed tool result"
                 print("PASS: failed real bash plugin result reaches model continuation", flush=True)
             # The user prompt also contains the sentinel; require another occurrence.

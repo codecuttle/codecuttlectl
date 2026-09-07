@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/codecuttle/codecuttlectl/internal/provider"
@@ -51,6 +52,7 @@ func parseSSEStream(ctx context.Context, body io.Reader, events chan<- provider.
 	var usage streamUsage
 	var finishReason string
 	finished, done := false, false
+	generated := false
 
 	emit := func(event provider.StreamEvent) error {
 		return sendStreamEvent(ctx, events, event)
@@ -73,6 +75,16 @@ func parseSSEStream(ctx context.Context, body io.Reader, events chan<- provider.
 				Code json.RawMessage `json:"code"`
 			}
 			_ = json.Unmarshal(chunk.Error, &upstream)
+			code, _ := strconv.Atoi(strings.Trim(string(upstream.Code), `"`))
+			if code == 429 {
+				partial := generated || finished
+				for _, choice := range chunk.Choices {
+					if choice.Delta.Content != "" || choice.Delta.Reasoning != "" || len(choice.Delta.ToolCalls) > 0 || choice.FinishReason != "" {
+						partial = true
+					}
+				}
+				return &rateLimitError{partial: partial}
+			}
 			// Do not copy arbitrary upstream messages (which may echo prompts).
 			return fmt.Errorf("openrouter: upstream stream error (code %s)", upstream.Code)
 		}
@@ -95,6 +107,9 @@ func parseSSEStream(ctx context.Context, body io.Reader, events chan<- provider.
 				return fmt.Errorf("openrouter: unexpected completion choice %d", choice.Index)
 			}
 			delta := choice.Delta
+			if delta.Content != "" || delta.Reasoning != "" || len(delta.ToolCalls) > 0 {
+				generated = true
+			}
 			if finished {
 				// OpenRouter's final usage frame may repeat the terminal choice
 				// with an empty delta (including role/content placeholders).

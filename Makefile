@@ -48,6 +48,10 @@ validate:
 	$(GO) build ./...
 	$(MAKE) test-tui-smoke
 	python3 scripts/tui-smoke.py --tool-failure
+	python3 scripts/tui-smoke.py --rate-limit http
+	python3 scripts/tui-smoke.py --rate-limit sse --tool-failure
+	python3 scripts/tui-smoke.py --rate-limit exhaust
+	python3 scripts/tui-smoke.py --rate-limit cancel
 
 ## test-integration: Build everything and run an integration test
 test-integration: all
