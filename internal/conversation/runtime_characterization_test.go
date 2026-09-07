@@ -61,7 +61,7 @@ func (*terminalErrorProvider) ConverseStream(context.Context, provider.Request) 
 	return ch
 }
 
-func TestKnownDivergence_EngineEmitsTwoTerminalErrors(t *testing.T) {
+func TestEngineEmitsOneTerminalError(t *testing.T) {
 	a, err := NewAgent(Config{Provider: &terminalErrorProvider{}})
 	if err != nil {
 		t.Fatal(err)
@@ -77,8 +77,8 @@ func TestKnownDivergence_EngineEmitsTwoTerminalErrors(t *testing.T) {
 		select {
 		case event, ok := <-ch:
 			if !ok {
-				if terminals != 2 {
-					t.Fatalf("baseline terminal errors=%d, want 2 until R3 repair", terminals)
+				if terminals != 1 {
+					t.Fatalf("terminal errors=%d, want exactly one", terminals)
 				}
 				return
 			}

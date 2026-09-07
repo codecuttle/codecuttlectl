@@ -403,6 +403,9 @@ type StreamEvent struct {
 // The callback receives text deltas as they arrive. Tool calls are executed
 // between streaming rounds. Returns the final accumulated text response.
 func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCallback) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	// Use provider interface if available (Ollama, etc.)
 	if a.provider != nil {
 		return a.streamTurnProvider(ctx, userMessage, cb)
@@ -430,6 +433,9 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 			currentToolInput.Reset()
 			currentToolID, currentToolName = "", ""
 
+			if err := ctx.Err(); err != nil {
+				return textBuf.String(), err
+			}
 			var streamErr error
 			ch := a.client.ConverseStream(ctx, a.effectiveSystemPrompt(), a.history, a.allToolDefs())
 
@@ -479,6 +485,9 @@ func (a *Agent) StreamTurn(ctx context.Context, userMessage string, cb StreamCal
 				}
 			}
 
+			if err := ctx.Err(); err != nil {
+				return textBuf.String(), err
+			}
 			if streamErr == nil {
 				break
 			}
@@ -623,6 +632,9 @@ func (a *Agent) ExecuteTool(ctx context.Context, name string, input json.RawMess
 
 // executeTool dispatches a tool call to the appropriate handler.
 func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMessage) (string, types.ToolResultStatus) {
+	if err := ctx.Err(); err != nil {
+		return fmt.Sprintf("Tool was not executed: %v", err), types.ToolResultStatusError
+	}
 	// Security Gate: Workbench Sandboxing
 	if !IsToolAllowed(name, a.workbench) {
 		errorMsg := fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", name, a.workbench)
@@ -699,6 +711,10 @@ func (a *Agent) executeTool(ctx context.Context, name string, input json.RawMess
 		}
 	}
 
+	// Approval callbacks may have blocked while cancellation was requested.
+	if err := ctx.Err(); err != nil {
+		return fmt.Sprintf("Tool was not executed: %v", err), types.ToolResultStatusError
+	}
 	// Plugin tools
 	output, err := a.pluginMgr.Execute(ctx, name, input, a.workDir)
 	if err != nil {

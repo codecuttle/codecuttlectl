@@ -99,6 +99,11 @@ Name your binary `cuttlebone-<name>` and place it in the plugins directory.
   across TUI/REPL/one-shot. Included in `make validate`. A green known-divergence
   test measures an existing defect, not desired behavior: see
   [runtime contracts](docs/runtime-contracts.md) before changing assertions.
+- Engine lifecycle stress: `go test -race -count=20 ./internal/conversation -run TestEngine`.
+  Exercises one-winner admission, cancel/close while blocked, undrained event
+  queues, completion handles and checkpoint isolation. Current real-binary
+  scenarios still use legacy frontend paths; passing them is nonregression
+  evidence, not proof that the CLI has migrated to Engine.Submit.
 - Optional authorized live smoke: `python3 scripts/tui-smoke.py --live --model google/gemini-2.5-flash`.
   Uses locally configured OpenRouter credentials, at most one streaming request
   with a 128-output-token cap, disables reasoning, and stubs title generation and
