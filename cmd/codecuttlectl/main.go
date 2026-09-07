@@ -155,14 +155,12 @@ func main() {
 				if err := keyring.EnsureOpenRouterAPIKey(); err != nil {
 					return nil, fmt.Errorf("failed to ensure OpenRouter API key: %w", err)
 				}
+				// Per-node fallbacks are constructed by swarm.NewPool as separate
+				// local candidates (via FallbackProvider); do NOT also enable
+				// OpenRouter server-side `models` fallback, which could switch
+				// backends before local retries exhaust. Only global CLI fallbacks
+				// remain here for the single-provider, non-morphology path.
 				var fallbacks []string
-				// 1. Check per-node fallbacks from morphology YAML
-				for _, fb := range nodeConfig.Fallbacks {
-					if fb.Model != "" {
-						fallbacks = append(fallbacks, fb.Model)
-					}
-				}
-				// 2. Append CLI global fallbacks if specified
 				if *openrouterFallbacks != "" {
 					for _, f := range strings.Split(*openrouterFallbacks, ",") {
 						fallbacks = append(fallbacks, strings.TrimSpace(f))

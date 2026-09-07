@@ -36,6 +36,31 @@ func NewPool(ctx context.Context, morph *Morphology, factory ProviderFactory) (*
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize node %q: %w", nodeID, err)
 		}
+
+		// If the node declares model fallbacks, construct each candidate through
+		// the same provider factory and wrap them so a single logical node can
+		// fail over across backends without changing its persona or workbench.
+		if len(nodeConfig.Fallbacks) > 0 {
+			var chain []provider.Provider
+			chain = append(chain, prov)
+			for _, fb := range nodeConfig.Fallbacks {
+				if fb.Model == "" {
+					continue
+				}
+				fbConfig := nodeConfig
+				fbConfig.Provider = fb.Provider
+				fbConfig.Model = fb.Model
+				fbConfig.Fallbacks = nil // avoid recursion
+				candidate, err := factory(ctx, fbConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to initialize fallback for node %q (%s/%s): %w",
+						nodeID, fb.Provider, fb.Model, err)
+				}
+				chain = append(chain, candidate)
+			}
+			prov = provider.NewFallbackProvider(nodeID, chain...)
+		}
+
 		p.providers[nodeID] = prov
 
 		cw := int32(0)
