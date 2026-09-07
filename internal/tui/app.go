@@ -585,6 +585,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.listenSwarmEvents(), m.launchStream())
 		}
 
+	case swarm.NodeChangedMsg:
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: fmt.Sprintf("⇄ [Swarm] Node transition: %s ➔ %s", msg.Source, msg.Target),
+		})
+		m.updateViewportContent()
+		return m, m.listenSwarmEvents()
+
 	case StreamTextMsg:
 		m.retryUntil = time.Time{}
 		// Clear interrupt pending on new content (user didn't confirm)
@@ -1084,23 +1092,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updateViewportContent()
 
+		// Add tool results to history
+		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
+
 		// If a handoff just executed successfully in the agent, sync the TUI model state
-		// (provider, system prompt, context window) to match the new active node!
+		// (provider, system prompt, context window) to match the new active node and sanitize history!
 		if m.agent != nil && m.morph != nil && m.pool != nil {
 			activeID := m.agent.ActiveNode()
 			if activeID != "" {
 				if prov, ok := m.pool.GetNode(activeID); ok && prov != nil {
-					m.llmProvider = prov
-					m.system = m.agent.SystemPrompt()
-					if cwp, ok := prov.(provider.ContextWindowProvider); ok {
-						m.contextWindow = cwp.ContextWindow()
+					prevProvID := ""
+					if m.llmProvider != nil {
+						prevProvID = m.llmProvider.ID()
+					}
+
+					if prov != m.llmProvider || m.system != m.agent.SystemPrompt() {
+						m.llmProvider = prov
+						m.system = m.agent.SystemPrompt()
+
+						if cwp, ok := prov.(provider.ContextWindowProvider); ok {
+							m.contextWindow = cwp.ContextWindow()
+						} else {
+							m.contextWindow = 0 // Reset so contextWindowSize() uses default
+						}
+
+						// Sanitize TUI history for the new target provider (e.g. Bedrock Claude -> Google/OpenRouter)
+						if prevProvID != prov.ID() && len(m.history) > 0 {
+							m.history = provider.SanitizeHistoryForProvider(m.history, prov.ID())
+						}
 					}
 				}
 			}
 		}
 
-		// Add tool results to history and start new stream
-		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
 		m.saveSession()
 		m.streamStep++ // Track consecutive tool-use rounds for grounding
 
@@ -1127,7 +1151,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only ping if we have history (something worth caching) and we're
 		// not currently streaming (or if we are waiting at an approval gate,
 		// where streaming is 'true' but we are blocked).
-		if (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
+		// Furthermore, only ping if the currently active LLM provider is actually Bedrock.
+		isBedrockActive := (m.client != nil)
+		if m.llmProvider != nil && !strings.HasPrefix(m.llmProvider.ID(), "bedrock:") {
+			isBedrockActive = false
+		}
+		if isBedrockActive && (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
 			elapsed := time.Since(m.lastAPICallTime)
 			if elapsed >= cacheKeepaliveInterval {
 				// Time to refresh — fire a ping in the background.

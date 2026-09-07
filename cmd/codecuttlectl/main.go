@@ -386,7 +386,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 			os.Exit(1)
 		}
-		agent.SetSystemPrompt(systemPrompt)
+		if morph == nil {
+			agent.SetSystemPrompt(systemPrompt)
+		}
 		runPlainREPL(ctx, agent, store, *sessionID, *workDir, *verbose, *autoApprove, auditLogger)
 		return
 	}
@@ -411,7 +413,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 		os.Exit(1)
 	}
-	agent.SetSystemPrompt(systemPrompt)
+	tuiSystem := systemPrompt
+	if morph != nil {
+		tuiSystem = agent.SystemPrompt()
+	} else {
+		agent.SetSystemPrompt(systemPrompt)
+	}
 	engine := conversation.NewEngine(agent)
 
 	// Full-screen TUI mode
@@ -420,7 +427,7 @@ func main() {
 		Pool:           genericPool,
 		Provider:       llmProvider,
 		PluginMgr:      pluginMgr,
-		System:         systemPrompt,
+		System:         tuiSystem,
 		WorkDir:        *workDir,
 		Verbose:        *verbose,
 		EnableThinking: *thinking,

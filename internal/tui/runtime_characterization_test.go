@@ -64,12 +64,12 @@ func TestTUICatalogAndTodoAuthorization(t *testing.T) {
 
 func TestHandoffUpdatesTUIProviderAndPersona(t *testing.T) {
 	manager := pluginhost.NewManager(false)
-	source := &recordingRuntimeProvider{id: "fixture:source"}
-	target := &recordingRuntimeProvider{id: "fixture:target"}
+	source := &recordingRuntimeProvider{id: "bedrock:claude-3-5"}
+	target := &recordingRuntimeProvider{id: "openrouter:deepseek"}
 	pool := runtimePool{nodes: map[string]provider.Provider{"lead": source, "review": target}}
 	morph := &swarm.Morphology{Nodes: map[string]swarm.Node{
-		"lead":   {Provider: "fixture", Model: source.id, IsPrimary: true},
-		"review": {Provider: "fixture", Model: target.id, SystemPrompt: "TARGET_PERSONA", Workbench: []string{"read_file"}},
+		"lead":   {Provider: "bedrock", Model: source.id, IsPrimary: true},
+		"review": {Provider: "openrouter", Model: target.id, SystemPrompt: "TARGET_PERSONA", Workbench: []string{"read_file"}},
 	}}
 	pm, err := prompt.NewManager()
 	if err != nil {
@@ -90,5 +90,8 @@ func TestHandoffUpdatesTUIProviderAndPersona(t *testing.T) {
 	defer m.stopModelStream()
 	if len(target.requests) != 1 || !strings.Contains(m.system, "TARGET_PERSONA") {
 		t.Fatalf("expected next TUI request on target provider and updated persona, got target.requests=%d, m.system=%q", len(target.requests), m.system)
+	}
+	if m.llmProvider.ID() != "openrouter:deepseek" {
+		t.Fatalf("expected TUI llmProvider switched to target, got %s", m.llmProvider.ID())
 	}
 }
