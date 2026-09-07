@@ -1,9 +1,68 @@
 package swarm
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestOpenRouterAstraSwarm(t *testing.T) {
+	m, err := LoadMorphology("../../testdata/openrouter-astra-swarm.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "openrouter-astra-swarm" || m.Presentation != "progressive_disclosure" || m.Topology.Type != "handoff" {
+		t.Fatalf("unexpected morphology metadata: name=%q presentation=%q topology=%q", m.Name, m.Presentation, m.Topology.Type)
+	}
+
+	expected := map[string]int{
+		"astra": 1, "fable": 1, "flash_coder": 5, "deep_coder": 1, "qwen_reviewer": 1,
+	}
+	if len(m.Nodes) != len(expected) || len(m.Topology.Rules) != len(expected) {
+		t.Fatalf("expected five nodes and routing entries, got %d nodes and %d entries", len(m.Nodes), len(m.Topology.Rules))
+	}
+	for id, concurrency := range expected {
+		node, ok := m.Nodes[id]
+		if !ok {
+			t.Fatalf("missing node %q", id)
+		}
+		if node.IsPrimary != (id == "astra") || node.MaxConcurrency != concurrency {
+			t.Errorf("node %q: unexpected primary flag or concurrency", id)
+		}
+		if strings.Contains(node.SystemPrompt, "`orchestrator`") || strings.Contains(node.SystemPrompt, "k3_expert") {
+			t.Errorf("node %q refers to an undefined node", id)
+		}
+		if !slices.Contains(node.Workbench, "handoff") {
+			t.Errorf("node %q cannot use its handoff routes", id)
+		}
+		if id != "astra" && !slices.Equal(m.Topology.Rules[id], []string{"astra"}) {
+			t.Errorf("node %q must return only to astra", id)
+		}
+		if id != "astra" && !slices.Contains(m.Topology.Rules["astra"], id) {
+			t.Errorf("astra cannot handoff to %q", id)
+		}
+		if id == "astra" || id == "fable" || id == "qwen_reviewer" {
+			for _, tool := range []string{"*", "write_file", "edit_file", "bash_exec"} {
+				if slices.Contains(node.Workbench, tool) {
+					t.Errorf("non-coding node %q exposes %q", id, tool)
+				}
+			}
+		}
+	}
+	if !slices.Contains(m.Nodes["astra"].Workbench, "todo_manage") {
+		t.Error("astra must be able to delegate async work")
+	}
+	for source, targets := range m.Topology.Rules {
+		if _, ok := m.Nodes[source]; !ok {
+			t.Errorf("undefined routing source %q", source)
+		}
+		for _, target := range targets {
+			if _, ok := m.Nodes[target]; !ok {
+				t.Errorf("undefined routing target %q from %q", target, source)
+			}
+		}
+	}
+}
 
 func TestParseMorphology_Valid(t *testing.T) {
 	yamlData := `
