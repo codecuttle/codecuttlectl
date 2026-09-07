@@ -83,6 +83,11 @@ Name your binary `cuttlebone-<name>` and place it in the plugins directory.
   standard library, and tmux; no provider credentials or external calls. Tests
   startup, literal typing without premature inference, Enter, and response display
   through a local OpenRouter fixture with repeated terminal/usage frames.
+- Offline real-plugin round trip: `python3 scripts/tui-smoke.py --tool-failure`.
+  Builds the TUI and bash plugin in temporary directories, executes a deliberate
+  exit-1 command, and verifies its diagnostic reaches the next model request.
+  Included in `make validate`, along with bash plugin race tests. Agent tests also
+  build the plugin and verify gRPC results, model history, Inkwell and audit flags.
 - Optional authorized live smoke: `python3 scripts/tui-smoke.py --live --model google/gemini-2.5-flash`.
   Uses locally configured OpenRouter credentials, at most one streaming request
   with a 128-output-token cap, disables reasoning, and stubs title generation and

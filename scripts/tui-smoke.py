@@ -28,8 +28,11 @@ def main():
     parser.add_argument("--live", action="store_true", help="opt in to one paid request")
     parser.add_argument("--model", default="google/gemini-2.5-flash")
     parser.add_argument("--binary", type=Path, help="test an existing binary instead of building")
+    parser.add_argument("--tool-failure", action="store_true", help="offline: build bash plugin and verify a failed command round trip")
     args = parser.parse_args()
-    state = {"requests": 0, "finished": False, "shapes": [], "failure": None}
+    if args.live and args.tool_failure:
+        parser.error("--tool-failure is offline only")
+    state = {"requests": 0, "completed_requests": 0, "finished": False, "shapes": [], "failure": None, "tool_failure_seen": False}
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -59,7 +62,7 @@ def main():
             with lock:
                 state["requests"] += 1
                 count = state["requests"]
-            if count > 1:
+            if count > (2 if args.tool_failure else 1):
                 self.send_error(429, "Smoke test request limit reached")
                 return
             try:
@@ -83,6 +86,21 @@ def main():
                         {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                          "usage": {"prompt_tokens": 123, "completion_tokens": 4}},
                     ]
+                    if args.tool_failure and count == 1:
+                        payloads = [{"choices": [{"index": 0, "delta": {"tool_calls": [{
+                            "index": 0, "id": "failure-check", "type": "function",
+                            "function": {"name": "bash_exec", "arguments": json.dumps({
+                                "command": "printf FAILURE_SENTINEL >&2; exit 1"})}
+                        }]}, "finish_reason": "tool_calls"}]}]
+                    elif args.tool_failure:
+                        results = [m.get("content", "") for m in body.get("messages", [])
+                                   if m.get("role") == "tool"]
+                        with lock:
+                            state["tool_failure_seen"] = any(
+                                "FAILURE_SENTINEL" in result and "Command exited with code 1" in result
+                                for result in results)
+                        if not state["tool_failure_seen"]:
+                            raise OSError("tool failure missing from continuation")
                     lines = [("data: " + json.dumps(p) + "\n\n").encode() for p in payloads]
                     lines.append(b"data: [DONE]\n\n")
                 shapes = []
@@ -112,13 +130,19 @@ def main():
                 self.send_error(502, "Smoke test upstream failure")
             finally:
                 with lock:
-                    state["finished"] = True
+                    state["completed_requests"] += 1
+                    state["finished"] = state["completed_requests"] == (2 if args.tool_failure else 1) or state["failure"] is not None
 
     with tempfile.TemporaryDirectory(prefix="codecuttle-tui-smoke-") as tmp:
         tmp = Path(tmp)
         binary = args.binary.resolve() if args.binary else tmp / "codecuttlectl"
         if not args.binary:
             subprocess.run(["go", "build", "-o", str(binary), "./cmd/codecuttlectl"], cwd=ROOT, check=True, timeout=300)
+        plugin_dir = tmp / "plugins"
+        if args.tool_failure:
+            plugin_dir.mkdir()
+            subprocess.run(["go", "build", "-o", str(plugin_dir / "cuttlebone-bash-exec"),
+                            "./plugins/cuttlebone-bash-exec"], cwd=ROOT, check=True, timeout=300)
         env = os.environ.copy()
         env["XDG_DATA_HOME"] = str(tmp / "data")
         env["TERM"] = "xterm-256color"
@@ -150,7 +174,9 @@ def main():
         try:
             command = [str(binary), "-provider", "openrouter", "-model", args.model,
                        "-openrouter-url", f"http://127.0.0.1:{server.server_port}",
-                       "-workdir", str(tmp), "-max-steps", "1"]
+                       "-workdir", str(tmp), "-max-steps", "3" if args.tool_failure else "1"]
+            if args.tool_failure:
+                command += ["-plugin-dir", str(plugin_dir)]
             tmux("new-session", "-d", "-s", "smoke", "-x", "120", "-y", "40", shlex.join(command))
             wait_for(lambda s: "Type a message" in s, "TUI startup")
             tmux("send-keys", "-t", "smoke", "-l", "Reply with exactly SMOKE_OK. Do not use tools.")
@@ -168,7 +194,10 @@ def main():
                 diagnostic = json.dumps(state, indent=2)
             if state["failure"] or "Error:" in current or "panic:" in current:
                 raise RuntimeError(f"Submission failed\nSafe stream metadata:\n{diagnostic}\nTerminal:\n{current}")
-            assert state["requests"] == 1, "Unexpected additional inference requests"
+            assert state["requests"] == (2 if args.tool_failure else 1), "Unexpected inference request count"
+            if args.tool_failure:
+                assert state["tool_failure_seen"], "Missing failed tool result"
+                print("PASS: failed real bash plugin result reaches model continuation", flush=True)
             # The user prompt also contains the sentinel; require another occurrence.
             wait_for(lambda s: s.count("SMOKE_OK") >= 2, "assistant response displayed")
             print("PASS: Enter completes one response without a TUI error", flush=True)

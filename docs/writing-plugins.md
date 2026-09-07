@@ -57,6 +57,31 @@ func main() {
 }
 ```
 
+## Execution outcomes
+
+A command failure is a tool result, not a successful RPC result: set `IsError`
+and a nonempty `ErrorMessage`, retain partial stdout/stderr in `Output`, and
+return that same outcome in the final streaming event. Nonempty stderr alone
+must not imply failure. Consumers must use the status, not parse an `Error:`
+text prefix. RPC errors instead describe failures delivering/executing the RPC.
+
+The bash plugin uses identical unary/streaming result classification:
+
+- `exit_code`: decimal process exit code; `-1` means signaled (Go ProcessState
+  convention), absent if no process started.
+- `error_kind`: `exit`, `signal`, `start`, `timeout`, or `cancelled`; absent on
+  success. Input/schema validation errors remain separate.
+- `stderr`: separated stderr when present; `exit_error`: underlying execution
+  error. `timeout=true` and `cancelled=true` retain explicit context causes.
+- `Output` contains collected command output; `ErrorMessage` carries the failure
+  diagnostic. Unary pluginhost combines them for the model; raw streaming callers
+  must inspect both fields on the final response.
+
+These metadata fields do not introduce retry permission or a sandbox. A deadline
+or cancellation can prevent the final gRPC response from reaching the caller;
+transport errors must not be interpreted as command success. Process-tree cleanup,
+stream transport recovery and persistence of all metadata are separate concerns.
+
 ## Input Struct Tags
 
 The schema derivation system uses these struct tags:
