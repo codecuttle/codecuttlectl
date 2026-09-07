@@ -289,6 +289,9 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 				}
 			}
 
+			if ctx.Err() != nil {
+				return textBuf.String(), ctx.Err()
+			}
 			if streamErr == nil {
 				break
 			}

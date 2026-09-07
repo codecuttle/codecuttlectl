@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ type Client struct {
 	enforceZDR bool
 	apiKey     string
 	httpClient *http.Client
+	waitRetry  func(context.Context, time.Duration) error // injected by deterministic tests
 }
 
 // Config holds configuration for creating an OpenRouter client.
@@ -46,6 +48,7 @@ func New(cfg Config) *Client {
 		enforceZDR: cfg.EnforceZDR,
 		apiKey:     cfg.APIKey,
 		httpClient: &http.Client{},
+		waitRetry:  waitForRetry,
 	}
 }
 
@@ -130,9 +133,20 @@ func fetchModels(ctx context.Context, httpClient *http.Client, baseURL string) (
 func (c *Client) Converse(ctx context.Context, req provider.Request) (*provider.Response, error) {
 	body := c.buildRequest(req, false)
 
-	respBody, err := c.doRequest(ctx, body)
-	if err != nil {
-		return nil, err
+	var respBody io.ReadCloser
+	for retries := 0; ; retries++ {
+		var err error
+		respBody, err = c.doRequest(ctx, body)
+		if err == nil {
+			break
+		}
+		delay, retry := rateLimitDelay(err, retries)
+		if !retry {
+			return nil, err
+		}
+		if err := c.waitRetry(ctx, delay); err != nil {
+			return nil, err
+		}
 	}
 	defer respBody.Close()
 
@@ -153,15 +167,37 @@ func (c *Client) ConverseStream(ctx context.Context, req provider.Request) <-cha
 
 		body := c.buildRequest(req, true)
 
-		respBody, err := c.doRequest(ctx, body)
-		if err != nil {
-			_ = sendStreamEvent(ctx, events, provider.StreamErrorEvent{Err: err})
-			return
-		}
-		defer respBody.Close()
-
-		if err := parseSSEStream(ctx, respBody, events); err != nil {
-			_ = sendStreamEvent(ctx, events, provider.StreamErrorEvent{Err: err})
+		for retries := 0; ; retries++ {
+			if ctx.Err() != nil {
+				return
+			}
+			respBody, err := c.doRequest(ctx, body)
+			if err == nil {
+				err = parseSSEStream(ctx, respBody, events)
+				respBody.Close()
+				var limit *rateLimitError
+				if errors.As(err, &limit) {
+					if response, ok := respBody.(*responseBody); ok {
+						limit.retryAfter = response.retryAfter
+					}
+				}
+			}
+			if err == nil {
+				return
+			}
+			delay, retry := rateLimitDelay(err, retries)
+			if !retry {
+				_ = sendStreamEvent(ctx, events, provider.StreamErrorEvent{Err: err})
+				return
+			}
+			if sendStreamEvent(ctx, events, provider.RetryEvent{
+				Attempt: retries + 1, MaxRetries: maxRateLimitRetries, Delay: delay,
+			}) != nil {
+				return
+			}
+			if c.waitRetry(ctx, delay) != nil {
+				return
+			}
 		}
 	}()
 
@@ -256,8 +292,12 @@ func (c *Client) doRequest(ctx context.Context, body []byte) (io.ReadCloser, err
 		return nil, fmt.Errorf("openrouter: request failed: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		return nil, &rateLimitError{retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	}
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
 		errStr := string(errBody)
 
@@ -269,7 +309,7 @@ func (c *Client) doRequest(ctx context.Context, body []byte) (io.ReadCloser, err
 		return nil, fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, errStr)
 	}
 
-	return resp.Body, nil
+	return &responseBody{ReadCloser: resp.Body, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}, nil
 }
 
 // providerMsgToOAI converts a provider.Message to one or more OpenAI chat messages.

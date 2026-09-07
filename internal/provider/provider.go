@@ -5,6 +5,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Provider is the interface that all LLM backends must implement.
@@ -197,6 +198,15 @@ type UsageEvent struct {
 }
 
 func (UsageEvent) streamEvent() {}
+
+// RetryEvent reports an adapter-owned rate-limit wait, not response content.
+type RetryEvent struct {
+	Attempt    int
+	MaxRetries int
+	Delay      time.Duration
+}
+
+func (RetryEvent) streamEvent() {}
 
 // StreamErrorEvent reports an error during streaming.
 type StreamErrorEvent struct {

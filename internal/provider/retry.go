@@ -19,6 +19,10 @@ func IsThrottleError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var throttled interface{ Throttled() bool }
+	if errors.As(err, &throttled) {
+		return throttled.Throttled()
+	}
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
@@ -80,6 +84,11 @@ func IsTransientStreamError(err error) bool {
 	}
 	// User-initiated cancellation is never retryable.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	// Adapter-owned retries must not be multiplied by conversation-level retries.
+	var handled interface{ RetryHandled() bool }
+	if errors.As(err, &handled) && handled.RetryHandled() {
 		return false
 	}
 	if IsThrottleError(err) {

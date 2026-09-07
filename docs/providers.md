@@ -2,6 +2,36 @@
 
 codecuttlectl supports multiple LLM providers through a unified `provider.Provider` interface. Any backend that implements streaming chat completions with tool calling can be integrated.
 
+## OpenRouter rate-limit recovery
+
+The OpenRouter adapter handles HTTP 429 and SSE error payloads with code 429.
+It retries the **same model request** at most twice (three attempts total), only
+if that attempt has produced no text, reasoning, tool fragments, or finish reason.
+A partial response instead ends with an explicit error; automatic replay is
+suppressed to avoid duplicating visible content or speculative tool work.
+Completed tools from earlier requests are not rerun: the continuation request,
+including their results, is retried byte-for-byte.
+
+- Default waits: 30 seconds, then 60 seconds. A positive `Retry-After` HTTP header
+  (seconds or HTTP-date) overrides the default, including on an SSE response.
+- Server waits longer than two minutes stop recovery instead of retrying early.
+  Invalid, past or zero headers use the default delay. Each wait is cancelable;
+  the budget bounds retries/backoff, not the duration of upstream generation.
+- TUI status displays the retry count and countdown. Press Escape twice to cancel
+  the actual inference/backoff context, or Ctrl+C to quit. Queued events from a
+  canceled/replaced request cannot update the next request's state.
+- Status notifications are not conversation text or usage. Missing usage does
+  not reset the last known context count. Costs for rejected/aborted attempts
+  may be unknown; the harness does not invent usage counts.
+- The adapter owns the 429 budget so outer Agent retries cannot multiply it.
+  Non-streaming calls also recover from HTTP 429, without a TUI countdown.
+
+This is not a general transient-error retry policy, a tool-execution cancellation
+fix, or a guarantee that a limited provider will recover. Exhaustion, partial
+responses, and oversized server waits require explicit user action. SSE metadata
+without an HTTP `Retry-After` header uses the default delay. No request switches
+models or weakens privacy routing during recovery.
+
 ## AWS Bedrock (default)
 
 The default provider. Uses Claude models via the AWS Bedrock ConverseStream API.
