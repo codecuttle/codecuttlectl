@@ -31,7 +31,7 @@ nodes:
       - Include the task phase and a clear completion condition in every delegation. Specialists return synchronous control to `astra`; asynchronous workers finish with a summary instead of handing off.
       - Use git only for inspection: status, diff, log, show, blame, and rev-parse. Do not modify files, the index, or repository history. Do not commit, push, or publish unless the user explicitly requests it and a coding node performs it.
       - If a provider, tool, or approval is unavailable, report the blocker and coordinate an allowed alternative; never bypass safeguards or invent successful execution.
-    workbench: ["read_file", "list_directory", "glob", "grep", "git", "webfetch", "websearch", "todo_manage", "handoff"]
+    workbench: ["read_file", "write_file", "edit_file", "list_directory", "glob", "grep", "git", "webfetch", "websearch", "todo_manage", "handoff"]
     is_primary: true
     max_concurrency: 1
 

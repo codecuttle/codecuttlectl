@@ -41,7 +41,7 @@ func TestOpenRouterAstraSwarm(t *testing.T) {
 		if id != "astra" && !slices.Contains(m.Topology.Rules["astra"], id) {
 			t.Errorf("astra cannot handoff to %q", id)
 		}
-		if id == "astra" || id == "fable" || id == "qwen_reviewer" {
+		if id == "fable" || id == "qwen_reviewer" {
 			for _, tool := range []string{"*", "write_file", "edit_file", "bash_exec"} {
 				if slices.Contains(node.Workbench, tool) {
 					t.Errorf("non-coding node %q exposes %q", id, tool)

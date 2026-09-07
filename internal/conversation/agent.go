@@ -92,7 +92,8 @@ type Config struct {
 	Store     session.Store
 	SessionID string // If set, resume this session
 
-	// Swarm Dispatcher
+	// Swarm Dispatcher & Initial Node
+	InitialNode     string                // Explicit node ID to initialize (defaults to primary node)
 	EventDispatcher swarm.EventDispatcher // Dispatches async events to TUI
 }
 
@@ -112,7 +113,10 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	// Phase 2: Compute available Swarm Nodes for the prompt
-	primaryID := PrimaryNodeID(cfg.Morph)
+	primaryID := cfg.InitialNode
+	if primaryID == "" {
+		primaryID = PrimaryNodeID(cfg.Morph)
+	}
 	var swarmNodes []string
 	if cfg.Morph != nil {
 		for nodeID := range cfg.Morph.Nodes {
@@ -121,7 +125,7 @@ func NewAgent(cfg Config) (*Agent, error) {
 			}
 		}
 		sort.Strings(swarmNodes)
-		// The primary node's declared workbench is the initial authorization
+		// The active node's declared workbench is the initial authorization
 		// unless the caller explicitly restricted one.
 		if len(cfg.Workbench) == 0 && primaryID != "" {
 			cfg.Workbench = append([]string(nil), cfg.Morph.Nodes[primaryID].Workbench...)
@@ -1434,6 +1438,14 @@ func (a *Agent) ActiveNode() string {
 // SetActiveNode overrides the currently active Swarm node ID.
 func (a *Agent) SetActiveNode(nodeID string) {
 	a.activeNode = nodeID
+}
+
+// Workbench returns the agent's current allowed tool workbench.
+func (a *Agent) Workbench() []string {
+	if a.workbench == nil {
+		return nil
+	}
+	return append([]string(nil), a.workbench...)
 }
 
 // --- Audit trail helpers ---

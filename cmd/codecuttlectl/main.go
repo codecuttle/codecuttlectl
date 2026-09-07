@@ -360,7 +360,7 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
+		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, promptMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
 		return
 	}
 
@@ -453,13 +453,13 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, promptMgr *prompt.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
 		Provider:    llmProvider,
 		Morph:       morph,
-		PromptMgr:   nil, // Not needed, system prompt already rendered
+		PromptMgr:   promptMgr,
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
 		MaxSteps:    maxSteps,
@@ -473,7 +473,9 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 		os.Exit(1)
 	}
-	agent.SetSystemPrompt(system)
+	if morph == nil {
+		agent.SetSystemPrompt(system)
+	}
 	engine := conversation.NewEngine(agent)
 
 	// Create a new session if not resuming

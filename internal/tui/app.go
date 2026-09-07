@@ -1029,7 +1029,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 											// 1. Instantiate the Headless Agent
 											cfg := conversation.Config{
 												Provider:        targetProv,
+												Pool:            m.pool,
 												Morph:           morph,
+												InitialNode:     assignee,
 												PromptMgr:       promptMgr,
 												PluginMgr:       pluginMgr,
 												WorkDir:         workDir,
@@ -1043,17 +1045,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 												eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: true, Result: "Failed to initialize headless agent: " + err.Error()}
 												return
 											}
-											// Force the active node to the actual assignee so progress/logs show up correctly
-											agent.SetActiveNode(assignee)
 
-											// 2. Set Persona System Prompt
-											sysPrompt := agent.SystemPrompt()
-											if targetNode.SystemPrompt != "" {
-												sysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
-											}
-											agent.SetSystemPrompt(sysPrompt)
-
-											// 3. Execute the Task
+											// 2. Execute the Task
 											promptText := fmt.Sprintf("You have been assigned a background task from the Swarm Orchestrator.\n\nTask: %s\n\n%s\n\nPlease execute this task using your available tools. When you are completely finished, output a concise summary of your findings or the actions you took. Do NOT ask for permission. Do NOT leave TODOs. If you lack the tools to complete it, summarize what you couldn't do.", taskDesc, compactContext.String())
 
 											result, err := agent.Turn(context.Background(), promptText)
@@ -1607,6 +1600,21 @@ func (m *Model) executePendingTools() tea.Cmd {
 		ctx := context.Background()
 
 		for i, tool := range tools {
+			// Security Gate: Check workbench authorization before executing or queuing
+			var activeWorkbench []string
+			if m.agent != nil {
+				activeWorkbench = m.agent.Workbench()
+			}
+			if activeWorkbench != nil && !conversation.IsToolAllowed(tool.name, activeWorkbench) {
+				results = append(results, provider.ToolResultBlock{
+					ToolUseID: tool.id,
+					Name:      tool.name,
+					Content:   fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", tool.name, activeWorkbench),
+					IsError:   true,
+				})
+				continue
+			}
+
 			if tool.name == "todo_manage" {
 				// Defer todo mutation to the Update handler (thread-safe).
 				// Put a placeholder result; the Update handler will replace it.

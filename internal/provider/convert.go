@@ -108,6 +108,9 @@ func SanitizeHistoryForProvider(msgs []Message, targetProvider string) []Message
 		return nil
 	}
 
+	isBedrockTarget := strings.HasPrefix(targetProvider, "bedrock")
+	isGoogleTarget := strings.HasPrefix(targetProvider, "google")
+
 	knownToolCalls := make(map[string]bool)
 	var sanitized []Message
 
@@ -124,21 +127,32 @@ func SanitizeHistoryForProvider(msgs []Message, targetProvider string) []Message
 					textBlocks = append(textBlocks, block.Text)
 				}
 			case ReasoningBlock:
-				// For non-Bedrock or cross-provider transitions, keep reasoning text
-				// but allow downgrading to text if the provider doesn't support reasoning blocks
 				if block.Text != "" {
-					cleanBlocks = append(cleanBlocks, block)
+					rb := block
+					// If transitioning to a non-Bedrock provider, strip Bedrock-specific signatures
+					// that foreign backends reject or misunderstand.
+					if !isBedrockTarget && rb.Signature != "" {
+						rb.Signature = ""
+					}
+					cleanBlocks = append(cleanBlocks, rb)
 					reasoningText = append(reasoningText, block.Text)
 				}
 			case ToolUseBlock:
 				if block.ToolUseID != "" && block.Name != "" {
+					tub := block
+					// If transitioning to a non-Google provider, strip Gemini thought signatures
+					if !isGoogleTarget && tub.ThoughtSignature != "" {
+						tub.ThoughtSignature = ""
+					}
 					knownToolCalls[block.ToolUseID] = true
-					cleanBlocks = append(cleanBlocks, block)
+					cleanBlocks = append(cleanBlocks, tub)
 				}
 			case ToolResultBlock:
-				// Ensure tool result has valid non-empty ToolUseID
+				// Ensure tool result has valid non-empty ToolUseID and matches a known call if tool calls exist
 				if block.ToolUseID != "" {
-					cleanBlocks = append(cleanBlocks, block)
+					if len(knownToolCalls) == 0 || knownToolCalls[block.ToolUseID] {
+						cleanBlocks = append(cleanBlocks, block)
+					}
 				}
 			}
 		}
