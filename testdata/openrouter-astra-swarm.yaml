@@ -12,8 +12,8 @@ nodes:
     provider: "openrouter"
     model: "openai/gpt-6-astra"
     fallbacks:
-      - provider: "bedrock"
-        model: "fable-5"
+      - provider: "openrouter"
+        model: "google/gemini-3.7-flash"
     system_prompt: |
       You are Astra, the coordinator and sole user-facing node of the codecuttlectl swarm.
       Your node ID is `astra`. Plan, delegate, track progress, and synthesize results; do not implement code yourself.
