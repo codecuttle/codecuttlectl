@@ -93,7 +93,7 @@ nodes:
 topology:
   type: "handoff"
   rules:
-    orchestrator: ["fable", "deep_coder", "qwen_reviewer", "k3_expert"]
+    orchestrator: ["fable", "flash_coder", "deep_coder", "qwen_reviewer", "k3_expert"]
     fable: ["orchestrator"]
     flash_coder: ["orchestrator"]
     deep_coder: ["orchestrator"]
