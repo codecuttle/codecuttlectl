@@ -225,6 +225,9 @@ func (a *Agent) streamTurnProvider(ctx context.Context, userMessage string, cb S
 			currentToolInput.Reset()
 			currentToolID, currentToolName, currentToolSig = "", "", ""
 
+			if err := ctx.Err(); err != nil {
+				return textBuf.String(), err
+			}
 			var streamErr error
 			ch := a.provider.ConverseStream(ctx, req)
 
