@@ -11,6 +11,9 @@ nodes:
   astra:
     provider: "openrouter"
     model: "openai/gpt-6-astra"
+    fallbacks:
+      - provider: "openrouter"
+        model: "anthropic/claude-3.5-sonnet"
     system_prompt: |
       You are Astra, the coordinator and sole user-facing node of the codecuttlectl swarm.
       Your node ID is `astra`. Plan, delegate, track progress, and synthesize results; do not implement code yourself.

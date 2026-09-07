@@ -204,6 +204,23 @@ func (c *Client) ConverseStream(ctx context.Context, req provider.Request) <-cha
 	return events
 }
 
+// sanitizeToolName cleans tool names to match OpenAI's pattern ^[a-zA-Z0-9_-]+$
+func sanitizeToolName(name string) string {
+	var sb strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	res := sb.String()
+	if res == "" {
+		return "tool"
+	}
+	return res
+}
+
 // buildRequest constructs the OpenRouter-compatible chat completion request body.
 func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 	oaiReq := chatRequest{
@@ -252,7 +269,7 @@ func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 		oaiReq.Tools = append(oaiReq.Tools, oaiTool{
 			Type: "function",
 			Function: oaiFunction{
-				Name:        tool.Name,
+				Name:        sanitizeToolName(tool.Name),
 				Description: tool.Description,
 				Parameters:  tool.InputSchema,
 			},
@@ -367,7 +384,7 @@ func providerMsgToOAI(msg provider.Message) []chatMessage {
 					ID:   b.ToolUseID,
 					Type: "function",
 					Function: oaiToolCallFunction{
-						Name:      b.Name,
+						Name:      sanitizeToolName(b.Name),
 						Arguments: string(b.Input),
 					},
 				})

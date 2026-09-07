@@ -142,7 +142,9 @@ func main() {
 			os.Exit(1)
 		}
 
-		factory := func(ctx context.Context, provName, modID string) (provider.Provider, error) {
+		factory := func(ctx context.Context, nodeConfig swarm.Node) (provider.Provider, error) {
+			provName := nodeConfig.Provider
+			modID := nodeConfig.Model
 			switch provName {
 			case "ollama":
 				return ollama.New(ollama.Config{
@@ -154,6 +156,13 @@ func main() {
 					return nil, fmt.Errorf("failed to ensure OpenRouter API key: %w", err)
 				}
 				var fallbacks []string
+				// 1. Check per-node fallbacks from morphology YAML
+				for _, fb := range nodeConfig.Fallbacks {
+					if fb.Model != "" {
+						fallbacks = append(fallbacks, fb.Model)
+					}
+				}
+				// 2. Append CLI global fallbacks if specified
 				if *openrouterFallbacks != "" {
 					for _, f := range strings.Split(*openrouterFallbacks, ",") {
 						fallbacks = append(fallbacks, strings.TrimSpace(f))

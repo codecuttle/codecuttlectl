@@ -7,9 +7,9 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
-// ProviderFactory is a function that can create a provider given its name, model ID, and context.
-// This allows breaking dependency cycles.
-type ProviderFactory func(ctx context.Context, providerName, modelID string) (provider.Provider, error)
+// ProviderFactory is a function that can create a provider given its node configuration and context.
+// This allows breaking dependency cycles and configuring per-node options like fallbacks.
+type ProviderFactory func(ctx context.Context, nodeConfig Node) (provider.Provider, error)
 
 // Pool implements provider.Pool backed by a Swarm Morphology.
 type Pool struct {
@@ -32,7 +32,7 @@ func NewPool(ctx context.Context, morph *Morphology, factory ProviderFactory) (*
 	}
 
 	for nodeID, nodeConfig := range morph.Nodes {
-		prov, err := factory(ctx, nodeConfig.Provider, nodeConfig.Model)
+		prov, err := factory(ctx, nodeConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize node %q: %w", nodeID, err)
 		}
