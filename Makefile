@@ -11,7 +11,7 @@ GOFLAGS := -trimpath
 # Plugin sources
 PLUGINS := $(wildcard plugins/cuttlebone-*)
 
-.PHONY: all build build-plugins clean test lint run test-tui-smoke validate
+.PHONY: all build build-plugins clean test lint run test-tui-smoke test-runtime-characterization validate
 
 all: build build-plugins
 
@@ -40,6 +40,10 @@ test:
 test-tui-smoke:
 	python3 scripts/tui-smoke.py
 
+## test-runtime-characterization: Measure known TUI/REPL/one-shot differences offline
+test-runtime-characterization:
+	python3 scripts/runtime-characterization.py
+
 ## validate: Run unit/race/vet/build checks plus a fresh-binary TUI smoke test
 validate:
 	$(GO) test -count=1 ./...
@@ -52,6 +56,7 @@ validate:
 	python3 scripts/tui-smoke.py --rate-limit sse --tool-failure
 	python3 scripts/tui-smoke.py --rate-limit exhaust
 	python3 scripts/tui-smoke.py --rate-limit cancel
+	$(MAKE) test-runtime-characterization
 
 ## test-integration: Build everything and run an integration test
 test-integration: all
