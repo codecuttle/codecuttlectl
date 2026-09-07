@@ -73,6 +73,10 @@ func TestBuiltPluginFailurePropagation(t *testing.T) {
 		if advice := agent.reconciler.Advise(agent.inkwell); advice.InjectPrompt == "" {
 			t.Fatal("failed execution did not produce diagnostic advice")
 		}
+		// C10 known divergence: advice generation is NOT evidence of injection.
+		if len(model.systems) != 2 || strings.Contains(model.systems[1], "Inkwell Diagnostic Alert") {
+			t.Fatal("baseline changed: replace absent diagnostic characterization with injection assertion")
+		}
 		if len(agent.inkwell) != 1 || !agent.inkwell[0].IsError || agent.inkwell[0].ErrorType == "" {
 			t.Fatalf("Inkwell lost failure: %+v", agent.inkwell)
 		}
@@ -96,12 +100,14 @@ type failureProvider struct {
 	input      json.RawMessage
 	calls      int
 	sawFailure bool
+	systems    []string // immutable request prompt snapshots for C10
 }
 
 func (p *failureProvider) ID() string   { return "test:failure" }
 func (p *failureProvider) Name() string { return "failure fixture" }
 func (p *failureProvider) Converse(_ context.Context, req provider.Request) (*provider.Response, error) {
 	p.calls++
+	p.systems = append(p.systems, req.System)
 	if p.calls == 1 {
 		return &provider.Response{ToolUses: []provider.ToolUseRequest{{ToolUseID: "check", Name: "bash_exec", Input: p.input}}}, nil
 	}

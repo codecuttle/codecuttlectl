@@ -94,6 +94,11 @@ Name your binary `cuttlebone-<name>` and place it in the plugins directory.
   bounded recovery/exhaustion, cancellation, identical retried request bodies,
   and a completed tool's file side effect occurring exactly once. Do not provoke
   real rate limits for validation.
+- Runtime baseline: `make test-runtime-characterization` builds isolated CLI and
+  plugin binaries and runs text, multi-tool correction, and step-limit scenarios
+  across TUI/REPL/one-shot. Included in `make validate`. A green known-divergence
+  test measures an existing defect, not desired behavior: see
+  [runtime contracts](docs/runtime-contracts.md) before changing assertions.
 - Optional authorized live smoke: `python3 scripts/tui-smoke.py --live --model google/gemini-2.5-flash`.
   Uses locally configured OpenRouter credentials, at most one streaming request
   with a 128-output-token cap, disables reasoning, and stubs title generation and
