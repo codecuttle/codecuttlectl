@@ -110,7 +110,7 @@ topology:
   type: "handoff"
   rules:
     astra: ["fable", "flash_coder", "deep_coder", "qwen_reviewer"]
-    fable: ["astra"]
-    flash_coder: ["astra"]
-    deep_coder: ["astra"]
-    qwen_reviewer: ["astra"]
+    fable: ["astra", "flash_coder"]
+    flash_coder: ["astra", "fable"]
+    deep_coder: ["astra", "fable"]
+    qwen_reviewer: ["astra", "fable"]
