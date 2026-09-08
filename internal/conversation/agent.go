@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,7 +92,8 @@ type Config struct {
 	Store     session.Store
 	SessionID string // If set, resume this session
 
-	// Swarm Dispatcher
+	// Swarm Dispatcher & Initial Node
+	InitialNode     string                // Explicit node ID to initialize (defaults to primary node)
 	EventDispatcher swarm.EventDispatcher // Dispatches async events to TUI
 }
 
@@ -111,13 +113,22 @@ func NewAgent(cfg Config) (*Agent, error) {
 	}
 
 	// Phase 2: Compute available Swarm Nodes for the prompt
+	primaryID := cfg.InitialNode
+	if primaryID == "" {
+		primaryID = PrimaryNodeID(cfg.Morph)
+	}
 	var swarmNodes []string
 	if cfg.Morph != nil {
 		for nodeID := range cfg.Morph.Nodes {
-			// Don't include the current active node (defaults to "orchestrator" but we check all)
-			if nodeID != "orchestrator" {
+			if nodeID != primaryID {
 				swarmNodes = append(swarmNodes, nodeID)
 			}
+		}
+		sort.Strings(swarmNodes)
+		// The active node's declared workbench is the initial authorization
+		// unless the caller explicitly restricted one.
+		if len(cfg.Workbench) == 0 && primaryID != "" {
+			cfg.Workbench = append([]string(nil), cfg.Morph.Nodes[primaryID].Workbench...)
 		}
 	}
 
@@ -135,7 +146,13 @@ func NewAgent(cfg Config) (*Agent, error) {
 		var err error
 		provName := "bedrock"
 		if cfg.Provider != nil && cfg.Client == nil {
-			provName = "ollama"
+			provName = ProviderNameFor(cfg.Provider)
+			if provName == "" {
+				provName = "ollama"
+			}
+		}
+		if cfg.Morph != nil && primaryID != "" && cfg.Morph.Nodes[primaryID].Provider != "" {
+			provName = cfg.Morph.Nodes[primaryID].Provider
 		}
 
 		var modelID string
@@ -152,6 +169,10 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 		if hints := cfg.PluginMgr.LLMHints(); hints != "" {
 			systemPrompt += "\n\n## Additional Tool Guidance\n" + hints
+		}
+		// Apply the primary node's persona exactly as a handoff would.
+		if cfg.Morph != nil && primaryID != "" && cfg.Morph.Nodes[primaryID].SystemPrompt != "" {
+			systemPrompt += "\n\n## Persona Instructions\n" + cfg.Morph.Nodes[primaryID].SystemPrompt
 		}
 	}
 
@@ -175,18 +196,8 @@ func NewAgent(cfg Config) (*Agent, error) {
 		sessionID:    cfg.SessionID,
 		workbench:    cfg.Workbench,
 		morph:        cfg.Morph,
-		activeNode:   "orchestrator", // default until handoff overrides
+		activeNode:   primaryID,
 		dispatcher:   cfg.EventDispatcher,
-	}
-
-	// Initialize active node if morph is provided
-	if agent.morph != nil {
-		for nodeID, node := range agent.morph.Nodes {
-			if node.IsPrimary {
-				agent.activeNode = nodeID
-				break
-			}
-		}
 	}
 
 	// Initialize audit trail with model info and session start time
@@ -732,77 +743,37 @@ func (a *Agent) handleHandoff(input json.RawMessage) (string, types.ToolResultSt
 		return "Error: Morphology is not enabled. Cannot handoff.", types.ToolResultStatusError
 	}
 
-	var payload struct {
-		Target       string `json:"target"`
-		Instructions string `json:"instructions"`
+	payload, err := parseHandoff(input)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err), types.ToolResultStatusError
 	}
-	if err := json.Unmarshal(input, &payload); err != nil {
-		return fmt.Sprintf("Error parsing handoff input: %v", err), types.ToolResultStatusError
-	}
-
-	targetNode, ok := a.morph.Nodes[payload.Target]
-	if !ok {
+	if _, ok := a.morph.Nodes[payload.Target]; !ok {
 		return fmt.Sprintf("Error: Node %q does not exist in the active morphology.", payload.Target), types.ToolResultStatusError
 	}
-
-	targetProv, ok := a.pool.GetNode(payload.Target)
-	if !ok {
-		return fmt.Sprintf("Error: Provider for node %q failed to initialize.", payload.Target), types.ToolResultStatusError
+	if !RouteAllowed(a.morph, a.activeNode, payload.Target) {
+		return fmt.Sprintf("Error: Handoff from %q to %q is not permitted by the morphology topology.", a.activeNode, payload.Target), types.ToolResultStatusError
 	}
 
-	// Update Agent State
-	a.activeNode = payload.Target
-	a.provider = targetProv
-	a.client = nil // Ensure we only use the provider interface, avoiding fork logic
-	a.workbench = targetNode.Workbench
-
-	// Sanitize conversation history for the new provider (fixes Issue #62)
-	targetID := ""
-	if targetProv != nil {
-		targetID = targetProv.ID()
+	// Stage everything before mutating: a failure here leaves the source
+	// node, provider, prompt, workbench and history untouched.
+	profile, err := ResolveNodeProfile(a.morph, a.pool, a.pluginMgr, a.promptMgr, a.workDir, payload.Target)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err), types.ToolResultStatusError
 	}
+	var sanitized []provider.Message
 	if len(a.provHistory) > 0 {
-		a.provHistory = provider.SanitizeHistoryForProvider(a.provHistory, targetID)
+		// Sanitize a copy so the source history survives a later failure.
+		sanitized = provider.SanitizeHistoryForProvider(append([]provider.Message(nil), a.provHistory...), profile.Provider.ID())
 	}
 
-	// Re-render System Prompt for the new Persona
-	if a.promptMgr != nil {
-		promptTools := []prompt.ToolDef{}
-		for _, def := range a.pluginMgr.Definitions() {
-			if !IsToolAllowed(def.Name, a.workbench) {
-				continue
-			}
-			promptTools = append(promptTools, prompt.ToolDef{
-				Name:        def.Name,
-				Description: def.Description,
-				Parameters:  prompt.SchemaToToolParams(def.InputSchema),
-			})
-		}
-
-		var swarmNodes []string
-		for nodeID := range a.morph.Nodes {
-			if nodeID != payload.Target {
-				swarmNodes = append(swarmNodes, nodeID)
-			}
-		}
-
-		newSysPrompt, err := a.promptMgr.RenderSystem(a.workDir, targetNode.Model, targetNode.Provider, promptTools, swarmNodes)
-		if err != nil {
-			return fmt.Sprintf("Error rendering new system prompt for %q: %v", payload.Target, err), types.ToolResultStatusError
-		}
-
-		if hints := a.pluginMgr.LLMHints(); hints != "" {
-			newSysPrompt += "\n\n## Additional Tool Guidance\n" + hints
-		}
-		// If the node has its own static prompt from the YAML, append it
-		if targetNode.SystemPrompt != "" {
-			newSysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
-		}
-		a.systemPrompt = newSysPrompt
-	}
+	source := a.activeNode
+	a.applyProfile(profile, sanitized)
 
 	if a.verbose {
-		log.Printf("[swarm] handoff successful: %s -> %s", a.activeNode, payload.Target)
+		log.Printf("[swarm] handoff successful: %s -> %s", source, payload.Target)
+	}
+	if a.dispatcher != nil {
+		a.dispatcher.Dispatch(swarm.NodeChangedMsg{Source: source, Target: payload.Target, ProviderID: profile.Provider.ID()})
 	}
 
 	successMsg := fmt.Sprintf("Handoff successful. You are now operating as the %q node. Instructions from caller: %s", payload.Target, payload.Instructions)
@@ -1467,6 +1438,14 @@ func (a *Agent) ActiveNode() string {
 // SetActiveNode overrides the currently active Swarm node ID.
 func (a *Agent) SetActiveNode(nodeID string) {
 	a.activeNode = nodeID
+}
+
+// Workbench returns the agent's current allowed tool workbench.
+func (a *Agent) Workbench() []string {
+	if a.workbench == nil {
+		return nil
+	}
+	return append([]string(nil), a.workbench...)
 }
 
 // --- Audit trail helpers ---

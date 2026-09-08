@@ -90,7 +90,7 @@ func providerMsgToBedrockWithCounts(msg provider.Message, toolUseCounts map[stri
 			content = append(content, &types.ContentBlockMemberToolUse{
 				Value: types.ToolUseBlock{
 					ToolUseId: aws.String(toolUseID),
-					Name:      aws.String(b.Name),
+					Name:      aws.String(provider.SanitizeToolName(b.Name)),
 					Input:     document.NewLazyDocument(inputMap),
 				},
 			})
@@ -130,7 +130,7 @@ func providerToolsToBedrock(tools []provider.ToolDefinition) []bedrock.ToolDefin
 	var result []bedrock.ToolDefinition
 	for _, t := range tools {
 		result = append(result, bedrock.ToolDefinition{
-			Name:        t.Name,
+			Name:        provider.SanitizeToolName(t.Name),
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 		})

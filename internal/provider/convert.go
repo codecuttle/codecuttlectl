@@ -100,6 +100,23 @@ func ToolDefsFromBedrock(defs []struct {
 	return result
 }
 
+// SanitizeToolName cleans tool names to match pattern ^[a-zA-Z0-9_-]+$ required by OpenAI/Bedrock/Azure.
+func SanitizeToolName(name string) string {
+	var sb strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	res := sb.String()
+	if res == "" {
+		return "tool"
+	}
+	return res
+}
+
 // SanitizeHistoryForProvider cleans and transcodes conversation messages when switching
 // across different LLM backends (e.g. Bedrock Claude -> Google Gemini / OpenRouter),
 // preventing HTTP 400 INVALID_ARGUMENT errors from foreign block formats or missing signatures.
@@ -107,6 +124,9 @@ func SanitizeHistoryForProvider(msgs []Message, targetProvider string) []Message
 	if len(msgs) == 0 {
 		return nil
 	}
+
+	isBedrockTarget := strings.HasPrefix(targetProvider, "bedrock")
+	isGoogleTarget := strings.HasPrefix(targetProvider, "google")
 
 	knownToolCalls := make(map[string]bool)
 	var sanitized []Message
@@ -124,21 +144,37 @@ func SanitizeHistoryForProvider(msgs []Message, targetProvider string) []Message
 					textBlocks = append(textBlocks, block.Text)
 				}
 			case ReasoningBlock:
-				// For non-Bedrock or cross-provider transitions, keep reasoning text
-				// but allow downgrading to text if the provider doesn't support reasoning blocks
 				if block.Text != "" {
-					cleanBlocks = append(cleanBlocks, block)
+					rb := block
+					// If transitioning to a non-Bedrock provider, strip Bedrock-specific signatures
+					// that foreign backends reject or misunderstand.
+					if !isBedrockTarget && rb.Signature != "" {
+						rb.Signature = ""
+					}
+					cleanBlocks = append(cleanBlocks, rb)
 					reasoningText = append(reasoningText, block.Text)
 				}
 			case ToolUseBlock:
 				if block.ToolUseID != "" && block.Name != "" {
+					tub := block
+					tub.Name = SanitizeToolName(tub.Name)
+					// If transitioning to a non-Google provider, strip Gemini thought signatures
+					if !isGoogleTarget && tub.ThoughtSignature != "" {
+						tub.ThoughtSignature = ""
+					}
 					knownToolCalls[block.ToolUseID] = true
-					cleanBlocks = append(cleanBlocks, block)
+					cleanBlocks = append(cleanBlocks, tub)
 				}
 			case ToolResultBlock:
-				// Ensure tool result has valid non-empty ToolUseID
+				// Ensure tool result has valid non-empty ToolUseID and matches a known call if tool calls exist
 				if block.ToolUseID != "" {
-					cleanBlocks = append(cleanBlocks, block)
+					trb := block
+					if trb.Name != "" {
+						trb.Name = SanitizeToolName(trb.Name)
+					}
+					if len(knownToolCalls) == 0 || knownToolCalls[block.ToolUseID] {
+						cleanBlocks = append(cleanBlocks, trb)
+					}
 				}
 			}
 		}

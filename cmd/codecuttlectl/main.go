@@ -142,7 +142,9 @@ func main() {
 			os.Exit(1)
 		}
 
-		factory := func(ctx context.Context, provName, modID string) (provider.Provider, error) {
+		factory := func(ctx context.Context, nodeConfig swarm.Node) (provider.Provider, error) {
+			provName := nodeConfig.Provider
+			modID := nodeConfig.Model
 			switch provName {
 			case "ollama":
 				return ollama.New(ollama.Config{
@@ -153,6 +155,11 @@ func main() {
 				if err := keyring.EnsureOpenRouterAPIKey(); err != nil {
 					return nil, fmt.Errorf("failed to ensure OpenRouter API key: %w", err)
 				}
+				// Per-node fallbacks are constructed by swarm.NewPool as separate
+				// local candidates (via FallbackProvider); do NOT also enable
+				// OpenRouter server-side `models` fallback, which could switch
+				// backends before local retries exhaust. Only global CLI fallbacks
+				// remain here for the single-provider, non-morphology path.
 				var fallbacks []string
 				if *openrouterFallbacks != "" {
 					for _, f := range strings.Split(*openrouterFallbacks, ",") {
@@ -360,7 +367,7 @@ func main() {
 
 	// One-shot mode: no TUI, just print result to stdout
 	if *oneShot != "" {
-		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
+		runOneShot(ctx, bedrockClient, genericPool, llmProvider, pluginMgr, promptMgr, store, *sessionID, systemPrompt, *workDir, *maxSteps, *verbose, *autoApprove, auditLogger, *oneShot, morph)
 		return
 	}
 
@@ -386,7 +393,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 			os.Exit(1)
 		}
-		agent.SetSystemPrompt(systemPrompt)
+		if morph == nil {
+			agent.SetSystemPrompt(systemPrompt)
+		}
 		runPlainREPL(ctx, agent, store, *sessionID, *workDir, *verbose, *autoApprove, auditLogger)
 		return
 	}
@@ -411,7 +420,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 		os.Exit(1)
 	}
-	agent.SetSystemPrompt(systemPrompt)
+	tuiSystem := systemPrompt
+	if morph != nil {
+		tuiSystem = agent.SystemPrompt()
+	} else {
+		agent.SetSystemPrompt(systemPrompt)
+	}
 	engine := conversation.NewEngine(agent)
 
 	// Full-screen TUI mode
@@ -420,7 +434,7 @@ func main() {
 		Pool:           genericPool,
 		Provider:       llmProvider,
 		PluginMgr:      pluginMgr,
-		System:         systemPrompt,
+		System:         tuiSystem,
 		WorkDir:        *workDir,
 		Verbose:        *verbose,
 		EnableThinking: *thinking,
@@ -446,13 +460,13 @@ func main() {
 }
 
 // runOneShot executes a single message and exits (non-TUI, for scripting).
-func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
+func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool, llmProvider provider.Provider, pluginMgr *pluginhost.Manager, promptMgr *prompt.Manager, store session.Store, sessionID, system, workDir string, maxSteps int, verbose, autoApprove bool, auditLogger *audit.Logger, message string, morph *swarm.Morphology) {
 	agent, err := conversation.NewAgent(conversation.Config{
 		Client:      client,
 		Pool:        pool,
 		Provider:    llmProvider,
 		Morph:       morph,
-		PromptMgr:   nil, // Not needed, system prompt already rendered
+		PromptMgr:   promptMgr,
 		PluginMgr:   pluginMgr,
 		WorkDir:     workDir,
 		MaxSteps:    maxSteps,
@@ -466,7 +480,9 @@ func runOneShot(ctx context.Context, client *bedrock.Client, pool provider.Pool,
 		fmt.Fprintf(os.Stderr, "Error initializing agent: %v\n", err)
 		os.Exit(1)
 	}
-	agent.SetSystemPrompt(system)
+	if morph == nil {
+		agent.SetSystemPrompt(system)
+	}
 	engine := conversation.NewEngine(agent)
 
 	// Create a new session if not resuming

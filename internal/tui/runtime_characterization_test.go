@@ -47,7 +47,7 @@ type runtimePool struct {
 func (p runtimePool) GetNode(id string) (provider.Provider, bool) { v, ok := p.nodes[id]; return v, ok }
 func (p runtimePool) Primary() provider.Provider                  { return p.nodes["lead"] }
 
-func TestKnownDivergence_TUICatalogAndTodoAuthorization(t *testing.T) {
+func TestTUICatalogAndTodoAuthorization(t *testing.T) {
 	manager := pluginhost.NewManager(false)
 	p := &recordingRuntimeProvider{id: "fixture:lead"}
 	agent, err := conversation.NewAgent(conversation.Config{Provider: p, PluginMgr: manager, Workbench: []string{"read_file"}})
@@ -57,20 +57,19 @@ func TestKnownDivergence_TUICatalogAndTodoAuthorization(t *testing.T) {
 	m := New(Config{Provider: p, PluginMgr: manager, Agent: agent})
 	m.launchStream()
 	defer m.stopModelStream()
-	if len(m.providerToolDefs()) != 0 || len(p.requests) != 1 || strings.Contains(p.requests[0], `"todo_manage"`) {
-		t.Fatal("baseline changed: replace missing-native characterization with parity assertion")
+	if len(p.requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(p.requests))
 	}
 	input := json.RawMessage(`{"todos":[{"content":"forged native task","status":"pending","priority":"medium"}]}`)
 	if _, status := agent.ExecuteTool(context.Background(), "todo_manage", input); status != types.ToolResultStatusError {
 		t.Fatal("restricted Agent should deny forged todo call")
 	}
+
+	// Verify that TUI executePendingTools properly respects workbench sandboxing and denies unauthorized todo_manage
 	m.pendingToolCalls = []pendingTool{{id: "forged", name: "todo_manage", input: input}}
 	result := m.executePendingTools()().(ContinueStreamMsg)
-	updated, _ := m.Update(result)
-	m = updated.(Model)
-	defer m.stopModelStream()
-	if len(m.todos.Items()) != 1 || len(agent.Todos().Items()) != 0 || result.Messages[0].IsError {
-		t.Fatal("baseline changed: expected TUI-only todo mutation bypassing Agent workbench")
+	if len(result.Messages) != 1 || !result.Messages[0].IsError || !strings.Contains(result.Messages[0].Content, "not authorized") {
+		t.Fatalf("expected TUI to deny unauthorized todo_manage with error result, got: %+v", result.Messages)
 	}
 }
 
@@ -135,14 +134,14 @@ func TestKnownDivergence_TUIApprovalDeniesAgainAndLosesEarlierResults(t *testing
 	}
 }
 
-func TestKnownDivergence_HandoffLeavesTUIOnSourceProvider(t *testing.T) {
+func TestHandoffUpdatesTUIProviderAndPersona(t *testing.T) {
 	manager := pluginhost.NewManager(false)
-	source := &recordingRuntimeProvider{id: "fixture:source"}
-	target := &recordingRuntimeProvider{id: "fixture:target"}
+	source := &recordingRuntimeProvider{id: "bedrock:claude-3-5"}
+	target := &recordingRuntimeProvider{id: "openrouter:deepseek"}
 	pool := runtimePool{nodes: map[string]provider.Provider{"lead": source, "review": target}}
 	morph := &swarm.Morphology{Nodes: map[string]swarm.Node{
-		"lead":   {Provider: "fixture", Model: source.id, IsPrimary: true},
-		"review": {Provider: "fixture", Model: target.id, SystemPrompt: "TARGET_PERSONA", Workbench: []string{"read_file"}},
+		"lead":   {Provider: "bedrock", Model: source.id, IsPrimary: true},
+		"review": {Provider: "openrouter", Model: target.id, SystemPrompt: "TARGET_PERSONA", Workbench: []string{"read_file", "handoff"}},
 	}}
 	pm, err := prompt.NewManager()
 	if err != nil {
@@ -161,7 +160,33 @@ func TestKnownDivergence_HandoffLeavesTUIOnSourceProvider(t *testing.T) {
 	updated, _ := m.Update(result)
 	m = updated.(Model)
 	defer m.stopModelStream()
-	if len(source.requests) != 1 || len(target.requests) != 0 || m.system != "SOURCE_PERSONA" {
-		t.Fatal("baseline changed: expected next TUI request on stale source provider/persona")
+	if len(target.requests) != 1 || !strings.Contains(m.system, "TARGET_PERSONA") {
+		t.Fatalf("expected next TUI request on target provider and updated persona, got target.requests=%d, m.system=%q", len(target.requests), m.system)
+	}
+	// Test NodeChangedMsg listener re-arm
+	updatedNodeMsg, nodeCmd := m.Update(swarm.NodeChangedMsg{Source: "lead", Target: "review", ProviderID: "openrouter:deepseek"})
+	if updatedNodeMsg == nil || nodeCmd == nil {
+		t.Errorf("expected NodeChangedMsg to return valid model and re-arm listener command")
+	}
+
+	// Test context window reset for provider without ContextWindowProvider
+	if m.contextWindow != 0 {
+		t.Errorf("expected contextWindow to be 0 for recordingRuntimeProvider without ContextWindowProvider interface, got %d", m.contextWindow)
+	}
+
+	// Test return handoff: target reviews and hands back to lead
+	m.pendingToolCalls = []pendingTool{{id: "handoff_back", name: "handoff", input: json.RawMessage(`{"target":"lead","instructions":"completed review"}`)}}
+	resultBack := m.executePendingTools()().(ContinueStreamMsg)
+	if resultBack.Messages[0].IsError || agent.ActiveNode() != "lead" {
+		t.Fatalf("fixture did not switch Agent back to lead: %+v", resultBack.Messages)
+	}
+	updatedBack, _ := m.Update(resultBack)
+	mBack := updatedBack.(Model)
+	defer mBack.stopModelStream()
+	if len(source.requests) != 1 {
+		t.Fatalf("expected next TUI request to route back to source provider, got source.requests=%d", len(source.requests))
+	}
+	if mBack.llmProvider.ID() != "bedrock:claude-3-5" {
+		t.Fatalf("expected TUI llmProvider restored to lead, got %s", mBack.llmProvider.ID())
 	}
 }

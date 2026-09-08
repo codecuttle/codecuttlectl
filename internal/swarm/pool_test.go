@@ -23,11 +23,11 @@ func (m *mockProvider) ConverseStream(ctx context.Context, req provider.Request)
 func (m *mockProvider) ContextWindow() int32                      { return 1000 }
 func (m *mockProvider) EstimateCost(usage provider.Usage) float64 { return 1.5 }
 
-func mockFactory(ctx context.Context, providerName, modelID string) (provider.Provider, error) {
-	if providerName == "error" {
+func mockFactory(ctx context.Context, nodeConfig Node) (provider.Provider, error) {
+	if nodeConfig.Provider == "error" {
 		return nil, fmt.Errorf("factory error")
 	}
-	return &mockProvider{id: providerName + "-" + modelID}, nil
+	return &mockProvider{id: nodeConfig.Provider + "-" + nodeConfig.Model}, nil
 }
 
 func TestNewPool(t *testing.T) {

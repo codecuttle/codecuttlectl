@@ -252,7 +252,7 @@ func (c *Client) buildRequest(req provider.Request, stream bool) []byte {
 		oaiReq.Tools = append(oaiReq.Tools, oaiTool{
 			Type: "function",
 			Function: oaiFunction{
-				Name:        tool.Name,
+				Name:        provider.SanitizeToolName(tool.Name),
 				Description: tool.Description,
 				Parameters:  tool.InputSchema,
 			},
@@ -367,7 +367,7 @@ func providerMsgToOAI(msg provider.Message) []chatMessage {
 					ID:   b.ToolUseID,
 					Type: "function",
 					Function: oaiToolCallFunction{
-						Name:      b.Name,
+						Name:      provider.SanitizeToolName(b.Name),
 						Arguments: string(b.Input),
 					},
 				})

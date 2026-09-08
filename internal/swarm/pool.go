@@ -7,9 +7,9 @@ import (
 	"github.com/codecuttle/codecuttlectl/internal/provider"
 )
 
-// ProviderFactory is a function that can create a provider given its name, model ID, and context.
-// This allows breaking dependency cycles.
-type ProviderFactory func(ctx context.Context, providerName, modelID string) (provider.Provider, error)
+// ProviderFactory is a function that can create a provider given its node configuration and context.
+// This allows breaking dependency cycles and configuring per-node options like fallbacks.
+type ProviderFactory func(ctx context.Context, nodeConfig Node) (provider.Provider, error)
 
 // Pool implements provider.Pool backed by a Swarm Morphology.
 type Pool struct {
@@ -32,10 +32,35 @@ func NewPool(ctx context.Context, morph *Morphology, factory ProviderFactory) (*
 	}
 
 	for nodeID, nodeConfig := range morph.Nodes {
-		prov, err := factory(ctx, nodeConfig.Provider, nodeConfig.Model)
+		prov, err := factory(ctx, nodeConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize node %q: %w", nodeID, err)
 		}
+
+		// If the node declares model fallbacks, construct each candidate through
+		// the same provider factory and wrap them so a single logical node can
+		// fail over across backends without changing its persona or workbench.
+		if len(nodeConfig.Fallbacks) > 0 {
+			var chain []provider.Provider
+			chain = append(chain, prov)
+			for _, fb := range nodeConfig.Fallbacks {
+				if fb.Model == "" {
+					continue
+				}
+				fbConfig := nodeConfig
+				fbConfig.Provider = fb.Provider
+				fbConfig.Model = fb.Model
+				fbConfig.Fallbacks = nil // avoid recursion
+				candidate, err := factory(ctx, fbConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to initialize fallback for node %q (%s/%s): %w",
+						nodeID, fb.Provider, fb.Model, err)
+				}
+				chain = append(chain, candidate)
+			}
+			prov = provider.NewFallbackProvider(nodeID, chain...)
+		}
+
 		p.providers[nodeID] = prov
 
 		cw := int32(0)

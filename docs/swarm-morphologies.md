@@ -4,7 +4,9 @@
 
 As `codecuttlectl` evolves beyond a single-model coding assistant, we are introducing **Swarm Morphologies** (or **Morphs**). A Morphology is a declarative configuration that defines a multi-agent system, detailing the models, providers, system prompts, skills, and the topologies through which they interact.
 
-This replaces the hardcoded `Primary / Planning / Auxiliary` Bedrock-only Model Pool with a generic, extensible, provider-agnostic framework supporting **Bedrock, Google, and Ollama** simultaneously.
+This replaces the hardcoded `Primary / Planning / Auxiliary` Bedrock-only Model Pool with a generic, extensible, provider-agnostic framework supporting **Bedrock, Google, OpenRouter, and Ollama**.
+
+> **Status:** this document mixes shipped mechanics with long-term design. As of PR #70 (open), synchronous handoff and basic morphology parsing/routing work, but asynchronous backlog scheduling is partial and the features below (event triggers, provider fallbacks, full trace synthesis, distributed/remote agents) are conceptual, not all shipped. See the runtime-contracts ledger and the merge-gate notes for the current limitations.
 
 ## Motivation
 
@@ -19,11 +21,11 @@ By defining a **Morphology**, users can orchestrate a swarm where:
 
 ### 1. Nodes (Agents) & Strict Tool Sandboxing
 A swarm is composed of multiple discrete agents, referred to as **Nodes**. Each node is configured with:
-*   **Provider:** `bedrock`, `google`, or `ollama`.
+*   **Provider:** `bedrock`, `google`, `openrouter`, or `ollama`.
 *   **Model ID:** The specific model identifier for that provider.
 *   **System Prompt:** A tailored prompt giving the node its persona and instructions.
-*   **Workbench (Skills):** A strictly scoped execution sandbox containing only the tools the node is explicitly allowed to use. For example, a "reviewer" node might only have read-only tools like `read_file` and `git diff`. This prevents unauthorized cross-contamination or hallucinated destructive actions by generalist models.
-*   **Max Concurrency:** Defines the maximum number of parallel instances of this node that can be spawned for asynchronous tasks (default: 1). This prevents local resource exhaustion (e.g., spinning up 50 parallel Ollama models) and rate-limit triggers.
+*   **Workbench (Skills):** An allowlist of tool *names* exposed to the node. A "reviewer" node might only get `read_file` and `git`. Workbenches do NOT enforce subcommands, OS file permissions or network access: a node granted `git` or `bash_exec` is not a read-only OS sandbox, and native-tool authorization in the TUI path is still incomplete (an out-of-workbench `todo_manage` call must be gated consistently — see the runtime-contracts ledger).
+*   **Max Concurrency:** The maximum number of parallel instances of this node for asynchronous tasks (default: 1). It is a scheduling bound for local resource use; it does not by itself prevent provider rate limiting or file conflicts.
 
 ### 2. Presentation Modes & Epistemic Transparency
 A morphology can present itself to the user in different ways to solve the "trust calibration problem":
@@ -95,6 +97,8 @@ topology:
       action: "Review the latest commit and suggest improvements."
 ```
 
+When `topology.rules` is empty or absent, routing is legacy-permissive: any defined target node may be handed off to. Once rules are present, only the explicitly listed source→target edges are allowed and enforce a matching handoff path at runtime.
+
 ## Migration from PR #25 (`ModelPool`)
 
 PR #25 introduced the concept of multi-model routing via a Bedrock-specific `ModelPool` (`Primary`, `Auxiliary`, `Planning`).
@@ -144,6 +148,8 @@ While Phase 1 (Parser, Sandboxing, Synchronous Handoff) enables dynamic multi-ag
 
 5.  **File State Safety & Shared Context:**
     The project directory acts as the shared state boundary (the "Modular Monolith" approach). To prevent data corruption if the Orchestrator and a background agent edit the same file simultaneously, tools like `edit_file` and `write_file` enforce thread-safe atomic writes.
+
+    **Note:** atomic, single-operation writes prevent torn files but do not prevent *logical* edit conflicts (two agents racing on the same file can still overwrite each other's changes). Concurrent workers must be serialized by the coordinator or by task-level file ownership; per-file atomicity alone is not transaction safety.
 
 ## Future Enhancements
 * **The SAGA Pattern:** Allowing agents to revert orphaned states (e.g., executing idempotent compensating tools) if a multi-step workflow fails catastrophically midway through.

@@ -585,6 +585,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.listenSwarmEvents(), m.launchStream())
 		}
 
+	case swarm.NodeChangedMsg:
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: fmt.Sprintf("⇄ [Swarm] Node transition: %s ➔ %s", msg.Source, msg.Target),
+		})
+		m.updateViewportContent()
+		return m, m.listenSwarmEvents()
+
 	case StreamTextMsg:
 		m.retryUntil = time.Time{}
 		// Clear interrupt pending on new content (user didn't confirm)
@@ -1021,7 +1029,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 											// 1. Instantiate the Headless Agent
 											cfg := conversation.Config{
 												Provider:        targetProv,
+												Pool:            m.pool,
 												Morph:           morph,
+												InitialNode:     assignee,
 												PromptMgr:       promptMgr,
 												PluginMgr:       pluginMgr,
 												WorkDir:         workDir,
@@ -1035,17 +1045,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 												eventCh <- swarm.TaskCompletedMsg{TaskID: taskDesc, Assignee: assignee, IsError: true, Result: "Failed to initialize headless agent: " + err.Error()}
 												return
 											}
-											// Force the active node to the actual assignee so progress/logs show up correctly
-											agent.SetActiveNode(assignee)
 
-											// 2. Set Persona System Prompt
-											sysPrompt := agent.SystemPrompt()
-											if targetNode.SystemPrompt != "" {
-												sysPrompt += "\n\n## Persona Instructions\n" + targetNode.SystemPrompt
-											}
-											agent.SetSystemPrompt(sysPrompt)
-
-											// 3. Execute the Task
+											// 2. Execute the Task
 											promptText := fmt.Sprintf("You have been assigned a background task from the Swarm Orchestrator.\n\nTask: %s\n\n%s\n\nPlease execute this task using your available tools. When you are completely finished, output a concise summary of your findings or the actions you took. Do NOT ask for permission. Do NOT leave TODOs. If you lack the tools to complete it, summarize what you couldn't do.", taskDesc, compactContext.String())
 
 											result, err := agent.Turn(context.Background(), promptText)
@@ -1083,8 +1084,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.updateViewportContent()
-		// Add tool results to history and start new stream
+
+		// Add tool results to history
 		m.history = append(m.history, provider.BuildToolResultMessage(msg.Messages))
+
+		// If a handoff just executed successfully in the agent, sync the TUI model state
+		// (provider, system prompt, context window) to match the new active node and sanitize history!
+		if m.agent != nil && m.morph != nil && m.pool != nil {
+			activeID := m.agent.ActiveNode()
+			if activeID != "" {
+				if prov, ok := m.pool.GetNode(activeID); ok && prov != nil {
+					prevProvID := ""
+					if m.llmProvider != nil {
+						prevProvID = m.llmProvider.ID()
+					}
+
+					if prov != m.llmProvider || m.system != m.agent.SystemPrompt() {
+						m.llmProvider = prov
+						m.system = m.agent.SystemPrompt()
+
+						if cwp, ok := prov.(provider.ContextWindowProvider); ok {
+							m.contextWindow = cwp.ContextWindow()
+						} else {
+							m.contextWindow = 0 // Reset so contextWindowSize() uses default
+						}
+
+						// Sanitize TUI history for the new target provider (e.g. Bedrock Claude -> Google/OpenRouter)
+						if prevProvID != prov.ID() && len(m.history) > 0 {
+							m.history = provider.SanitizeHistoryForProvider(m.history, prov.ID())
+						}
+					}
+				}
+			}
+		}
+
 		m.saveSession()
 		m.streamStep++ // Track consecutive tool-use rounds for grounding
 
@@ -1111,7 +1144,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only ping if we have history (something worth caching) and we're
 		// not currently streaming (or if we are waiting at an approval gate,
 		// where streaming is 'true' but we are blocked).
-		if (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
+		// Furthermore, only ping if the currently active LLM provider is actually Bedrock.
+		isBedrockActive := (m.client != nil)
+		if m.llmProvider != nil && !strings.HasPrefix(m.llmProvider.ID(), "bedrock:") {
+			isBedrockActive = false
+		}
+		if isBedrockActive && (!m.streaming || m.approvalPending != nil) && len(m.history) > 0 {
 			elapsed := time.Since(m.lastAPICallTime)
 			if elapsed >= cacheKeepaliveInterval {
 				// Time to refresh — fire a ping in the background.
@@ -1562,6 +1600,21 @@ func (m *Model) executePendingTools() tea.Cmd {
 		ctx := context.Background()
 
 		for i, tool := range tools {
+			// Security Gate: Check workbench authorization before executing or queuing
+			var activeWorkbench []string
+			if m.agent != nil {
+				activeWorkbench = m.agent.Workbench()
+			}
+			if activeWorkbench != nil && !conversation.IsToolAllowed(tool.name, activeWorkbench) {
+				results = append(results, provider.ToolResultBlock{
+					ToolUseID: tool.id,
+					Name:      tool.name,
+					Content:   fmt.Sprintf("Error: Tool %q is not authorized in this node's workbench. Allowed tools: %v", tool.name, activeWorkbench),
+					IsError:   true,
+				})
+				continue
+			}
+
 			if tool.name == "todo_manage" {
 				// Defer todo mutation to the Update handler (thread-safe).
 				// Put a placeholder result; the Update handler will replace it.
@@ -2530,15 +2583,16 @@ func (m *Model) providerToolDefs() []provider.ToolDefinition {
 		})
 	}
 
-	// Add Swarm native tools
-	if m.morph != nil {
-		if activeWorkbench == nil || conversation.IsToolAllowed("handoff", activeWorkbench) {
-			result = append(result, provider.ToolDefinition{
-				Name:        "handoff",
-				Description: conversation.HandoffToolDefinition().Description,
-				InputSchema: conversation.HandoffToolDefinition().InputSchema,
-			})
+	// Add built-in tools allowed in active workbench
+	for _, d := range conversation.BuiltinToolDefs(m.morph) {
+		if activeWorkbench != nil && !conversation.IsToolAllowed(d.Name, activeWorkbench) {
+			continue
 		}
+		result = append(result, provider.ToolDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
 	}
 
 	return result
